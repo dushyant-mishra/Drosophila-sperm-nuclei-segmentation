@@ -13,8 +13,6 @@ dist/
 *.png
 sperm_error_log.txt
 BACKUP_VERSION_ARCHIVE/
-*.spec
 run.bat
 run_gui.bat
-*.sh
 *.bat
