@@ -1,0 +1,20 @@
+# Secrets
+gemini_api_key.txt
+
+# Environment and Build
+venv/
+__pycache__/
+build/
+dist/
+.vscode/
+
+# Temporary and Large Files
+*.tif
+*.png
+sperm_error_log.txt
+BACKUP_VERSION_ARCHIVE/
+*.spec
+run.bat
+run_gui.bat
+*.sh
+*.bat

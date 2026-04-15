@@ -1,0 +1,35 @@
+SATURN V5 TRACKING TUNING SUMMARY
+========================================================================
+Output directory: C:\Users\dmishra\Desktop\sperm_project\parameter_tuning_results
+Images tuned: 5 | z=[2, 3, 4, 5, 6]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Best parameters:
+  OVERLAP_STABILITY_THRESHOLD: 0.2026
+  OVERLAP_ORIENTATION_DEG: 27.2181
+  OVERLAP_MULTIPLIER: 1.6255
+  TRACK_MAX_DIST_UM: 6.8711
+  TRACK_BBOX_PADDING_PX: 2
+  CONSERVATIVE_MAX_WIDTH_JUMP_RATIO: 0.7668
+  CONSERVATIVE_MAX_LENGTH_JUMP_RATIO: 0.3134
+  CONSERVATIVE_MAX_AREA_JUMP_RATIO: 0.5522
+  CONSERVATIVE_MAX_CENTROID_JUMP_UM: 5.2397
+
+Best metrics:
+  n_tracks: 2807
+  multi_slice: 1595
+  total_linked: 4695
+  avg_depth: 2.94
+  single_slice: 1212
+  n_long: 249
+  n_tort: 57
+  n_thick: 7
+  n_taper: 201
+  l3d_median_um: 9.533
+  l3d_mean_um: 10.155
+  zextent_median_um: 2.081
+  score: 1406.72
+
+Biology / hardware note:
+  This V5 tuner preserves biologically plausible single-slice nuclei for this Leica
+  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.
