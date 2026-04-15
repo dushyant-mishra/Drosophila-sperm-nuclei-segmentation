@@ -1,0 +1,42 @@
+name: Build macOS Standalone App
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        # We run PyInstaller using the existing .spec file
+        python -m PyInstaller sperm_tool.spec --noconfirm
+
+    - name: Package App (.zip)
+      run: |
+        cd dist
+        # Zip the .app bundle to preserve permissions
+        zip -r ../SpermAnalysisTool_macOS.zip SpermAnalysisTool.app
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saturn-V5-macOS-Tool
+        path: SpermAnalysisTool_macOS.zip

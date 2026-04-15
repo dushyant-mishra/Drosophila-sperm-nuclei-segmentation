@@ -7,3 +7,6 @@ scipy
 seaborn
 python-pptx
 requests
+opencv-python
+Pillow
+xlsxwriter
