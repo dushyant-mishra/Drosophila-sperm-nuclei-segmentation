@@ -1,8 +1,12 @@
 #!/bin/bash
 echo "======================================================"
-echo "BUILDING STANDALONE MACOS APP (Saturn V5)"
+echo "BUILDING STANDALONE MACOS APP (Saturn V5.1)"
 echo "======================================================"
 echo "Note: This must be run on a MacBook."
+
+# Change to root directory
+cd "$(dirname "$0")/.."
+
 # Check for python3
 if ! command -v python3 &> /dev/null
 then
@@ -12,7 +16,7 @@ then
 fi
 
 echo "Installing requirements if needed..."
-python3 -m pip install pyinstaller numpy pandas matplotlib tifffile scikit-image opencv-python scipy Pillow xlsxwriter python-pptx requests seaborn
+python3 -m pip install -r requirements.txt
 
 echo "Starting build..."
 python3 -m PyInstaller sperm_tool.spec --noconfirm

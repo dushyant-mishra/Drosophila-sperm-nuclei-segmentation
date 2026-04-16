@@ -63,18 +63,30 @@ from tkinter import filedialog, simpledialog, messagebox
 # -----------------------------------------------------------------------------
 # Import V5 pipeline functions directly for fast in-process execution
 # -----------------------------------------------------------------------------
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_dir)
+
+# Since the filename has a dot (v5.1.py), we use importlib to load it properly
+import importlib.util
+module_name = "sperm_segmentation_saturnv5_1" # alias for internal use
+module_path = os.path.join(parent_dir, "sperm_segmentation_saturnv5.1.py")
+
 try:
-    from sperm_segmentation_saturnv5 import (
-        CONFIG,
-        segment_slice,
-        measure_spermatids,
-        track_across_slices,
-        rows_from_results,
-        normalize_display,
-        robust_imread,
-    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    segmentation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(segmentation)
+    
+    CONFIG = segmentation.CONFIG
+    segment_slice = segmentation.segment_slice
+    measure_spermatids = segmentation.measure_spermatids
+    track_across_slices = segmentation.track_across_slices
+    rows_from_results = segmentation.rows_from_results
+    normalize_display = segmentation.normalize_display
+    robust_imread = segmentation.robust_imread
+    
 except Exception as e:
-    print(f"Error: Could not import from sperm_segmentation_saturnv5.py: {e}")
+    print(f"Error: Could not import from biological suite {module_path}: {e}")
     raise
 
 # -----------------------------------------------------------------------------

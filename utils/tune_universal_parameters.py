@@ -62,6 +62,11 @@ import tkinter as tk
 from tkinter import filedialog, simpledialog
 
 # Import the V3 pipeline functions directly for fast in-process execution
+# Add paths to root and archive
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(parent_dir)
+sys.path.append(os.path.join(parent_dir, "archive"))
+
 try:
     from sperm_segmentation_saturnv3 import (
         CONFIG,
@@ -73,10 +78,10 @@ try:
         robust_imread,
     )
 except Exception as e:
-    print(f"Error: Could not import from sperm_segmentation_saturnv3.py: {e}")
+    print(f"Error: Could not import from sperm_segmentation_saturnv3.py (in /archive): {e}")
     raise
 
-ROI_SAVE_PATH = "last_drawn_roi_saturnv3_tune.tif"
+ROI_SAVE_PATH = os.path.join(parent_dir, "last_drawn_roi_saturnv3_tune.tif")
 
 # ── Global State ──────────────────────────────────────────────────────────────
 eval_count = 0
