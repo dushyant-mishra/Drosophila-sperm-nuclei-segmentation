@@ -16,3 +16,4 @@ BACKUP_VERSION_ARCHIVE/
 run.bat
 run_gui.bat
 *.bat
+*.zip
