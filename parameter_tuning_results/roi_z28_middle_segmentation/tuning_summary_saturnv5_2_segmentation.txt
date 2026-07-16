@@ -1,0 +1,45 @@
+SATURN V5.2 SEGMENTATION TUNING SUMMARY
+========================================================================
+Mode: segmentation
+Output directory: parameter_tuning_results\roi_z28_middle_segmentation
+Images tuned: 7 | z=[20, 28, 36, 44, 52, 60, 68]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Default baseline guardrails:
+  n_2d: 6009
+  count_median: 865.0
+  count_mean: 858.4285714285714
+  len_median_um: 7.309
+  min_count_frac: 0.55
+  max_count_frac: 1.1
+
+Best parameters:
+  THRESHOLD_HI: 79.6645
+  THRESHOLD_LO: 72.7155
+  MIN_OBJ_PX: 11
+  MAX_BRIDGE_PX: 5
+  MIN_SKEL_LEN_PX: 8.6667
+  MAX_WIDTH_PX: 8.6346
+  MIN_LENGTH_WIDTH_RATIO: 2.2561
+  MAX_TORTUOSITY: 3.7247
+
+Best metrics:
+  n_2d: 3287
+  count_median: 473.0
+  count_mean: 469.57
+  count_ratio_vs_default: 0.5468
+  count_cv: 0.0269
+  len_median_um: 9.893
+  len_mean_um: 11.377
+  width_median_um: 2.141
+  lwr_median: 4.828
+  short_frac: 0.0812
+  very_long_frac: 0.084
+  wide_frac: 0.1549
+  low_lwr_frac: 0.049
+  tort_frac: 0.0155
+  score: -86.57
+
+Biology / hardware note:
+  Segmentation tuning is a candidate-selection aid, not ground truth.
+  Review saved overlay panels before accepting a parameter set.

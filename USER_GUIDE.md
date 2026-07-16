@@ -1,4 +1,4 @@
-# Sperm nuclei segmentation-macOS-Tool
+# Sperm Nuclei Segmentation macOS Tool
 ## User Walkthrough and Parameter Notes
 
 ### Validated Dataset
@@ -11,8 +11,8 @@
 - **Best parameters file**: [Open link](https://example.com) (Update with actual link)
 
 > [!IMPORTANT]
-> **Recommended default**: Load tuned JSON and leave settings unchanged unless clearly necessary.
-> This release was tested and optimized on the Saturn WT-style image set. For Saturn-like datasets, the safest workflow is to load the tuned JSON and run the analysis before changing any settings.
+> **Recommended default**: Use the built-in Saturn V5 tuned parameters and leave settings unchanged unless clearly necessary.
+> This release was tested and optimized on the Saturn WT-style image set. For Saturn-like datasets, the safest workflow is to run the built-in tuned defaults before changing any settings.
 
 ---
 
@@ -34,8 +34,8 @@
 ## Recommended Workflow
 1. Open the app.
 2. Select the image folder containing one z-stack series.
-3. Load the tuned best-parameters JSON file.
-4. Keep the loaded parameters unchanged unless the results clearly show a problem.
+3. Keep the built-in tuned parameters unchanged unless the results clearly show a problem.
+4. Optionally load a newer or experiment-specific tuned JSON if one has been provided.
 5. Draw or load the ROI.
 6. Run the batch analysis.
 7. Review the PDF report, Excel workbook, and overlay images.
@@ -59,28 +59,28 @@
 
 ---
 
-## Where Results are Saved
+## Where Results Are Saved
 All outputs are saved inside the selected input image folder in an auto-created subfolder such as `batch_output`, `batch_output_1`, and so on.
 
 ```text
 MyExperiment/
-├── z0.tif
-├── z1.tif
-├── z2.tif
-└── batch_output/
-    ├── overlays/
-    ├── spermatid_measurements.csv
-    ├── track_summary.csv
-    ├── track_summary_quality.csv
-    ├── batch_analysis_results_v5.xlsx
-    ├── batch_report_v5.pdf
-    └── batch_analysis_results_v11.pptx
+|-- z0.tif
+|-- z1.tif
+|-- z2.tif
+`-- batch_output/
+    |-- overlays/
+    |-- spermatid_measurements.csv
+    |-- track_summary.csv
+    |-- track_summary_quality.csv
+    |-- batch_analysis_results_v5.xlsx
+    |-- batch_report_v5.pdf
+    `-- batch_analysis_results_v11.pptx
 ```
 
 ---
 
 ## Parameter Notes
-These notes are for interpretation. For this release, the tuned JSON should be considered the default for Saturn WT-style data.
+These notes are for interpretation. For this release, the built-in Saturn V5 tuned parameters should be considered the default for Saturn WT-style data.
 
 | Section | Parameter | What it controls | When to change it |
 | :--- | :--- | :--- | :--- |
@@ -106,8 +106,8 @@ These notes are for interpretation. For this release, the tuned JSON should be c
 ---
 
 ## Common Mistakes to Avoid
-- Forgetting to load the tuned JSON before analysis.
-- Changing parameters before running the tuned default once.
+- Loading an experiment-specific JSON without confirming it matches the current dataset.
+- Changing parameters before running the built-in tuned defaults once.
 - Treating PSF-sensitive outputs as literal physical dimensions.
 - Accepting the wrong ROI without visually confirming it.
 - Changing segmentation settings when the real problem is tracking or audit.

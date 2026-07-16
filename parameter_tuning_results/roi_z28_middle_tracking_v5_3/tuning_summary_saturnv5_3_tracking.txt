@@ -1,0 +1,62 @@
+SATURN V5.3 PROTOTYPE TRACKING TUNING SUMMARY
+========================================================================
+Mode: tracking
+Output directory: parameter_tuning_results\roi_z28_middle_tracking_v5_3
+Images tuned: 5 | z=[28, 29, 30, 31, 32]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Best parameters:
+  TRACK_MAX_DIST_UM: 7.6825
+  ASSIGNMENT_MAX_COST: 8.4117
+  ASSIGNMENT_DIST_WEIGHT: 0.9472
+  ASSIGNMENT_OVERLAP_WEIGHT: 2.5638
+  ASSIGNMENT_LENGTH_WEIGHT: 0.4702
+  ASSIGNMENT_WIDTH_WEIGHT: 2.0403
+  ASSIGNMENT_AREA_WEIGHT: 2.4508
+  ASSIGNMENT_ANGLE_WEIGHT: 0.2219
+
+Best metrics:
+  n_tracks: 1239
+  multi_slice: 649
+  total_linked: 1790
+  avg_depth: 2.76
+  single_slice: 590
+  n_long: 283
+  n_tort: 97
+  n_thick: 685
+  n_taper: 379
+  n_stopped: 249
+  stop_frac: 0.201
+  n_overlap_unstable: 0
+  overlap_unstable_frac: 0.0
+  l3d_median_um: 11.142
+  l3d_mean_um: 12.447
+  zspan_median_um: 1.04
+  score: -551.87
+
+Continuity guardrails:
+  safe candidate rule: zspan_median_um >= 0.5 and single_frac <= 0.52
+  safe candidates found: 3
+  Best safe metrics:
+    n_tracks: 1239
+    multi_slice: 649
+    total_linked: 1790
+    avg_depth: 2.76
+    single_slice: 590
+    n_long: 283
+    n_tort: 97
+    n_thick: 685
+    n_taper: 379
+    n_stopped: 249
+    stop_frac: 0.201
+    n_overlap_unstable: 0
+    overlap_unstable_frac: 0.0
+    l3d_median_um: 11.142
+    l3d_mean_um: 12.447
+    zspan_median_um: 1.04
+    score: -551.87
+  Best safe parameter file: parameter_tuning_results\roi_z28_middle_tracking_v5_3\best_safe_tracking_params_v5_3_001.json
+
+Biology / hardware note:
+  This V5.3 prototype tuner preserves biologically plausible single-slice nuclei for this Leica
+  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.

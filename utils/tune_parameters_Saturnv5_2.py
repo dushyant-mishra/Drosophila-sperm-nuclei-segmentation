@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Evolutionary Parameter Tuner for Saturn V5 Tracking
+Evolutionary Parameter Tuner for Saturn V5.2 Tracking
 
 Biology- and hardware-aware tuner for the *tracking* stage of the
 Drosophila sperm nucleus pipeline.
 
-This version is aligned to the V5 biological assumptions:
+This version is aligned to the V5.2 biological assumptions:
 - mature Drosophila sperm nuclei are very long in XY but extremely thin in Z
 - with this Leica SP8 stack (z-step ~1.04 µm), single-slice nuclei can be biologically valid
 - width/area-derived metrics are PSF-sensitive and should be penalized more softly
 - long, tortuous, implausibly merged tracks remain strong negatives
 
 Compared with the older tuner, this version:
-- imports from sperm_segmentation_saturnv5.1.py
+- imports from sperm_segmentation_saturnv5.2.py
 - saves all outputs to:
     C:/Users/dmishra/Desktop/sperm_project/parameter_tuning_results
 - removes the old heavy bias against single-slice tracks
@@ -23,10 +23,10 @@ Compared with the older tuner, this version:
 Usage
 -----
 GUI mode:
-    python tune_universal_parameters_v5_biobased.py
+    python utils/tune_parameters_Saturnv5_2.py
 
 CLI mode:
-    python tune_universal_parameters_v5_biobased.py --dir "path/to/images" --slices 0-12
+    python utils/tune_parameters_Saturnv5_2.py --dir "path/to/images" --slices 0-12
 
 Notes
 -----
@@ -61,16 +61,16 @@ import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox
 
 # -----------------------------------------------------------------------------
-# Import V5 pipeline functions directly for fast in-process execution
+# Import V5.2 pipeline functions directly for fast in-process execution
 # -----------------------------------------------------------------------------
 # Add parent directory to path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)
 
-# Since the filename has a dot (v5.1.py), we use importlib to load it properly
+# Since the filename has a dot (v5.2.py), we use importlib to load it properly
 import importlib.util
-module_name = "sperm_segmentation_saturnv5_1" # alias for internal use
-module_path = os.path.join(parent_dir, "sperm_segmentation_saturnv5.1.py")
+module_name = "sperm_segmentation_saturnv5_2" # alias for internal use
+module_path = os.path.join(parent_dir, "sperm_segmentation_saturnv5.2.py")
 
 try:
     spec = importlib.util.spec_from_file_location(module_name, module_path)
@@ -84,6 +84,9 @@ try:
     rows_from_results = segmentation.rows_from_results
     normalize_display = segmentation.normalize_display
     robust_imread = segmentation.robust_imread
+    make_overlay = segmentation.make_overlay
+    load_roi_mask_file = segmentation.load_roi_mask_file
+    filter_results_to_roi = segmentation.filter_results_to_roi
     
 except Exception as e:
     print(f"Error: Could not import from biological suite {module_path}: {e}")
@@ -93,7 +96,7 @@ except Exception as e:
 # Output configuration
 # -----------------------------------------------------------------------------
 DEFAULT_OUTPUT_DIR = Path(r"C:\Users\dmishra\Desktop\sperm_project\parameter_tuning_results")
-ROI_SAVE_PATH = DEFAULT_OUTPUT_DIR / "last_drawn_roi_saturnv5_tune.tif"
+ROI_SAVE_PATH = DEFAULT_OUTPUT_DIR / "last_drawn_roi_saturnv5_2_tune.tif"
 
 # -----------------------------------------------------------------------------
 # Global state
@@ -111,15 +114,26 @@ roi_mask_global = None
 # Centered around the v5 tuned defaults, but still wide enough to explore.
 # Keep ranges biologically sane for a crowded, diffraction-limited confocal stack.
 PARAM_SPACE = [
-    ("OVERLAP_STABILITY_THRESHOLD",        0.05,  0.22,  False),
+    ("OVERLAP_STABILITY_THRESHOLD",        0.05,  0.35,  False),
     ("OVERLAP_ORIENTATION_DEG",            8.0,   35.0,  False),
     ("OVERLAP_MULTIPLIER",                 1.10,  1.80,  False),
-    ("TRACK_MAX_DIST_UM",                  4.0,   10.5,  False),
-    ("TRACK_BBOX_PADDING_PX",              1,     8,     True),
-    ("CONSERVATIVE_MAX_WIDTH_JUMP_RATIO",  0.25,  0.80,  False),
-    ("CONSERVATIVE_MAX_LENGTH_JUMP_RATIO", 0.30,  0.85,  False),
-    ("CONSERVATIVE_MAX_AREA_JUMP_RATIO",   0.35,  0.80,  False),
-    ("CONSERVATIVE_MAX_CENTROID_JUMP_UM",  5.0,   14.0,  False),
+    ("TRACK_MAX_DIST_UM",                  4.0,   8.5,   False),
+    ("TRACK_BBOX_PADDING_PX",              1,     4,     True),
+    ("CONSERVATIVE_MAX_WIDTH_JUMP_RATIO",  0.25,  0.75,  False),
+    ("CONSERVATIVE_MAX_LENGTH_JUMP_RATIO", 0.30,  0.70,  False),
+    ("CONSERVATIVE_MAX_AREA_JUMP_RATIO",   0.35,  0.68,  False),
+    ("CONSERVATIVE_MAX_CENTROID_JUMP_UM",  5.0,   10.0,  False),
+]
+
+SEGMENTATION_PARAM_SPACE = [
+    ("THRESHOLD_HI",              72.0,  86.0,  False),
+    ("THRESHOLD_LO",              58.0,  76.0,  False),
+    ("MIN_OBJ_PX",                 4,    12,    True),
+    ("MAX_BRIDGE_PX",              2,     9,    True),
+    ("MIN_SKEL_LEN_PX",            5.0,  11.5,  False),
+    ("MAX_WIDTH_PX",               7.0,  11.0,  False),
+    ("MIN_LENGTH_WIDTH_RATIO",     1.6,   2.8,  False),
+    ("MAX_TORTUOSITY",             2.4,   4.5,  False),
 ]
 
 # -----------------------------------------------------------------------------
@@ -133,7 +147,12 @@ REVIEW = {
     "thick_thresh": 2.0,        # PSF-sensitive -> softer penalty only
     "taper_thresh": 1.5,        # PSF-sensitive -> softer penalty only
     "target_len_um": 9.5,       # biology-guided mature nucleus target length
+    "target_2d_len_um": 10.0,   # conservative 2D detector target for mature nuclei
+    "target_width_um": 2.1,
+    "target_lwr": 4.2,
 }
+
+SEGMENTATION_BASELINE = {}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -277,6 +296,16 @@ def build_roi(images, force_redraw=False, interactive_prompt=False):
             roi_mask = None
 
     if roi_mask is None:
+        if not interactive_prompt:
+            print("\nNo saved tuner ROI found. Using full image frame for tuning.")
+            roi_mask = np.ones_like(roi_img, dtype=bool)
+            try:
+                tifffile.imwrite(str(ROI_SAVE_PATH), roi_mask.astype(np.uint8) * 255)
+                print(f"Saved full-frame ROI to {ROI_SAVE_PATH}")
+            except Exception as e:
+                print(f"Could not save full-frame ROI: {e}")
+            return roi_mask
+
         print("\nDraw a GLOBAL ROI (Left-Click to place, Right-Click to UNDO, ENTER to Finish).")
         pts = []
 
@@ -361,6 +390,130 @@ def pick_col(df, candidates, default=None):
     return default
 
 
+def params_from_vector(x, param_space):
+    param_dict = {}
+    for i, (key, lo, hi, is_int) in enumerate(param_space):
+        val = x[i]
+        if is_int:
+            val = int(round(val))
+        else:
+            val = float(val)
+        param_dict[key] = val
+    return param_dict
+
+
+def run_2d_detection(cfg, um_per_px):
+    rows = []
+    per_slice_counts = []
+    for img, z_idx in zip(images_to_eval, z_values_eval):
+        seg = segment_slice(img, cfg, z_idx=z_idx, debug_dir=None, roi_mask=None)
+        meas = measure_spermatids(seg, cfg)
+        results, _ = filter_results_to_roi(meas["results"], meas["skel_label"], roi_mask_global)
+        slice_rows = rows_from_results(results, z_idx, um_per_px)
+        rows.extend(slice_rows)
+        per_slice_counts.append(len(slice_rows))
+    return pd.DataFrame(rows), np.asarray(per_slice_counts, dtype=float)
+
+
+def score_segmentation_run(df_2d, per_slice_counts, min_count_frac=0.55, max_count_frac=1.10):
+    """
+    Score 2D segmentation without pretending there is ground truth.
+
+    The score compares candidate density against the default detector, then
+    rewards biologically plausible shape/length distributions and stable
+    detection density across slices. This makes the tuner less likely to choose
+    a setting that merely deletes dim objects or admits background ridges.
+    """
+    if df_2d.empty:
+        return -1e12, {"reason": "no_2d"}
+
+    base_count_med = SEGMENTATION_BASELINE.get("count_median", np.nan)
+    base_count_mean = SEGMENTATION_BASELINE.get("count_mean", np.nan)
+
+    lengths = df_2d["length_um_geodesic"].astype(float)
+    widths = df_2d["width_um"].astype(float)
+    lwr = df_2d["length_width_ratio"].astype(float)
+    tort = df_2d["tortuosity"].astype(float) if "tortuosity" in df_2d else pd.Series(dtype=float)
+
+    n_2d = len(df_2d)
+    count_med = safe_median(per_slice_counts, default=0.0)
+    count_mean = safe_mean(per_slice_counts, default=0.0)
+    count_cv = float(np.std(per_slice_counts) / max(count_mean, 1.0)) if per_slice_counts.size else 0.0
+
+    len_med = safe_median(lengths)
+    len_mean = safe_mean(lengths)
+    width_med = safe_median(widths)
+    lwr_med = safe_median(lwr)
+    tort_med = safe_median(tort) if not tort.empty else np.nan
+
+    short_frac = float((lengths < 7.0).mean())
+    very_long_frac = float((lengths > 18.0).mean())
+    wide_frac = float((widths > 3.6).mean())
+    low_lwr_frac = float((lwr < 2.5).mean())
+    tort_frac = float((tort > 2.0).mean()) if not tort.empty else 0.0
+
+    score = 0.0
+
+    if np.isfinite(base_count_med) and base_count_med > 0:
+        ratio = count_med / base_count_med
+        if ratio < min_count_frac:
+            score -= 2500.0 * (min_count_frac - ratio)
+        if ratio > max_count_frac:
+            score -= 1800.0 * (ratio - max_count_frac)
+        score += 250.0 * min(ratio, 1.0)
+
+    # Avoid selecting a low-count solution purely because its shapes look clean.
+    score += 0.015 * min(n_2d, max(base_count_mean * len(per_slice_counts), 1) if np.isfinite(base_count_mean) else n_2d)
+
+    if np.isfinite(len_med):
+        score -= 55.0 * abs(len_med - REVIEW["target_2d_len_um"])
+    if np.isfinite(len_mean) and len_mean > 14.0:
+        score -= 80.0 * (len_mean - 14.0)
+    if np.isfinite(width_med):
+        score -= 35.0 * abs(width_med - REVIEW["target_width_um"])
+    if np.isfinite(lwr_med):
+        score -= 25.0 * abs(lwr_med - REVIEW["target_lwr"])
+
+    score -= 900.0 * short_frac
+    score -= 700.0 * very_long_frac
+    score -= 500.0 * wide_frac
+    score -= 450.0 * low_lwr_frac
+    score -= 350.0 * tort_frac
+    score -= 180.0 * count_cv
+
+    metrics = {
+        "n_2d": int(n_2d),
+        "count_median": round(count_med, 2),
+        "count_mean": round(count_mean, 2),
+        "count_cv": round(count_cv, 4),
+        "count_ratio_vs_default": round(count_med / base_count_med, 4) if np.isfinite(base_count_med) and base_count_med > 0 else None,
+        "len_median_um": round(len_med, 3) if np.isfinite(len_med) else None,
+        "len_mean_um": round(len_mean, 3) if np.isfinite(len_mean) else None,
+        "width_median_um": round(width_med, 3) if np.isfinite(width_med) else None,
+        "lwr_median": round(lwr_med, 3) if np.isfinite(lwr_med) else None,
+        "tort_median": round(tort_med, 3) if np.isfinite(tort_med) else None,
+        "short_frac": round(short_frac, 4),
+        "very_long_frac": round(very_long_frac, 4),
+        "wide_frac": round(wide_frac, 4),
+        "low_lwr_frac": round(low_lwr_frac, 4),
+        "tort_frac": round(tort_frac, 4),
+        "score": round(score, 2),
+    }
+    return score, metrics
+
+
+def is_safe_tracking_candidate(record):
+    """Return True for tracking candidates that avoid obvious fragmentation."""
+    try:
+        zspan = record.get("zspan_median_um")
+        single_frac = record.get("single_frac")
+        n_tracks = int(record.get("n_tracks", 0) or 0)
+        if zspan is None or single_frac is None or n_tracks <= 0:
+            return False
+        return float(zspan) >= 0.5 and float(single_frac) <= 0.52
+    except Exception:
+        return False
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  BIOLOGY- AND HARDWARE-AWARE SCORE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -394,7 +547,8 @@ def score_run(df_2d, df_tracks, z_step_um):
     thick_col = pick_col(df_tracks, ["thickness_um", "effective_thickness_um", "median_width_um"])
     taper_col = pick_col(df_tracks, ["taper_ratio", "morphological_taper_ratio"])
     nslices_col = pick_col(df_tracks, ["n_slices", "n_detections"])
-    zextent_col = pick_col(df_tracks, ["z_extent_um", "z_height_um", "vertical_span_um"])
+    zspan_col = pick_col(df_tracks, ["z_span_um", "z_extent_um", "z_height_um", "vertical_span_um"])
+    stop_col = pick_col(df_tracks, ["track_stop_reason"])
 
     if length_col is None or nslices_col is None:
         return -1e12, {"reason": "missing_columns"}
@@ -404,11 +558,11 @@ def score_run(df_2d, df_tracks, z_step_um):
     tort = df_tracks[tort_col].astype(float) if tort_col else pd.Series(dtype=float)
     thick = df_tracks[thick_col].astype(float) if thick_col else pd.Series(dtype=float)
     taper = df_tracks[taper_col].astype(float) if taper_col else pd.Series(dtype=float)
-    zextent = df_tracks[zextent_col].astype(float) if zextent_col else nslices.clip(lower=1) * float(z_step_um)
+    zspan = df_tracks[zspan_col].astype(float) if zspan_col else (nslices - 1).clip(lower=0) * float(z_step_um)
 
     l3d_med = safe_median(lengths)
     l3d_mean = safe_mean(lengths)
-    z_med = safe_median(zextent)
+    zspan_med = safe_median(zspan)
 
     n_long = int((lengths > REVIEW["length_thresh"]).sum())
     n_tort = int((tort > REVIEW["tort_thresh"]).sum()) if tort_col else 0
@@ -423,6 +577,16 @@ def score_run(df_2d, df_tracks, z_step_um):
     single_frac = n_single / max(n_tracks, 1)
     multi_frac = multi_slice / max(n_tracks, 1)
     long_frac = n_long / max(n_tracks, 1)
+    if stop_col:
+        stop_reasons = df_tracks[stop_col].fillna("").astype(str)
+        stopped = stop_reasons != ""
+        n_stopped = int(stopped.sum())
+        n_overlap_unstable = int(stop_reasons.str.contains("overlap_but_0_stable", regex=False).sum())
+    else:
+        n_stopped = 0
+        n_overlap_unstable = 0
+    stop_frac = n_stopped / max(n_tracks, 1)
+    overlap_unstable_frac = n_overlap_unstable / max(n_tracks, 1)
 
     score = 0.0
 
@@ -434,6 +598,8 @@ def score_run(df_2d, df_tracks, z_step_um):
     # 2. Soft single-slice handling.
     # Single-slice tracks are valid in this hardware regime, so only penalize if
     # they dominate the population excessively.
+    if single_frac > 0.50:
+        score -= 450.0 * (single_frac - 0.50)
     if single_frac > 0.70:
         score -= 120.0 * (single_frac - 0.70)
     if multi_frac < 0.20:
@@ -450,16 +616,30 @@ def score_run(df_2d, df_tracks, z_step_um):
     # 5. Strong biological alignment to mature nucleus length.
     if np.isfinite(l3d_med):
         score -= 40.0 * abs(l3d_med - REVIEW["target_len_um"])
+        if l3d_med > 11.5:
+            score -= 120.0 * (l3d_med - 11.5)
     if np.isfinite(l3d_mean) and l3d_mean > 13.0:
         score -= 60.0 * (l3d_mean - 13.0)
+    if np.isfinite(l3d_mean) and l3d_mean > 12.5:
+        score -= 55.0 * (l3d_mean - 12.5)
 
     # 6. Encourage moderate Z continuity, but not excessively.
-    if np.isfinite(z_med) and z_med > 4.0:
-        score -= 35.0 * (z_med - 4.0)
+    if np.isfinite(zspan_med) and zspan_med < 0.50 and n_tracks > 0:
+        score -= 350.0 * (0.50 - zspan_med)
+    if np.isfinite(zspan_med) and zspan_med > 4.0:
+        score -= 35.0 * (zspan_med - 4.0)
 
     # 7. Strong structural penalty if long-track fraction becomes too large.
     if long_frac > 0.20:
         score -= 250.0 * (long_frac - 0.20)
+
+    # 8. Penalize fragmentation signatures exposed by the V5.2 tracker.
+    # A high "overlap_but_0_stable" rate means plausible overlaps existed but
+    # failed stability checks, which usually points to track breaking.
+    if stop_frac > 0.55:
+        score -= 180.0 * (stop_frac - 0.55)
+    if overlap_unstable_frac > 0.20:
+        score -= 260.0 * (overlap_unstable_frac - 0.20)
 
     metrics = {
         "n_2d": n_2d,
@@ -473,9 +653,13 @@ def score_run(df_2d, df_tracks, z_step_um):
         "n_tort": n_tort,
         "n_thick": n_thick,
         "n_taper": n_taper,
+        "n_stopped": n_stopped,
+        "stop_frac": round(stop_frac, 4),
+        "n_overlap_unstable": n_overlap_unstable,
+        "overlap_unstable_frac": round(overlap_unstable_frac, 4),
         "l3d_median_um": round(l3d_med, 3) if np.isfinite(l3d_med) else None,
         "l3d_mean_um": round(l3d_mean, 3) if np.isfinite(l3d_mean) else None,
-        "zextent_median_um": round(z_med, 3) if np.isfinite(z_med) else None,
+        "zspan_median_um": round(zspan_med, 3) if np.isfinite(zspan_med) else None,
         "score": round(score, 2),
     }
     return score, metrics
@@ -489,12 +673,7 @@ def objective_fn(x, um_per_px, z_step_um):
     global eval_count, best_global_score, results_list
     global images_to_eval, z_values_eval, roi_mask_global
 
-    param_dict = {}
-    for i, (key, lo, hi, is_int) in enumerate(PARAM_SPACE):
-        val = x[i]
-        if is_int:
-            val = int(round(val))
-        param_dict[key] = val
+    param_dict = params_from_vector(x, PARAM_SPACE)
 
     cfg = CONFIG.copy()
     cfg.update(param_dict)
@@ -507,9 +686,10 @@ def objective_fn(x, um_per_px, z_step_um):
     try:
         rows = []
         for img, z_idx in zip(images_to_eval, z_values_eval):
-            seg = segment_slice(img, cfg, z_idx=z_idx, debug_dir=None, roi_mask=roi_mask_global)
+            seg = segment_slice(img, cfg, z_idx=z_idx, debug_dir=None, roi_mask=None)
             meas = measure_spermatids(seg, cfg)
-            rows.extend(rows_from_results(meas["results"], z_idx, um_per_px))
+            results, _ = filter_results_to_roi(meas["results"], meas["skel_label"], roi_mask_global)
+            rows.extend(rows_from_results(results, z_idx, um_per_px))
 
         df_2d = pd.DataFrame(rows)
 
@@ -539,13 +719,108 @@ def objective_fn(x, um_per_px, z_step_um):
             f" | multi={metrics.get('multi_slice', 0)}"
             f" | single={metrics.get('single_slice', 0)}"
             f" | long={metrics.get('n_long', 0)}"
-            f" | zmed={metrics.get('zextent_median_um', 0)}"
+            f" | zspan_med={metrics.get('zspan_median_um', 0)}"
             f" | Lmed={metrics.get('l3d_median_um', 0)}"
         )
         sys.stdout.write(msg + "  \n")
         sys.stdout.flush()
 
     return -score
+
+
+def objective_segmentation_fn(x, um_per_px, min_count_frac, max_count_frac):
+    global eval_count, best_global_score, results_list
+
+    param_dict = params_from_vector(x, SEGMENTATION_PARAM_SPACE)
+    cfg = CONFIG.copy()
+    cfg.update(param_dict)
+
+    old_stdout = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+
+    score = -1e12
+    metrics = {}
+    try:
+        df_2d, per_slice_counts = run_2d_detection(cfg, um_per_px)
+        score, metrics = score_segmentation_run(
+            df_2d,
+            per_slice_counts,
+            min_count_frac=min_count_frac,
+            max_count_frac=max_count_frac,
+        )
+    except Exception as e:
+        score = -1e12
+        metrics = {"error": str(e)}
+
+    sys.stdout.close()
+    sys.stdout = old_stdout
+
+    eval_count += 1
+    record = {"params": param_dict, **metrics}
+    results_list.append(record)
+
+    if score > best_global_score:
+        best_global_score = score
+        msg = (
+            f"\r  Eval {eval_count:4d} | NEW BEST {score:8.1f}"
+            f" | n2d={metrics.get('n_2d', 0)}"
+            f" | count_med={metrics.get('count_median', 0)}"
+            f" | ratio={metrics.get('count_ratio_vs_default', 0)}"
+            f" | Lmed={metrics.get('len_median_um', 0)}"
+            f" | Wmed={metrics.get('width_median_um', 0)}"
+            f" | short={metrics.get('short_frac', 0)}"
+        )
+        sys.stdout.write(msg + "  \n")
+        sys.stdout.flush()
+
+    return -score
+
+
+def save_segmentation_review_panels(outdir, top_records, um_per_px, max_candidates=6):
+    review_dir = outdir / "segmentation_review_panels"
+    ensure_dir(review_dir)
+
+    for cand_idx, record in enumerate(top_records[:max_candidates], start=1):
+        cfg = CONFIG.copy()
+        cfg.update(record.get("params", {}))
+
+        fig, axes = plt.subplots(len(images_to_eval), 2, figsize=(10, max(3, 3 * len(images_to_eval))))
+        if len(images_to_eval) == 1:
+            axes = np.asarray([axes])
+
+        old_stdout = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+        try:
+            for row_idx, (img, z_idx) in enumerate(zip(images_to_eval, z_values_eval)):
+                seg = segment_slice(img, cfg, z_idx=z_idx, debug_dir=None, roi_mask=None)
+                meas = measure_spermatids(seg, cfg)
+                results, skel_label = filter_results_to_roi(meas["results"], meas["skel_label"], roi_mask_global)
+                overlay = make_overlay(img, skel_label)
+
+                axes[row_idx, 0].imshow(normalize_display(img), cmap="gray")
+                axes[row_idx, 0].set_title(f"z{z_idx:02d} raw")
+                axes[row_idx, 0].axis("off")
+
+                axes[row_idx, 1].imshow(overlay)
+                axes[row_idx, 1].set_title(f"z{z_idx:02d} detections n={len(results)}")
+                axes[row_idx, 1].axis("off")
+        finally:
+            sys.stdout.close()
+            sys.stdout = old_stdout
+
+        params = record.get("params", {})
+        title = (
+            f"Candidate {cand_idx} | score={record.get('score')} | "
+            f"Lmed={record.get('len_median_um')} | ratio={record.get('count_ratio_vs_default')}\n"
+            + ", ".join(f"{k}={v}" for k, v in params.items())
+        )
+        fig.suptitle(title, fontsize=9)
+        plt.tight_layout(rect=(0, 0, 1, 0.95))
+        out_path = review_dir / f"candidate_{cand_idx:02d}_segmentation_review.png"
+        fig.savefig(out_path, dpi=160)
+        plt.close(fig)
+
+    return review_dir
 
 
 def cb_generation(xk, convergence):
@@ -557,35 +832,63 @@ def cb_generation(xk, convergence):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def main():
-    global images_to_eval, z_values_eval, roi_mask_global, results_list
+    global images_to_eval, z_values_eval, roi_mask_global, results_list, SEGMENTATION_BASELINE
 
     parser = argparse.ArgumentParser(
-        description="Evolutionary parameter tuner for Saturn V5 tracking"
+        description="Evolutionary parameter tuner for Saturn V5.2 segmentation/tracking"
     )
+    parser.add_argument("--mode", choices=["segmentation", "tracking"], default="tracking",
+                       help="Tune raw 2D detection or 3D tracking parameters (default: tracking)")
     parser.add_argument("--dir", default=None,
                        help="Directory containing .tif/.tiff slices")
     parser.add_argument("--slices", default="0-12",
                        help="Z slices to use for tuning, e.g. 0-12 or 3,5,7-10")
     parser.add_argument("--um-per-px", type=float, default=None,
-                       help="Override calibration (um/px). Defaults to V5 CONFIG.")
+                       help="Override calibration (um/px). Defaults to V5.2 CONFIG.")
     parser.add_argument("--z-step-um", type=float, default=None,
-                       help="Override z-step in µm. Defaults to V5 CONFIG.")
+                       help="Override z-step in um. Defaults to V5.2 CONFIG.")
     parser.add_argument("--new-roi", action="store_true",
                        help="Force drawing a new ROI")
+    parser.add_argument("--roi-mask", default=None,
+                       help="Optional .npy/.tif ROI mask to use for tuning")
+    parser.add_argument("--params", default=None,
+                       help="Optional JSON parameter file to merge into CONFIG before tuning")
     parser.add_argument("--maxiter", type=int, default=10,
                        help="Number of DE generations (default: 10)")
     parser.add_argument("--popsize", type=int, default=8,
                        help="DE population multiplier (default: 8)")
+    parser.add_argument("--no-polish", action="store_true",
+                       help="Disable final local optimizer polishing for faster exploratory runs")
+    parser.add_argument("--seg-min-count-frac", type=float, default=0.55,
+                       help="Segmentation mode: lowest acceptable median per-slice count versus default (default: 0.55)")
+    parser.add_argument("--seg-max-count-frac", type=float, default=1.10,
+                       help="Segmentation mode: highest acceptable median per-slice count versus default (default: 1.10)")
+    parser.add_argument("--review-candidates", type=int, default=6,
+                       help="Segmentation mode: number of top visual review panels to save (default: 6)")
     parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_DIR),
                        help="Folder to save tuning results")
     args = parser.parse_args()
+
+    if args.params:
+        params_path = Path(args.params)
+        if not params_path.exists():
+            print(f"Parameter JSON not found: {params_path}")
+            sys.exit(1)
+        with open(params_path, "r", encoding="utf-8") as f:
+            tuned = json.load(f)
+        applied = 0
+        for key, value in tuned.items():
+            if key in CONFIG:
+                CONFIG[key] = value
+                applied += 1
+        print(f"Loaded {applied} CONFIG values from: {params_path}")
 
     outdir = Path(args.outdir)
     ensure_dir(outdir)
 
     # Update ROI path to follow chosen outdir
     global ROI_SAVE_PATH
-    ROI_SAVE_PATH = outdir / "last_drawn_roi_saturnv5_tune.tif"
+    ROI_SAVE_PATH = outdir / "last_drawn_roi_saturnv5_2_tune.tif"
 
     base_dir = args.dir
     slice_str = args.slices
@@ -648,34 +951,77 @@ def main():
         z_values_eval.append(z_val)
 
     print(f"\nLoaded {len(images_to_eval)} images for optimization: z={z_values_eval}")
-    roi_mask_global = build_roi(images_to_eval, force_redraw=args.new_roi, interactive_prompt=(args.dir is None))
+    if args.roi_mask:
+        roi_mask_global = load_roi_mask_file(args.roi_mask, expected_shape=images_to_eval[0].shape)
+        tifffile.imwrite(str(ROI_SAVE_PATH), roi_mask_global.astype(np.uint8) * 255)
+        print(f"Loaded ROI mask for tuning: {args.roi_mask}")
+        print(f"Saved tuner ROI copy: {ROI_SAVE_PATH}")
+    else:
+        roi_mask_global = build_roi(images_to_eval, force_redraw=args.new_roi, interactive_prompt=(args.dir is None))
 
-    bounds = [(lo, hi) for (_, lo, hi, _) in PARAM_SPACE]
+    if args.mode == "segmentation":
+        baseline_cfg = CONFIG.copy()
+        print("\nComputing default 2D segmentation baseline for guardrails...")
+        old_stdout = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+        try:
+            df_base, base_counts = run_2d_detection(baseline_cfg, um_per_px)
+        finally:
+            sys.stdout.close()
+            sys.stdout = old_stdout
+        SEGMENTATION_BASELINE = {
+            "n_2d": int(len(df_base)),
+            "count_median": safe_median(base_counts, default=0.0),
+            "count_mean": safe_mean(base_counts, default=0.0),
+            "len_median_um": safe_median(df_base["length_um_geodesic"]) if not df_base.empty else np.nan,
+        }
+        print(
+            "Baseline: "
+            f"n2d={SEGMENTATION_BASELINE['n_2d']}, "
+            f"count_med={SEGMENTATION_BASELINE['count_median']:.1f}, "
+            f"Lmed={SEGMENTATION_BASELINE['len_median_um']:.3f} um"
+        )
+        active_space = SEGMENTATION_PARAM_SPACE
+        objective = objective_segmentation_fn
+        objective_args = (um_per_px, args.seg_min_count_frac, args.seg_max_count_frac)
+        mode_label = "SEGMENTATION"
+        scoring_note = (
+            "Scoring bias: improve 2D shape plausibility while staying within "
+            f"{args.seg_min_count_frac:.2f}-{args.seg_max_count_frac:.2f}x default slice density"
+        )
+    else:
+        active_space = PARAM_SPACE
+        objective = objective_fn
+        objective_args = (um_per_px, z_step_um)
+        mode_label = "TRACKING"
+        scoring_note = "Scoring bias: preserve plausible single-slice nuclei; penalize over-merges"
+
+    bounds = [(lo, hi) for (_, lo, hi, _) in active_space]
 
     x0 = []
-    print("\nSeed parameters (from V5 CONFIG):")
-    for key, lo, hi, is_int in PARAM_SPACE:
+    print("\nSeed parameters (from V5.2 CONFIG):")
+    for key, lo, hi, is_int in active_space:
         val = CONFIG.get(key, (lo + hi) / 2)
         val = max(lo, min(hi, val))
         x0.append(val)
         print(f"  {key:45s} = {val}  (bounds: [{lo}, {hi}])")
 
-    n_params = len(PARAM_SPACE)
+    n_params = len(active_space)
     total_evals_est = args.maxiter * args.popsize * n_params
 
     print(f"\n{'='*78}")
-    print("  EVOLUTIONARY PARAMETER TUNING (V5 BIOLOGY- / HARDWARE-AWARE)")
+    print(f"  EVOLUTIONARY {mode_label} PARAMETER TUNING (V5.2)")
     print(f"  Parameters:   {n_params}")
     print(f"  Generations:  {args.maxiter}")
     print(f"  Pop size:     {args.popsize} x {n_params} = {args.popsize * n_params}")
     print(f"  Est. evals:   ~{total_evals_est}")
-    print("  Scoring bias: preserve plausible single-slice nuclei; penalize over-merges")
+    print(f"  {scoring_note}")
     print(f"{'='*78}\n")
 
     t0 = time.time()
     result = differential_evolution(
-        func=objective_fn,
-        args=(um_per_px, z_step_um),
+        func=objective,
+        args=objective_args,
         bounds=bounds,
         x0=x0,
         maxiter=args.maxiter,
@@ -684,7 +1030,7 @@ def main():
         recombination=0.7,
         callback=cb_generation,
         disp=False,
-        polish=True,
+        polish=not args.no_polish,
         seed=42,
     )
     dt = time.time() - t0
@@ -692,7 +1038,7 @@ def main():
     print(f"\nOptimization finished in {dt:.0f}s across {eval_count} evaluations.")
 
     best_params = {}
-    for i, (key, lo, hi, is_int) in enumerate(PARAM_SPACE):
+    for i, (key, lo, hi, is_int) in enumerate(active_space):
         val = result.x[i]
         if is_int:
             val = int(round(val))
@@ -702,6 +1048,11 @@ def main():
 
     results_list.sort(key=lambda d: d.get("score", -1e18), reverse=True)
     best = results_list[0]
+    safe_tracking_results = []
+    safe_tracking_best = None
+    if args.mode == "tracking":
+        safe_tracking_results = [r for r in results_list if is_safe_tracking_candidate(r)]
+        safe_tracking_best = safe_tracking_results[0] if safe_tracking_results else None
 
     print("\n" + "=" * 78)
     print("  BEST PARAMETERS FOUND")
@@ -718,14 +1069,24 @@ def main():
         print(f"  {key:45s} = {val}{delta}")
 
     print("\nBest metrics:")
-    for k in [
-        "n_tracks", "multi_slice", "total_linked", "avg_depth",
-        "single_slice", "n_long", "n_tort", "n_thick", "n_taper",
-        "l3d_median_um", "l3d_mean_um", "zextent_median_um", "score"
-    ]:
+    if args.mode == "segmentation":
+        metric_keys = [
+            "n_2d", "count_median", "count_mean", "count_ratio_vs_default",
+            "count_cv", "len_median_um", "len_mean_um", "width_median_um",
+            "lwr_median", "short_frac", "very_long_frac", "wide_frac",
+            "low_lwr_frac", "tort_frac", "score"
+        ]
+    else:
+        metric_keys = [
+            "n_tracks", "multi_slice", "total_linked", "avg_depth",
+            "single_slice", "n_long", "n_tort", "n_thick", "n_taper",
+            "n_stopped", "stop_frac", "n_overlap_unstable", "overlap_unstable_frac",
+            "l3d_median_um", "l3d_mean_um", "zspan_median_um", "score"
+        ]
+    for k in metric_keys:
         print(f"  {k:24s}: {best.get(k)}")
 
-    existing = sorted(outdir.glob("best_params_v5_*.json"))
+    existing = sorted(outdir.glob(f"best_{args.mode}_params_v5_2_*.json"))
     next_num = 1
     if existing:
         for ep in existing:
@@ -735,42 +1096,93 @@ def main():
             except ValueError:
                 pass
 
-    best_param_filename = f"best_params_v5_{next_num:03d}.json"
+    best_param_filename = f"best_{args.mode}_params_v5_2_{next_num:03d}.json"
     best_param_path = outdir / best_param_filename
     with open(best_param_path, 'w', encoding='utf-8') as f:
         json.dump(best_params, f, indent=2)
     print(f"\n[OK] Best parameters saved: {best_param_path}")
 
-    history_path = outdir / "tuning_results_saturnv5.json"
+    safe_param_filename = None
+    safe_param_path = None
+    if args.mode == "tracking":
+        safe_candidates_path = outdir / f"safe_tracking_candidates_v5_2_{next_num:03d}.json"
+        with open(safe_candidates_path, "w", encoding="utf-8") as f:
+            json.dump(safe_tracking_results[:10], f, indent=2)
+        print(f"[OK] Safe tracking candidates: {safe_candidates_path}")
+
+        if safe_tracking_best:
+            safe_params = safe_tracking_best.get("params", {})
+            safe_param_filename = f"best_safe_tracking_params_v5_2_{next_num:03d}.json"
+            safe_param_path = outdir / safe_param_filename
+            with open(safe_param_path, "w", encoding="utf-8") as f:
+                json.dump(safe_params, f, indent=2)
+            if safe_tracking_best is best:
+                print(f"[OK] Raw best also passes continuity guardrails: {safe_param_path}")
+            else:
+                print(f"[OK] Best safe tracking parameters saved: {safe_param_path}")
+                print("     Raw best was kept too, but safe best is preferred for review/use.")
+        else:
+            print("[WARN] No tracking candidate passed continuity guardrails.")
+
+    history_path = outdir / f"tuning_results_saturnv5_2_{args.mode}.json"
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(results_list, f, indent=2)
     print(f"[OK] Full search history: {history_path}")
 
-    summary_path = outdir / "tuning_summary_saturnv5.txt"
+    if args.mode == "segmentation":
+        review_dir = save_segmentation_review_panels(
+            outdir,
+            results_list,
+            um_per_px,
+            max_candidates=max(0, args.review_candidates),
+        )
+        print(f"[OK] Segmentation visual review panels: {review_dir}")
+
+    summary_path = outdir / f"tuning_summary_saturnv5_2_{args.mode}.txt"
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write("SATURN V5 TRACKING TUNING SUMMARY\n")
+        f.write(f"SATURN V5.2 {mode_label} TUNING SUMMARY\n")
         f.write("=" * 72 + "\n")
+        f.write(f"Mode: {args.mode}\n")
         f.write(f"Output directory: {outdir}\n")
         f.write(f"Images tuned: {len(images_to_eval)} | z={z_values_eval}\n")
         f.write(f"Calibration: {um_per_px:.6f} um/px | z-step: {z_step_um:.6f} um\n")
+        if args.mode == "segmentation":
+            f.write("\nDefault baseline guardrails:\n")
+            for key, val in SEGMENTATION_BASELINE.items():
+                f.write(f"  {key}: {val}\n")
+            f.write(f"  min_count_frac: {args.seg_min_count_frac}\n")
+            f.write(f"  max_count_frac: {args.seg_max_count_frac}\n")
         f.write("\nBest parameters:\n")
         for key, val in best_params.items():
             f.write(f"  {key}: {val}\n")
         f.write("\nBest metrics:\n")
-        for k in [
-            "n_tracks", "multi_slice", "total_linked", "avg_depth",
-            "single_slice", "n_long", "n_tort", "n_thick", "n_taper",
-            "l3d_median_um", "l3d_mean_um", "zextent_median_um", "score"
-        ]:
+        for k in metric_keys:
             f.write(f"  {k}: {best.get(k)}\n")
+        if args.mode == "tracking":
+            f.write("\nContinuity guardrails:\n")
+            f.write("  safe candidate rule: zspan_median_um >= 0.5 and single_frac <= 0.52\n")
+            f.write(f"  safe candidates found: {len(safe_tracking_results)}\n")
+            if safe_tracking_best:
+                f.write("  Best safe metrics:\n")
+                for k in metric_keys:
+                    f.write(f"    {k}: {safe_tracking_best.get(k)}\n")
+                f.write(f"  Best safe parameter file: {safe_param_path}\n")
         f.write("\nBiology / hardware note:\n")
-        f.write("  This V5 tuner preserves biologically plausible single-slice nuclei for this Leica\n")
-        f.write("  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.\n")
+        if args.mode == "segmentation":
+            f.write("  Segmentation tuning is a candidate-selection aid, not ground truth.\n")
+            f.write("  Review saved overlay panels before accepting a parameter set.\n")
+        else:
+            f.write("  This V5.2 tuner preserves biologically plausible single-slice nuclei for this Leica\n")
+            f.write("  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.\n")
     print(f"[OK] Summary text file: {summary_path}")
 
     print("\nTo use these parameters:")
-    print(f"  GUI: Click 'Load Tuned Params' -> select {best_param_filename}")
-    print(f"  CLI: python sperm_segmentation_saturnv5.1.py --batch --params \"{best_param_path}\"")
+    if args.mode == "tracking" and safe_param_filename:
+        print(f"  GUI: Click 'Load Tuned Params' -> select {safe_param_filename}")
+        print(f"  CLI: python sperm_segmentation_saturnv5.2.py --batch --params \"{safe_param_path}\"")
+    else:
+        print(f"  GUI: Click 'Load Tuned Params' -> select {best_param_filename}")
+        print(f"  CLI: python sperm_segmentation_saturnv5.2.py --batch --params \"{best_param_path}\"")
 
 
 if __name__ == "__main__":

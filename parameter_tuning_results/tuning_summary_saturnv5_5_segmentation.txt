@@ -1,0 +1,45 @@
+SATURN V5.5 HYBRID SEGMENTATION TUNING SUMMARY
+========================================================================
+Mode: segmentation
+Output directory: parameter_tuning_results
+Images tuned: 6 | z=[35, 36, 37, 38, 39, 40]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Default baseline guardrails:
+  n_2d: 5231
+  count_median: 875.5
+  count_mean: 871.8333333333334
+  len_median_um: 7.309
+  min_count_frac: 0.75
+  max_count_frac: 1.1
+
+Best parameters:
+  THRESHOLD_HI: 83.1669
+  THRESHOLD_LO: 75.6983
+  MIN_OBJ_PX: 5
+  MAX_BRIDGE_PX: 7
+  MIN_SKEL_LEN_PX: 7.8359
+  MAX_WIDTH_PX: 8.7975
+  MIN_LENGTH_WIDTH_RATIO: 2.0761
+  MAX_TORTUOSITY: 3.3706
+
+Best metrics:
+  n_2d: 3977
+  count_median: 665.0
+  count_mean: 662.83
+  count_ratio_vs_default: 0.7596
+  count_cv: 0.0452
+  len_median_um: 9.266
+  len_mean_um: 10.728
+  width_median_um: 1.827
+  lwr_median: 4.743
+  short_frac: 0.1881
+  very_long_frac: 0.079
+  wide_frac: 0.122
+  low_lwr_frac: 0.0825
+  tort_frac: 0.0184
+  score: -151.15
+
+Biology / hardware note:
+  Segmentation tuning is a candidate-selection aid, not ground truth.
+  Review saved overlay panels before accepting a parameter set.

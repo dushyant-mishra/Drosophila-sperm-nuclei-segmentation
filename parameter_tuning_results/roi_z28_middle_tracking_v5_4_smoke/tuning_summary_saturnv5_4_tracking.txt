@@ -1,0 +1,52 @@
+SATURN V5.4 HYBRID TRACKING TUNING SUMMARY
+========================================================================
+Mode: tracking
+Output directory: parameter_tuning_results\roi_z28_middle_tracking_v5_4_smoke
+Images tuned: 3 | z=[28, 29, 30]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Best parameters:
+  TRACK_MAX_DIST_UM: 6.8711
+  ASSIGNMENT_DIST_WEIGHT: 1.0
+  ASSIGNMENT_OVERLAP_WEIGHT: 2.0
+  ASSIGNMENT_LENGTH_WEIGHT: 2.0
+  ASSIGNMENT_WIDTH_WEIGHT: 1.2
+  ASSIGNMENT_AREA_WEIGHT: 1.0
+  ASSIGNMENT_ANGLE_WEIGHT: 0.4
+  HYBRID_REPAIR_MAX_COST: 3.6
+  HYBRID_REPAIR_MAX_GAP_SLICES: 1
+  HYBRID_REPAIR_MAX_FRAGMENT_SLICES: 2
+  HYBRID_REPAIR_MAX_LINK_DIST_UM: 4.8
+  HYBRID_REPAIR_MIN_OVERLAP: 0.05
+  HYBRID_REPAIR_MAX_FINAL_LENGTH_UM: 15.0
+  TRACKING_BACKEND: hybrid_repair
+
+Best metrics:
+  n_tracks: 963
+  multi_slice: 376
+  total_linked: 833
+  avg_depth: 2.22
+  single_slice: 587
+  n_long: 180
+  n_tort: 85
+  n_thick: 453
+  n_taper: 141
+  long_frac: 0.1869
+  thick_frac: 0.4704
+  taper_frac: 0.1464
+  n_stopped: 0
+  stop_frac: 0.0
+  n_overlap_unstable: 0
+  overlap_unstable_frac: 0.0
+  l3d_median_um: 10.416
+  l3d_mean_um: 11.802
+  zspan_median_um: 0.0
+  score: -933.36
+
+Continuity guardrails:
+  safe candidate rule: zspan_median_um >= 0.5, single_frac <= 0.52, l3d_median_um <= 11.6, l3d_mean_um <= 12.9, taper_frac <= 0.40
+  safe candidates found: 0
+
+Biology / hardware note:
+  This V5.4 hybrid tuner preserves biologically plausible single-slice nuclei for this Leica
+  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.

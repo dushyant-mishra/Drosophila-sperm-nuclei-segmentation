@@ -2,13 +2,17 @@
 gemini_api_key.txt
 
 # Environment and Build
+.venv/
 venv/
 __pycache__/
+*.pyc
+*.pyo
 build/
 dist/
 .vscode/
 
 # Temporary and Large Files
+*.log
 *.tif
 *.png
 sperm_error_log.txt
@@ -17,3 +21,13 @@ run.bat
 run_gui.bat
 *.bat
 *.zip
+
+# Generated analysis outputs
+batch_output/
+batch_output*/
+sperm_results_saturnv*/
+scratch/
+parameter_tuning_results/**/segmentation_review_panels/
+parameter_tuning_results/**/last_drawn_roi*.tif
+parameter_tuning_results/**/tuning_results*.json
+parameter_tuning_results/**/run_*/

@@ -1,0 +1,90 @@
+SATURN V5.5 HYBRID TRACKING TUNING SUMMARY
+========================================================================
+Mode: tracking
+Output directory: C:\Users\dmishra\Desktop\sperm_project\parameter_tuning_results
+Images tuned: 6 | z=[35, 36, 37, 38, 39, 40]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Best parameters:
+  TRACK_MAX_DIST_UM: 6.5525
+  ASSIGNMENT_DIST_WEIGHT: 1.2914
+  ASSIGNMENT_OVERLAP_WEIGHT: 2.0364
+  ASSIGNMENT_LENGTH_WEIGHT: 2.1782
+  ASSIGNMENT_WIDTH_WEIGHT: 1.174
+  ASSIGNMENT_AREA_WEIGHT: 1.2227
+  ASSIGNMENT_ANGLE_WEIGHT: 0.3887
+  HYBRID_REPAIR_MAX_COST: 5.0517
+  HYBRID_REPAIR_MAX_GAP_SLICES: 0
+  HYBRID_REPAIR_MAX_FRAGMENT_SLICES: 2
+  HYBRID_REPAIR_MAX_LINK_DIST_UM: 5.2906
+  HYBRID_REPAIR_MIN_OVERLAP: 0.0
+  HYBRID_REPAIR_MAX_FINAL_LENGTH_UM: 14.6448
+  TRACKING_BACKEND: hybrid_repair
+
+Best metrics:
+  n_tracks: 2722
+  single_slice: 1310
+  multi_slice: 1412
+  single_frac: 0.4813
+  multi_frac: 0.5187
+  n_biological_candidates: 2301
+  candidate_frac: 0.8453
+  n_quality: 1024
+  quality_frac: 0.3762
+  n_warning_only: 1277
+  warning_only_frac: 0.4691
+  n_hard_fail: 421
+  hard_fail_frac: 0.1547
+  n_invalid: 2
+  invalid_frac: 0.0007
+  n_stopped: 0
+  stop_frac: 0.0
+  n_overlap_unstable: 0
+  overlap_unstable_frac: 0.0
+  l3d_median_um: 8.379
+  l3d_mean_um: 9.274
+  zspan_all_median_um: 1.04
+  zspan_multi_median_um: 2.081
+  pitch_multi_mean_deg: 29.483
+  pitch_multi_median_deg: 24.905
+  taper_multi_mean: 1.801
+  taper_multi_median: 1.563
+  score: 1871.25
+
+Continuity guardrails:
+  safe candidate rule: zspan_multi_median_um >= 1.0, single_frac <= 0.65, l3d_median_um in [8.0, 12.0], l3d_mean_um <= 13.2, hard_fail_frac <= 0.42, candidate_frac >= 0.55, invalid_frac <= 0.01
+  safe candidates found: 222
+  Best safe metrics:
+    n_tracks: 2722
+    single_slice: 1310
+    multi_slice: 1412
+    single_frac: 0.4813
+    multi_frac: 0.5187
+    n_biological_candidates: 2301
+    candidate_frac: 0.8453
+    n_quality: 1024
+    quality_frac: 0.3762
+    n_warning_only: 1277
+    warning_only_frac: 0.4691
+    n_hard_fail: 421
+    hard_fail_frac: 0.1547
+    n_invalid: 2
+    invalid_frac: 0.0007
+    n_stopped: 0
+    stop_frac: 0.0
+    n_overlap_unstable: 0
+    overlap_unstable_frac: 0.0
+    l3d_median_um: 8.379
+    l3d_mean_um: 9.274
+    zspan_all_median_um: 1.04
+    zspan_multi_median_um: 2.081
+    pitch_multi_mean_deg: 29.483
+    pitch_multi_median_deg: 24.905
+    taper_multi_mean: 1.801
+    taper_multi_median: 1.563
+    score: 1871.25
+  Best safe parameter file: C:\Users\dmishra\Desktop\sperm_project\parameter_tuning_results\best_safe_tracking_params_v5_5_001.json
+
+Biology / hardware note:
+  This V5.5 hybrid tuner preserves biologically plausible single-slice nuclei for this Leica
+  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.

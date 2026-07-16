@@ -33,7 +33,7 @@ If omitted, --dir defaults to the current folder.
 
 Optional threshold overrides
 ----------------------------
-python audit_sperm_outliers.py --dir "..." --length-thresh 20 --tort-thresh 2.0 --thick-thresh 2.2 --taper-thresh 2.5
+python audit_sperm_outliers.py --dir "..." --length-thresh 20 --tort-thresh 2.0 --thick-thresh 2.2 --taper-thresh 2.5 --min-slices 2
 """
 
 import os
@@ -60,11 +60,12 @@ def ensure_dir(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default=".", help="Folder containing track_summary.csv and measurements_with_tracks.csv")
-    parser.add_argument("--length-thresh", type=float, default=15.0, help="Flag tracks longer than this (µm)")
+    parser.add_argument("--length-thresh", type=float, default=15.0, help="Flag tracks longer than this (um)")
     parser.add_argument("--tort-thresh", type=float, default=1.5, help="Flag tracks more tortuous than this")
-    parser.add_argument("--thick-thresh", type=float, default=2.0, help="Flag tracks thicker than this (µm)")
+    parser.add_argument("--thick-thresh", type=float, default=2.0, help="Flag tracks thicker than this (um)")
     parser.add_argument("--taper-thresh", type=float, default=1.5, help="Flag tracks with taper ratio above this")
-    parser.add_argument("--single-slice-max", type=float, default=1.0, help="Flag tracks with n_slices <= this")
+    parser.add_argument("--min-slices", type=int, default=1, help="Flag tracks with n_slices below this value. Default 1 matches Saturn V5.2, where single-slice tracks are allowed.")
+    parser.add_argument("--single-slice-max", type=float, default=None, help="Legacy override: flag tracks with n_slices <= this value.")
     parser.add_argument("--topn", type=int, default=50, help="Top N examples per class")
     args = parser.parse_args()
 
@@ -136,7 +137,12 @@ def main():
     tracks["flag_tortuous"] = tracks[tort_col] > args.tort_thresh
     tracks["flag_thick"] = tracks[thick_col] > args.thick_thresh
     tracks["flag_taper"] = tracks[taper_col] > args.taper_thresh
-    tracks["flag_single_slice"] = tracks[nslices_col] <= args.single_slice_max
+    if args.single_slice_max is not None:
+        tracks["flag_single_slice"] = tracks[nslices_col] <= args.single_slice_max
+        single_slice_rule = f"n_slices <= {args.single_slice_max} (legacy --single-slice-max override)"
+    else:
+        tracks["flag_single_slice"] = tracks[nslices_col] < args.min_slices
+        single_slice_rule = f"n_slices < {args.min_slices}"
 
     # Count number of flags per track
     flag_cols = ["flag_long", "flag_tortuous", "flag_thick", "flag_taper", "flag_single_slice"]
@@ -228,7 +234,7 @@ def main():
     summary_lines.append(f"  tortuosity > {args.tort_thresh}")
     summary_lines.append(f"  thickness > {args.thick_thresh}")
     summary_lines.append(f"  taper > {args.taper_thresh}")
-    summary_lines.append(f"  n_slices <= {args.single_slice_max}")
+    summary_lines.append(f"  {single_slice_rule}")
     summary_lines.append("")
     summary_lines.append("Counts:")
     summary_lines.append(f"  Long outliers:         {len(long_outliers)}")

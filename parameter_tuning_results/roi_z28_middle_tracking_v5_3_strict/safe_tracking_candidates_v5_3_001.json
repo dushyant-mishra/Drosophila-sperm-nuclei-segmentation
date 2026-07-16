@@ -1,0 +1,36 @@
+[
+  {
+    "params": {
+      "TRACK_MAX_DIST_UM": 6.8711,
+      "ASSIGNMENT_MAX_COST": 7.199999999999999,
+      "ASSIGNMENT_DIST_WEIGHT": 0.9999999999999999,
+      "ASSIGNMENT_OVERLAP_WEIGHT": 2.0,
+      "ASSIGNMENT_LENGTH_WEIGHT": 2.0,
+      "ASSIGNMENT_WIDTH_WEIGHT": 1.2,
+      "ASSIGNMENT_AREA_WEIGHT": 1.0,
+      "ASSIGNMENT_ANGLE_WEIGHT": 0.3999999999999999
+    },
+    "n_2d": 2380,
+    "n_tracks": 1275,
+    "multi_slice": 647,
+    "total_linked": 1752,
+    "avg_depth": 2.71,
+    "single_slice": 628,
+    "single_frac": 0.4925,
+    "n_long": 283,
+    "n_tort": 99,
+    "n_thick": 689,
+    "n_taper": 381,
+    "long_frac": 0.222,
+    "thick_frac": 0.5404,
+    "taper_frac": 0.2988,
+    "n_stopped": 242,
+    "stop_frac": 0.1898,
+    "n_overlap_unstable": 0,
+    "overlap_unstable_frac": 0.0,
+    "l3d_median_um": 10.963,
+    "l3d_mean_um": 12.299,
+    "zspan_median_um": 1.04,
+    "score": -1089.21
+  }
+]

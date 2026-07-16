@@ -1,0 +1,63 @@
+SATURN V5.2 TRACKING TUNING SUMMARY
+========================================================================
+Mode: tracking
+Output directory: parameter_tuning_results\roi_z28_middle_tracking
+Images tuned: 5 | z=[28, 29, 30, 31, 32]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Best parameters:
+  OVERLAP_STABILITY_THRESHOLD: 0.2952
+  OVERLAP_ORIENTATION_DEG: 14.8737
+  OVERLAP_MULTIPLIER: 1.5735
+  TRACK_MAX_DIST_UM: 5.0697
+  TRACK_BBOX_PADDING_PX: 3
+  CONSERVATIVE_MAX_WIDTH_JUMP_RATIO: 0.6014
+  CONSERVATIVE_MAX_LENGTH_JUMP_RATIO: 0.6715
+  CONSERVATIVE_MAX_AREA_JUMP_RATIO: 0.5799
+  CONSERVATIVE_MAX_CENTROID_JUMP_UM: 9.9239
+
+Best metrics:
+  n_tracks: 1236
+  multi_slice: 658
+  total_linked: 1802
+  avg_depth: 2.74
+  single_slice: 578
+  n_long: 306
+  n_tort: 109
+  n_thick: 711
+  n_taper: 359
+  n_stopped: 576
+  stop_frac: 0.466
+  n_overlap_unstable: 334
+  overlap_unstable_frac: 0.2702
+  l3d_median_um: 11.3
+  l3d_mean_um: 12.599
+  zspan_median_um: 1.04
+  score: -666.68
+
+Continuity guardrails:
+  safe candidate rule: zspan_median_um >= 0.5 and single_frac <= 0.52
+  safe candidates found: 2
+  Best safe metrics:
+    n_tracks: 1236
+    multi_slice: 658
+    total_linked: 1802
+    avg_depth: 2.74
+    single_slice: 578
+    n_long: 306
+    n_tort: 109
+    n_thick: 711
+    n_taper: 359
+    n_stopped: 576
+    stop_frac: 0.466
+    n_overlap_unstable: 334
+    overlap_unstable_frac: 0.2702
+    l3d_median_um: 11.3
+    l3d_mean_um: 12.599
+    zspan_median_um: 1.04
+    score: -666.68
+  Best safe parameter file: parameter_tuning_results\roi_z28_middle_tracking\best_safe_tracking_params_v5_2_004.json
+
+Biology / hardware note:
+  This V5.2 tuner preserves biologically plausible single-slice nuclei for this Leica
+  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.

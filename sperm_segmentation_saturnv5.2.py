@@ -1,4 +1,4 @@
-# --- v12.1 ROBUST LOGGING SYSTEM (macOS STABILITY PATCH) ---
+# --- ROBUST LOGGING SYSTEM (macOS STABILITY PATCH) ---
 import os
 import sys
 
@@ -26,13 +26,13 @@ class Tee(object):
 
 sys.stdout = Tee(sys.stdout, f_log)
 sys.stderr = Tee(sys.stderr, f_log)
-print(f"\n--- NEW SESSION STARTED (v5.1): {os.path.basename(__file__)} ---")
+print(f"\n--- NEW SESSION STARTED (v5.2): {os.path.basename(__file__)} ---")
 print(f"Log Path: {log_file_path}\n")
 # ---------------------------------
 
 #!/usr/bin/env python3
 """
-Sperm Nucleus Segmentation & 3D Morphometrics Pipeline  —  Saturn Project
+Sperm Nucleus Segmentation & 3D Morphometrics Pipeline  -  Saturn Project
 =========================================================================
 A production-ready image-analysis pipeline for automated detection,
 measurement, and 3D reconstruction of sperm nuclei tailored to
@@ -40,22 +40,22 @@ the *Saturn* experimental dataset acquired on the Leica confocal system.
 
 Biological context
 ------------------
-Spermiogenesis — the post-meiotic differentiation of round spermatids into
-mature spermatozoa — involves dramatic nuclear elongation, chromatin condensation,
+Spermiogenesis - the post-meiotic differentiation of round spermatids into
+mature spermatozoa - involves dramatic nuclear elongation, chromatin condensation,
 and apical plunging of the nucleus toward the basal lamina of the seminiferous
 tubule.  Quantifying these morphological changes requires imaging the highly
 elongated, condensed sperm nuclei.  This pipeline automates the process by:
 
 1. Detecting sperm nuclei as thin, dim, ridge-like objects in each 2D
-   Z-slice using a skeleton-first strategy (Frangi ridge filter → Otsu
-   binarisation → morphological closing → geodesic skeleton).
-2. Measuring per-cell biometrics: geodesic length (µm), Euclidean width,
-   tortuosity, endpoint count, branch complexity, centroid, and area.
-3. Linking detections across Z-slices into 3D tracks using a nearest-neighbour
-   frame-to-frame assignment algorithm.
-4. Computing 3D morphometrics from tracks: true 3D length, Z-extent,
-   approximated volume, pitch angle, taper ratio, and nearest-neighbour
-   packing density.
+   Z-slice using a skeleton-first strategy (Frangi ridge filter -> Otsu
+   binarisation -> morphological closing -> geodesic skeleton).
+2. Measuring per-cell biometrics: geodesic length (um), Euclidean width,
+   tortuosity, endpoint count, branch complexity, centroid, and estimated area.
+3. Linking detections across Z-slices into 3D tracks using nearest-neighbor and
+   overlap-aware frame-to-frame assignment.
+4. Computing 3D morphometrics from tracks: estimated 3D length, Z-span,
+   sampled Z-coverage, approximated volume, pitch angle, taper ratio, and
+   nearest-neighbor packing density.
 5. Exporting results as CSV, a multi-sheet Excel workbook, a multi-page PDF
    report, and a native PowerPoint (.pptx) dashboard with editable charts.
 
@@ -64,46 +64,42 @@ Saturn-specific calibration
 Physical scale factors are derived from Leica confocal metadata for the
 Saturn dataset:
 
-- ``UM_PER_PX_XY  = 0.7568``  µm/pixel  (lateral resolution)
-- ``UM_PER_SLICE_Z = 1.0404``  µm/slice  (z-step size)
+- ``UM_PER_PX_XY  = 0.7568``  um/pixel  (lateral resolution)
+- ``UM_PER_SLICE_Z = 1.0404``  um/slice  (z-step size)
 
 These values are set as defaults in ``CONFIG`` and can be overridden via
 the Parameter Editor GUI or by loading a JSON settings file.
+
+v5.2 measurement notes
+----------------------
+``area_px`` is an estimated slender-object area, computed as 2D geodesic
+length times median width. The raw skeleton-pixel count is exported separately
+as ``skeleton_area_px`` for audit/debug use.
+
+3D length is a projection-length-plus-Z-span estimate:
+``sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)``.  ``z_span_um`` is
+endpoint-to-endpoint vertical span; ``z_covered_um`` is the sampled slab
+coverage including both end slices. Volume, effective thickness, taper, and
+other width/area-derived metrics are PSF- and sampling-sensitive, so use them
+mainly for relative comparisons under matched imaging settings.
 
 Pipeline architecture
 ---------------------
 ::
 
     Image stack (TIF / PNG / JPG)
-          │
-          ▼
-    load_batch_files()  ────────────────────── natural-sorted file list
-          │
-    ┌─────┴──────────────────────────────────────────────────────────┐
-    │  Per-slice loop  (process_batch → process_one_image)           │
-    │                                                                 │
-    │  robust_imread()   →  segment_slice()  →  measure_spermatids() │
-    │       │                    │                     │              │
-    │   raw ndarray        mask / skel / ridge    list[dict]           │
-    │                            │                     │              │
-    │                     make_overlay()        rows_from_results()   │
-    │                            │                     │              │
-    │                      overlay PNG              per-slice CSV     │
-    └─────────────────────────────────────────────────────────────────┘
-          │
-    track_across_slices()  ──── 3D track DataFrame
-          │
-    ┌─────┴──────────────────────────────────────────────────────────┐
-    │  Reporting                                                      │
-    │  generate_excel_report()  →  multi-sheet XLSX workbook         │
-    │  generate_batch_report()  →  multi-page PDF (matplotlib)       │
-    │  generate_pptx_report()   →  native Office PPTX dashboard      │
-    └─────────────────────────────────────────────────────────────────┘
+        -> load_batch_files()
+        -> process_batch() / process_one_image()
+        -> segment_slice()
+        -> measure_spermatids()
+        -> rows_from_results()
+        -> track_across_slices()
+        -> generate_excel_report() / generate_batch_report() / generate_pptx_report()
 
 Key configuration parameters (``CONFIG`` dict)
 -----------------------------------------------
-``UM_PER_PX_XY``       Physical pixel size in µm (Leica metadata: 0.7568).
-``UM_PER_SLICE_Z``     Z-step size in µm (Leica metadata: 1.0404).
+``UM_PER_PX_XY``       Physical pixel size in um (Leica metadata: 0.7568).
+``UM_PER_SLICE_Z``     Z-step size in um (Leica metadata: 1.0404).
 ``FRANGI_SCALE_RANGE`` Tubeness filter scales (px); set to match sperm nucleus width.
 ``MIN_SKEL_LEN_PX``    Minimum skeleton length accepted (removes debris/noise).
 ``MAX_WIDTH_PX``       Maximum skeleton width accepted (rejects merged clusters).
@@ -116,15 +112,15 @@ Usage
 -----
 Launch the interactive GUI (recommended)::
 
-    python sperm_segmentation_saturn.py
+    python sperm_segmentation_saturnv5.2.py
 
 Run a headless batch analysis::
 
-    python sperm_segmentation_saturn.py --batch
+    python sperm_segmentation_saturnv5.2.py --batch
 
-Analyse a single slice::
+Analyze a single slice::
 
-    python sperm_segmentation_saturn.py --single --z 4
+    python sperm_segmentation_saturnv5.2.py --single --z 4
 
 Dependencies
 ------------
@@ -138,7 +134,7 @@ Dushyant Mishra  |  Findlay Lab  |  Saturn Dataset Branch
 
 import os, sys, glob, re, time, warnings, heapq, argparse, math, pathlib as pl
 import time as _t
-import json, webbrowser, threading
+import json, webbrowser, threading, subprocess
 try:
     import requests
     _HAVE_REQUESTS = True
@@ -176,60 +172,61 @@ except ImportError:
 # =============================================================================
 
 CONFIG = {
-    # ── run mode ─────────────────────────────────────────────────────────────
+    # ------ run mode ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     "RUN_MODE": "single",          # "single" | "batch"
 
-    # ── single-image selection ────────────────────────────────────────────────
+    # ------ single-image selection ------------------------------------------------------------------------------------------------------------------------------------------------
     "SINGLE_IMAGE_SELECTION_MODE": "dialog",  # "path" | "z_index" | "dialog"
     "SINGLE_TEST_IMAGE": r"C:\Users\dmishra\Desktop\sperm images\Project001_Series002_z15_ch00.tif",
     "SINGLE_Z_INDEX": 15,
 
-    # ── input / output ────────────────────────────────────────────────────────
+    # ------ input / output ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     "INPUT_DIR":    ".",
     "OUTPUT_DIR":   "./sperm_results_saturnv2",
     "FILE_PATTERN": "Project001_Series002_z*_ch00.tif",
+    "ROI_MASK_PATH": "",
 
-    # ── calibration ───────────────────────────────────────────────────────────
+    # ------ calibration ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     "UM_PER_PX_XY":   0.756836,
     "UM_PER_SLICE_Z": 1.040460,
 
-    # ── image enhancement ─────────────────────────────────────────────────────
+    # ------ image enhancement ---------------------------------------------------------------------------------------------------------------------------------------------------------------
     "CLAHE_CLIP":   0.0862,  # 30-Gen V2 Optimized
     "CLAHE_KERNEL": 64,
     "BG_SIGMA":     5.065,   # 30-Gen V2 Optimized
     "RIDGE_SIGMAS": [1, 2, 3, 4],
 
-    # ── hysteresis threshold ──────────────────────────────────────────────────
+    # ------ hysteresis threshold ------------------------------------------------------------------------------------------------------------------------------------------------------
     "THRESHOLD_HI": 76.14,   # 30-Gen V2 Optimized
     "THRESHOLD_LO": 66.44,   # 30-Gen V2 Optimized
 
-    # ── morphological cleanup ─────────────────────────────────────────────────
+    # ------ morphological cleanup ---------------------------------------------------------------------------------------------------------------------------------------------------
     "CLOSE_RADIUS":  1,
     "MIN_HOLE_AREA": 10,
     "MIN_OBJ_PX":    5,
 
-    # ── skeleton-level gap bridging ───────────────────────────────────────────
-    # P1: reduced from 10 → 5 to prevent chaining distinct spermatids
+    # ------ skeleton-level gap bridging ---------------------------------------------------------------------------------------------------------------------------------
+    # P1: reduced from 10 -> 5 to prevent chaining distinct spermatids
     "MAX_BRIDGE_PX": 5,
 
-    # ── branch pruning & automated splitting ──────────────────────────────────
+    # ------ branch pruning & automated splitting ------------------------------------------------------------------------------------------------------
     "MAX_BRANCH_LEN_PX": 5,   # prune spurs shorter than this before measuring
     "BREAK_JUNCTIONS": True,  # automatically sever all branching intersections into distinct lines
 
-    # ── optional early mask-level shape filter ────────────────────────────────
+    # ------ optional early mask-level shape filter ------------------------------------------------------------------------------------------------
     "USE_EARLY_SHAPE_FILTER": False,
     "MIN_ECCENTRICITY": 0.60,
     "MAX_MINOR_PX":     12.0,
     "MIN_AXIS_RATIO":   1.4,
     "MIN_MAJOR_PX":     5,
 
-    # ── post-skeleton filters ─────────────────────────────────────────────────
+    # ------ post-skeleton filters ---------------------------------------------------------------------------------------------------------------------------------------------------
     "MIN_SKEL_LEN_PX":        6.02, # 30-Gen V2 Optimized
     "MAX_GEODESIC_LEN_PX":    65.0, # backend actively cuts chains longer than this
     "MAX_WIDTH_PX":           8.94, # 30-Gen V2 Optimized
     "MIN_LENGTH_WIDTH_RATIO": 1.80, # 30-Gen V2 Optimized
 
-    # ── NEW topology filters ──────────────────────────────────────────────────
+    # ------ NEW topology filters ------------------------------------------------------------------------------------------------------------------------------------------------------
     "MAX_BRANCH_NODES": 0,        # 30-Gen V2 Optimized
     "MAX_TORTUOSITY": 3.23,       # 30-Gen V2 Optimized
     "MAX_ENDPOINT_COUNT": 10,     # 30-Gen V2 Optimized
@@ -237,33 +234,33 @@ CONFIG = {
     # N4: loops
     "ALLOW_LOOPS": True,     # don't reject spermatids that cross themselves  # moderate
 
-    # ── tracking across z ─────────────────────────────────────────────────────
+    # ------ tracking across z ---------------------------------------------------------------------------------------------------------------------------------------------------------------
     "DO_TRACKING":          True,
     "TRACK_MAX_DIST_UM":    6.8711,
     "TRACK_MAX_GAP_SLICES": 1,
     "TRACK_BBOX_PADDING_PX": 2,
 
-    # ── conservative tracking stop-rules ─────────────────────────────────────────
+    # ------ conservative tracking stop-rules ---------------------------------------------------------------------------------------------------------------------------
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": 0.7668,      # Saturn V5 tuned default
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": 0.3134,     # Saturn V5 tuned default
     "CONSERVATIVE_MAX_AREA_JUMP_RATIO": 0.5522,       # Saturn V5 tuned default
     "CONSERVATIVE_MAX_TORTUOSITY_JUMP": 0.40,       # Absolute tortuosity jump
     "CONSERVATIVE_MAX_CENTROID_JUMP_UM": 5.2397,      # Saturn V5 tuned default
 
-    # ── overlap-first Stage 2 parameters ──────────────────────────────────────────
+    # ------ overlap-first Stage 2 parameters ------------------------------------------------------------------------------------------------------------------------------
     "OVERLAP_STABILITY_THRESHOLD": 0.2026,            # Saturn V5 tuned default
     "OVERLAP_ORIENTATION_DEG":     27.2181,             # Saturn V5 tuned default
     "OVERLAP_MULTIPLIER":          1.6255,             # Saturn V5 tuned default
     "OVERLAP_MIN_STABLE_COUNT":    1,                # Min stable metrics required for overlap continuation
 
-    # ── quality audit thresholds (for automated outlier filtering) ───────────
+    # ------ quality audit thresholds (for automated outlier filtering) ---------------------------------
     "AUDIT_MAX_LENGTH_UM":     15.0,    # Flag tracks longer than this (um)
     "AUDIT_MAX_TORTUOSITY":    1.5,     # Flag tracks more tortuous than this
     "AUDIT_MAX_THICKNESS_UM":  2.0,     # Flag tracks thicker than this (um)
     "AUDIT_MAX_TAPER_RATIO":   1.5,     # Flag tracks with taper ratio above this
     "AUDIT_MIN_SLICES":        1,       # single-slice nuclei may be biologically valid at this z-step
 
-    # ── output / debug ────────────────────────────────────────────────────────
+    # ------ output / debug ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     "SAVE_DEBUG_IMAGES":   True,
     "SAVE_MASK_TIFS":      True,
     "SAVE_LABEL_TIFS":     True,
@@ -281,7 +278,7 @@ CONFIG = {
 _REQUIRED = {
     "RUN_MODE": str, "SINGLE_IMAGE_SELECTION_MODE": str,
     "SINGLE_TEST_IMAGE": str, "SINGLE_Z_INDEX": int,
-    "INPUT_DIR": str, "OUTPUT_DIR": str, "FILE_PATTERN": str,
+    "INPUT_DIR": str, "OUTPUT_DIR": str, "FILE_PATTERN": str, "ROI_MASK_PATH": str,
     "UM_PER_PX_XY": float, "UM_PER_SLICE_Z": float,
     "CLAHE_CLIP": float, "CLAHE_KERNEL": int, "BG_SIGMA": (int, float),
     "RIDGE_SIGMAS": list,
@@ -353,8 +350,8 @@ def validate_config(cfg):
     if "REJECT_BRANCHES" in cfg:
         errors.append("  'REJECT_BRANCHES' was removed in v8. "
                       "Use MAX_BRANCH_NODES (int) instead:\n"
-                      "    REJECT_BRANCHES=True  → MAX_BRANCH_NODES=0\n"
-                      "    REJECT_BRANCHES=False → MAX_BRANCH_NODES=9999")
+                      "    REJECT_BRANCHES=True  -> MAX_BRANCH_NODES=0\n"
+                      "    REJECT_BRANCHES=False -> MAX_BRANCH_NODES=9999")
     if errors:
         raise ValueError("CONFIG errors:\n" + "\n".join(errors))
 
@@ -487,7 +484,7 @@ def normalize_display(img):
     """
     Contrast-stretches a raw image for colourmap display.
 
-    Uses the 1st–99.5th percentile range rather than min–max to suppress hot
+    Uses the 1st-99.5th percentile range rather than min-max to suppress hot
     pixels and dark-corner vignetting artefacts common in fluorescence microscopy.
     The small epsilon (1e-9) prevents division-by-zero on flat images.
 
@@ -507,9 +504,9 @@ def _imwrite(path, arr_uint8, cmap="gray"):
     Writes a uint8 image to disk using the best available engine.
 
     Engine priority:
-    1. **OpenCV** — fastest; handles large images without matplotlib overhead.
-       Converts RGB→BGR before writing (OpenCV internal convention).
-    2. **Matplotlib** — fallback when OpenCV is absent; uses ``plt.imsave``
+    1. **OpenCV** - fastest; handles large images without matplotlib overhead.
+       Converts RGB->BGR before writing (OpenCV internal convention).
+    2. **Matplotlib** - fallback when OpenCV is absent; uses ``plt.imsave``
        which respects the *cmap* argument for single-channel saves.
 
     Args:
@@ -533,7 +530,7 @@ def save_gray(path, img_float):
     """
     Saves a floating-point single-channel image as an 8-bit grayscale PNG.
 
-    Applies a full min–max stretch (appropriate for debug images where absolute
+    Applies a full min-max stretch (appropriate for debug images where absolute
     intensity is less important than structure visibility).
 
     Args:
@@ -568,7 +565,7 @@ def load_batch_files(input_dir, pattern):
     users supply unusual file extensions or mixed case (.TIF vs .tif):
 
     1. Exact pattern match (e.g. ``Project001_Series002_z*_ch00.tif``).
-    2. ``.tif`` → ``.tiff`` substitution.
+    2. ``.tif`` -> ``.tiff`` substitution.
     3. Broad glob over all supported extensions (tif, tiff, png, jpg, jpeg)
        in both lower- and upper-case variants.
 
@@ -589,7 +586,7 @@ def load_batch_files(input_dir, pattern):
     """
     files = glob.glob(os.path.join(input_dir, pattern))
     if not files:
-        # Fallback 1: .tif → .tiff extension swap
+        # Fallback 1: .tif -> .tiff extension swap
         files = glob.glob(os.path.join(input_dir, pattern.replace(".tif", ".tiff")))
     if not files:
         # Fallback 2: Broad scan of all supported image formats
@@ -611,16 +608,57 @@ def load_batch_files(input_dir, pattern):
     return files, z_idx
 
 
+def load_roi_mask_file(path, expected_shape=None):
+    """Load a boolean ROI mask from .npy or image-mask formats."""
+    if not path:
+        return None
+    path = os.path.abspath(path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"ROI mask not found: {path}")
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".npy":
+        mask = np.load(path).astype(bool)
+    else:
+        mask = robust_imread(path).astype(bool)
+    if mask.ndim > 2:
+        mask = mask[..., 0].astype(bool)
+    if expected_shape is not None and mask.shape != expected_shape:
+        raise ValueError(f"ROI mask shape {mask.shape} does not match image shape {expected_shape}")
+    return mask
+
+
+def filter_results_to_roi(results, skel_label, roi_mask):
+    """
+    Keep detections whose centroid lies inside ROI and mask label pixels outside it.
+
+    The detector can still use full-frame image statistics; this function only
+    limits which detections are accepted for downstream tracking/reporting.
+    """
+    if roi_mask is None or not results:
+        return results, skel_label
+    roi_mask = roi_mask.astype(bool)
+    filtered = []
+    keep = []
+    for r in results:
+        cy = min(max(int(round(r["centroid_y"])), 0), roi_mask.shape[0] - 1)
+        cx = min(max(int(round(r["centroid_x"])), 0), roi_mask.shape[1] - 1)
+        if roi_mask[cy, cx]:
+            filtered.append(r)
+            keep.append(r["label"])
+    skel_roi = np.where(np.isin(skel_label, keep) & roi_mask, skel_label, 0).astype(np.int32)
+    return filtered, skel_roi
+
+
 def choose_single_image(cfg):
     """
     Resolves the path to a single test image according to the configured selection mode.
 
     Three modes are supported (set via ``SINGLE_IMAGE_SELECTION_MODE``):
 
-    - ``'path'``     — Use the hard-coded ``SINGLE_TEST_IMAGE`` path directly.
-    - ``'z_index'``  — Find the file whose filename encodes the Z-index in
-                      ``SINGLE_Z_INDEX`` (e.g. ``z15`` → ``...z15_ch00.tif``).
-    - ``'dialog'``   — Open a Tkinter file-picker dialog for interactive selection.
+    - ``'path'``     - Use the hard-coded ``SINGLE_TEST_IMAGE`` path directly.
+    - ``'z_index'``  - Find the file whose filename encodes the Z-index in
+                      ``SINGLE_Z_INDEX`` (e.g. ``z15`` -> ``...z15_ch00.tif``).
+    - ``'dialog'``   - Open a Tkinter file-picker dialog for interactive selection.
                       Falls back gracefully if Tkinter is unavailable.
 
     Args:
@@ -728,7 +766,7 @@ def bridge_skeleton_endpoints(skel_bool, skel_labeled, max_gap_px):
 
 def prune_branches(skel_bool, max_branch_len):
     """
-    Iteratively remove endpoints to shorten side-branches ≤ max_branch_len px.
+    Iteratively remove endpoints to shorten side-branches <= max_branch_len px.
     """
     if max_branch_len <= 0:
         return skel_bool.copy()
@@ -760,7 +798,7 @@ def _build_adj(coords, W):
 
     Edge weights follow the Chebyshev / Euclidean convention:
     - Axis-aligned move (4-connected step): weight = 1.0
-    - Diagonal move (8-connected step):     weight = √2 ≈ 1.41421
+    - Diagonal move (8-connected step):     weight = sqrt2 ~ 1.41421
 
     Args:
         coords (np.ndarray): Shape ``(N, 2)`` integer array of ``(row, col)`` pixel positions.
@@ -780,7 +818,7 @@ def _build_adj(coords, W):
         for dr, dc in _N8:
             lk = (r + dr) * W + (c + dc)
             if lk in lin_set:
-                # Diagonal edges are longer by a factor of √2
+                # Diagonal edges are longer by a factor of sqrt2
                 w = 1.41421356 if (dr != 0 and dc != 0) else 1.0
                 adj[i].append((lin2idx[lk], w))
     return adj
@@ -813,7 +851,7 @@ def _dijkstra(adj, src, n):
     while pq:
         cost, u = heapq.heappop(pq)
         if cost > d[u]:
-            continue  # stale entry in the heap — skip
+            continue  # stale entry in the heap - skip
         for v, w in adj[u]:
             nd = cost + w
             if nd < d[v]:
@@ -841,7 +879,7 @@ def measure_topology(coords, W, allow_loops=False):
     n_branch_nodes = sum(1 for d in deg if d >  2)
     eps_idx        = [i for i, d in enumerate(deg) if d == 1]
 
-    # ── Loop handling ─────────────────────────────────────────────────────────
+    # ------ Loop handling ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     if not eps_idx:
         if not allow_loops:
             return None  # discard loop
@@ -855,11 +893,11 @@ def measure_topology(coords, W, allow_loops=False):
                 "n_endpoints": 0, "n_branch_nodes": n_branch_nodes,
                 "reason": "loop"}
 
-    # ── Double-BFS for geodesic ───────────────────────────────────────────────
+    # ------ Double-BFS for geodesic ---------------------------------------------------------------------------------------------------------------------------------------------
     b, _  = _dijkstra(adj, eps_idx[0], n)
     c, gl = _dijkstra(adj, b, n)
 
-    # ── Tortuosity ────────────────────────────────────────────────────────────
+    # ------ Tortuosity ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     p0  = coords[b]
     p1  = coords[c]
     euc = float(np.sqrt((p0[0]-p1[0])**2 + (p0[1]-p1[1])**2))
@@ -888,7 +926,7 @@ def apply_optional_early_shape_filter(mask, cfg):
     Round debris (dead cells, lipid droplets, imaging artefacts) tends to have:
     - Low eccentricity (close to circular)
     - Short major axis (small, compact object)
-    - Low axis ratio (major ≈ minor, i.e., not elongated)
+    - Low axis ratio (major ~ minor, i.e., not elongated)
 
     Elongated spermatid nuclei, by contrast, have high eccentricity (> 0.6),
     a long major axis, and a large major/minor axis ratio.
@@ -903,7 +941,7 @@ def apply_optional_early_shape_filter(mask, cfg):
         np.ndarray[bool]: Filtered binary mask (unchanged if the filter is disabled).
     """
     if not cfg["USE_EARLY_SHAPE_FILTER"]:
-        return mask  # filter disabled — pass through unchanged
+        return mask  # filter disabled - pass through unchanged
     labeled = measure.label(mask)
     keep = [p.label for p in measure.regionprops(labeled)
             if (p.eccentricity      >= cfg["MIN_ECCENTRICITY"] and   # must be elongated
@@ -933,7 +971,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None):
         roi_mask = roi_mask.astype(bool)
         if roi_mask.shape != img.shape:
             raise ValueError(f"roi_mask shape {roi_mask.shape} does not match image shape {img.shape}")
-        # NOTE: do NOT zero out pixels here — that destroys image statistics
+        # NOTE: do NOT zero out pixels here - that destroys image statistics
         # (CLAHE, percentiles, ridge detection).  Instead, process full image
         # and apply roi_mask only at the mask/skeleton stages below.
 
@@ -1111,7 +1149,7 @@ def measure_spermatids(seg, cfg):
     skel_lab = seg["skel_labeled"]
     H, W     = skel.shape
 
-    # ── Filter pass ───────────────────────────────────────────────────────────
+    # ------ Filter pass ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     accepted_labels = []
     cache           = {}
     reasons = {"short": 0, "loop": 0, "long": 0, "wide": 0, "ratio": 0, "branches": 0, "tortuous": 0, "endpoints": 0}
@@ -1163,6 +1201,7 @@ def measure_spermatids(seg, cfg):
 
         cy, cx = sp.centroid
         accepted_labels.append(sp.label)
+        area_est_px = float(gl * width)
         cache[sp.label] = {
             "geo_len":            gl,
             "tortuosity":         tort,
@@ -1172,7 +1211,8 @@ def measure_spermatids(seg, cfg):
             "length_width_ratio": gl / (width + 1e-9),
             "length_px_count":    float(coords.shape[0]),
             "cx": cx, "cy": cy,
-            "area_px": float(sp.area),
+            "area_px": area_est_px,
+            "skeleton_area_px": float(sp.area),
             "bbox_min_y": float(sp.bbox[0]),
             "bbox_min_x": float(sp.bbox[1]),
             "bbox_max_y": float(sp.bbox[2]),
@@ -1193,7 +1233,7 @@ def measure_spermatids(seg, cfg):
     clean_skel  = np.isin(skel_lab, accepted_labels)
     final_label = measure.label(clean_skel).astype(np.int32)
 
-    # ── Re-index using cached values (no second Dijkstra pass) ───────────────
+    # ------ Re-index using cached values (no second Dijkstra pass) ---------------------------------------------
     final_results = []
     for new_i, sp in enumerate(measure.regionprops(final_label), start=1):
         old_label = skel_lab[sp.coords[0, 0], sp.coords[0, 1]]
@@ -1212,6 +1252,7 @@ def measure_spermatids(seg, cfg):
             "centroid_x":          c["cx"],
             "centroid_y":          c["cy"],
             "area_px":             c["area_px"],
+            "skeleton_area_px":    c["skeleton_area_px"],
             "bbox_min_y":          c["bbox_min_y"],
             "bbox_min_x":          c["bbox_min_x"],
             "bbox_max_y":          c["bbox_max_y"],
@@ -1239,7 +1280,7 @@ def make_overlay(img_raw, skel_label):
     --------------------
     - Vectorised LUT (Look-Up Table) approach avoids per-label loop for speed.
     - ``grey_dilation`` makes thin single-pixel skeletons visible at any zoom.
-    - Colour assignment is deterministic: same label ordering → same colour.
+    - Colour assignment is deterministic: same label ordering -> same colour.
 
     Args:
         img_raw (np.ndarray): Raw microscopy image (any dtype).
@@ -1295,8 +1336,8 @@ def show_single_preview(img_raw, seg, overlay_rgb, results, z_idx, cfg):
     Layout operates in two modes controlled by ``SHOW_DEBUG_PREVIEW``:
 
     - **Standard mode** (2 panels): Raw image | Spermatid overlay + length histogram.
-    - **Debug mode** (8 panels): Adds intermediate stage images — CLAHE, ridge filter,
-      hysteresis mask, cleaned mask, and pruned skeleton — for visual pipeline QC.
+    - **Debug mode** (8 panels): Adds intermediate stage images - CLAHE, ridge filter,
+      hysteresis mask, cleaned mask, and pruned skeleton - for visual pipeline QC.
 
     After saving to ``output_dir/preview.png``, the function attempts to open the
     image with the OS default viewer (``os.startfile`` on Windows) as an immediate
@@ -1351,8 +1392,8 @@ def show_single_preview(img_raw, seg, overlay_rgb, results, z_idx, cfg):
     if lengths_um:
         hist_ax.hist(lengths_um, bins=20, edgecolor="white")
         hist_ax.axvline(np.median(lengths_um), lw=2,
-                        label=f"Median={np.median(lengths_um):.1f} µm")
-        hist_ax.set_xlabel("Geodesic length (µm)"); hist_ax.legend(fontsize=8)
+                        label=f"Median={np.median(lengths_um):.1f} um")
+        hist_ax.set_xlabel("Geodesic length (um)"); hist_ax.legend(fontsize=8)
         hist_ax.set_title("Length distribution")
     else:
         hist_ax.text(0.5, 0.5, "No detections", ha="center", va="center")
@@ -1382,9 +1423,9 @@ def save_detail_figure(img_raw, overlay_rgb, results, out_path, z_idx, um):
     Saves a three-panel publication-quality figure for a single Z-slice.
 
     Panels:
-    1. **Original** — contrast-stretched raw image.
-    2. **Spermatid overlay** — colour-coded detections with length labels.
-    3. **Length distribution** — histogram of geodesic lengths in µm with median line.
+    1. **Original** - contrast-stretched raw image.
+    2. **Spermatid overlay** - colour-coded detections with length labels.
+    3. **Length distribution** - histogram of geodesic lengths in um with median line.
 
     This figure is saved as a PNG per Z-slice and is useful for visual quality
     control and inclusion in lab reports.
@@ -1401,10 +1442,10 @@ def save_detail_figure(img_raw, overlay_rgb, results, out_path, z_idx, um):
     fig, axes  = plt.subplots(1, 3, figsize=(18, 6))
 
     axes[0].imshow(normalize_display(img_raw), cmap="gray")
-    axes[0].set_title(f"Z={z_idx:02d} — Original"); axes[0].axis("off")
+    axes[0].set_title(f"Z={z_idx:02d} - Original"); axes[0].axis("off")
 
     axes[1].imshow(overlay_rgb)
-    axes[1].set_title(f"Z={z_idx:02d} — Spermatids (N={len(results)})")
+    axes[1].set_title(f"Z={z_idx:02d} - Spermatids (N={len(results)})")
     axes[1].axis("off")
     for r in results:
         axes[1].text(r["centroid_x"], r["centroid_y"],
@@ -1415,9 +1456,9 @@ def save_detail_figure(img_raw, overlay_rgb, results, out_path, z_idx, um):
     if lengths_um:
         axes[2].hist(lengths_um, bins=20, edgecolor="white")
         axes[2].axvline(np.median(lengths_um), lw=2,
-                        label=f"Median={np.median(lengths_um):.1f} µm")
-        axes[2].set_xlabel("Geodesic length (µm)"); axes[2].set_ylabel("Count")
-        axes[2].set_title(f"Z={z_idx:02d} — Length distribution")
+                        label=f"Median={np.median(lengths_um):.1f} um")
+        axes[2].set_xlabel("Geodesic length (um)"); axes[2].set_ylabel("Count")
+        axes[2].set_title(f"Z={z_idx:02d} - Length distribution")
         axes[2].legend(fontsize=9)
     else:
         axes[2].text(0.5, 0.5, "No spermatids detected",
@@ -1433,7 +1474,7 @@ def save_detail_figure(img_raw, overlay_rgb, results, out_path, z_idx, um):
 # CSV
 # =============================================================================
 
-_VERSION = "v5.1"
+_VERSION = "v5.2"
 
 
 def rows_from_results(results, z_idx, um):
@@ -1445,20 +1486,22 @@ def rows_from_results(results, z_idx, um):
 
     Columns emitted per detection
     ------------------------------
-    - ``pipeline_version``     — Code version tag for traceability.
-    - ``z_slice``              — Z-plane index of this detection.
-    - ``sperm_id``             — 1-based integer ID within this slice.
-    - ``length_px_geodesic``   — Geodesic skeleton length in pixels.
-    - ``length_um_geodesic``   — Geodesic length in micrometres.
-    - ``length_px_count``      — Pixel-count skeleton length (alternative measure).
-    - ``length_um_count``      — Pixel-count length in micrometres.
-    - ``width_px`` / ``width_um`` — Mean width across the skeleton.
-    - ``length_width_ratio``   — Elongation ratio (key morphological filter metric).
-    - ``tortuosity``           — Curvature index: geodesic / Euclidean tip-to-tip.
-    - ``n_endpoints``          — Number of skeleton endpoints (expect 2 for clean cells).
-    - ``n_branch_nodes``       — Number of branch points (3+ neighbours); should be low.
-    - ``centroid_x`` / ``centroid_y`` — Pixel centroid for overlay annotation.
-    - ``area_px``              — Mask area in pixels^2 (used for volume estimation).
+    - ``pipeline_version``     - Code version tag for traceability.
+    - ``z_slice``              - Z-plane index of this detection.
+    - ``sperm_id``             - 1-based integer ID within this slice.
+    - ``length_px_geodesic``   - Geodesic skeleton length in pixels.
+    - ``length_um_geodesic``   - Geodesic length in micrometres.
+    - ``length_px_count``      - Pixel-count skeleton length (alternative measure).
+    - ``length_um_count``      - Pixel-count length in micrometres.
+    - ``width_px`` / ``width_um`` - Mean width across the skeleton.
+    - ``length_width_ratio``   - Elongation ratio (key morphological filter metric).
+    - ``tortuosity``           - Curvature index: geodesic / Euclidean tip-to-tip.
+    - ``n_endpoints``          - Number of skeleton endpoints (expect 2 for clean cells).
+    - ``n_branch_nodes``       - Number of branch points (3+ neighbours); should be low.
+    - ``centroid_x`` / ``centroid_y`` - Pixel centroid for overlay annotation.
+    - ``area_px``              - Slender-object area estimate in pixels^2
+      (geodesic length * median width), used for area-derived metrics.
+    - ``skeleton_area_px``     - Raw skeleton pixel count, kept for audit/debug.
 
     Args:
         results (list[dict]): Output of :func:`measure_spermatids`.
@@ -1485,6 +1528,7 @@ def rows_from_results(results, z_idx, um):
         "centroid_x":          round(r["centroid_x"], 1),
         "centroid_y":          round(r["centroid_y"], 1),
         "area_px":             round(r["area_px"], 1),
+        "skeleton_area_px":    round(r.get("skeleton_area_px", 0.0), 1),
         "bbox_min_y":          r.get("bbox_min_y"),
         "bbox_min_x":          r.get("bbox_min_x"),
         "bbox_max_y":          r.get("bbox_max_y"),
@@ -1611,6 +1655,9 @@ def track_across_slices(detections_df, cfg):
     next_tid = 1
     active = {}
     track_ids = [-1] * len(df)
+    link_methods = ["new"] * len(df)
+    link_distances_um = [np.nan] * len(df)
+    link_gap_slices = [0] * len(df)
     stopped_tracks = {}  # Track stop reasons for debugging
     
     rows_by_z = {z: df.index[df["z_slice"] == z].to_numpy()
@@ -1685,21 +1732,27 @@ def track_across_slices(detections_df, cfg):
                         if is_consistent:
                             # Massive scoring favor (+10,000) for overlaps so they greedily override standard loose distance matches
                             score = float(d_val) if not overlap_exists else (float(d_val) - 10000.0)
-                            candidates.append((score, k, j))
+                            method = "overlap" if overlap_exists else "centroid"
+                            gap_slices = int(z - trk_st["last_z"])
+                            candidates.append((score, k, j, method, float(d_val), gap_slices))
                         else:
                             if tid not in stopped_tracks:
                                 stopped_tracks[tid] = f"z={z}, reason={reason}"
             
             # Sort by score and assign greedily
             candidates.sort(key=lambda x: x[0])
-            for score, det_k, trk_j in candidates:
+            for score, det_k, trk_j, method, d_val_px, gap_slices in candidates:
                 if det_k in used_det or trk_j in used_trk:
                     continue
                     
                 used_det.add(det_k)
                 used_trk.add(trk_j)
                 tid = cand_tracks[trk_j]
-                track_ids[int(idxs[det_k])] = tid
+                row_idx = int(idxs[det_k])
+                track_ids[row_idx] = tid
+                link_methods[row_idx] = method
+                link_distances_um[row_idx] = d_val_px * cfg["UM_PER_PX_XY"]
+                link_gap_slices[row_idx] = gap_slices
                 
                 # Update track state
                 active[tid] = {
@@ -1735,6 +1788,9 @@ def track_across_slices(detections_df, cfg):
             del active[tid]
 
     df["track_id"] = track_ids
+    df["track_link_method"] = link_methods
+    df["track_link_distance_um"] = np.round(link_distances_um, 3)
+    df["track_link_gap_slices"] = link_gap_slices
     
     # Print tracking stats
     print(f"  Conservative tracking: {len(stopped_tracks)} tracks stopped early for consistency")
@@ -1753,6 +1809,8 @@ def track_across_slices(detections_df, cfg):
         max_length_2d   = ("length_um_geodesic", "max"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
+        min_area_px     = ("area_px",            "min"),
+        max_area_px     = ("area_px",            "max"),
         area_start      = ("area_px",            "first"),
         area_end        = ("area_px",            "last"),
         x_mean          = ("centroid_x",         "mean"),
@@ -1767,21 +1825,25 @@ def track_across_slices(detections_df, cfg):
     um_xy = cfg["UM_PER_PX_XY"]
     um_z  = cfg["UM_PER_SLICE_Z"]
     
-    # 1. Z-Extent (Vertical Span includes +1 for slice thickness, matching PDF)
-    z_extent = (ts["z_end"] - ts["z_start"] + 1) * um_z
-    ts["z_extent_um"] = z_extent
+    # 1. Z span and sampled Z coverage are distinct:
+    # span is endpoint-to-endpoint displacement; covered includes slice thickness.
+    z_span = (ts["z_end"] - ts["z_start"]) * um_z
+    z_covered = (ts["z_end"] - ts["z_start"] + 1) * um_z
+    ts["z_extent_um"] = z_span
+    ts["z_span_um"] = z_span
+    ts["z_covered_um"] = z_covered
     
     # Geodesic vertical displacement for Euclidean distance is purely centroid-to-centroid
-    dz_euc = (ts["z_end"] - ts["z_start"]) * um_z
+    dz_euc = z_span
     
     # 2. Total 3D Length (Lateral-Corrected Hypotenuse)
     # The physical 3D shape arc relies on the maximum length of its 2D projection
     euc_2d_centroid = np.sqrt((ts["x_end"] - ts["x_start"])**2 + (ts["y_end"] - ts["y_start"])**2) * um_xy
     lat_geodesic = np.maximum(ts["max_length_2d"], euc_2d_centroid)
-    l3d = np.sqrt(lat_geodesic**2 + z_extent**2)
+    l3d = np.sqrt(lat_geodesic**2 + z_span**2)
     ts["total_3d_length_um"] = l3d
     
-    # 3. 3D Volume (Sum Area * Z_step)
+    # 3. 3D Volume (sum of per-slice projected area estimates * Z_step)
     ts["volume_um3"] = ts["sum_area_px"] * (um_xy**2) * um_z
     
     # 4. 3D Tortuosity (Total 3D Geodesic Length / 3D End-To-End Euclidean Distance)
@@ -1790,8 +1852,8 @@ def track_across_slices(detections_df, cfg):
     tort_raw = l3d / safe_euc
     ts["tortuosity_3d"] = np.minimum(tort_raw, 20.0)
     
-    # 5. Taper Ratio (Max Area / Min Area between first and last z-slice)
-    ts["taper_ratio"] = np.maximum(ts["area_start"], ts["area_end"]) / np.maximum(np.minimum(ts["area_start"], ts["area_end"]), 0.001)
+    # 5. Taper Ratio (max/min area across the full track)
+    ts["taper_ratio"] = ts["max_area_px"] / np.maximum(ts["min_area_px"], 0.001)
     
     # 6. Effective Thickness / Diameter
     cross_area = ts["volume_um3"] / np.maximum(ts["total_3d_length_um"], 0.1)
@@ -1814,11 +1876,13 @@ def track_across_slices(detections_df, cfg):
         ts["nearest_neighbor_um"] = np.nan
         
     cols_ordered = [
-        "track_id", "total_3d_length_um", "z_extent_um", "volume_um3", "tortuosity_3d",
+        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "tortuosity_3d",
         "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
-        "n_slices", "z_start", "z_end", "max_length_2d", "sum_area_px"
+        "n_slices", "z_start", "z_end", "max_length_2d", "sum_area_px",
+        "min_area_px", "max_area_px", "area_start", "area_end"
     ]
     ts = ts[cols_ordered]
+    ts["track_stop_reason"] = ts["track_id"].map(stopped_tracks).fillna("")
     
     return df, ts
 
@@ -1836,7 +1900,7 @@ def flag_quality_tracks(df_tracks, cfg):
         quality_flags (str):     Comma-separated list of failed filter names
     
     Uses CONFIG["AUDIT_*"] thresholds so filters are adjustable at runtime.
-    No data is deleted — only annotated.
+    No data is deleted - only annotated.
     """
     if df_tracks.empty:
         df_tracks["is_quality_track"] = pd.Series(dtype=bool)
@@ -1978,6 +2042,74 @@ def export_outlier_audit(out_dir, df_tracks, cfg):
     print(f"  Outlier audit exported to: {audit_dir}")
 
 
+def export_post_detection_qc(out_dir, df_detections, df_tracks):
+    """
+    Save compact diagnostics for the post-detection 3D processing stage.
+
+    These metrics make GUI and CLI 3D runs easier to audit: how detections were
+    linked, how many tracks are single-slice, and which quality flags dominate.
+    """
+    try:
+        ensure_dir(out_dir)
+        lines = []
+        lines.append("POST-DETECTION 3D QC")
+        lines.append("=" * 72)
+
+        n_det = int(len(df_detections)) if df_detections is not None else 0
+        n_tracks = int(len(df_tracks)) if df_tracks is not None else 0
+        lines.append(f"2D detections: {n_det}")
+        lines.append(f"3D tracks: {n_tracks}")
+
+        if df_detections is not None and not df_detections.empty and "track_link_method" in df_detections.columns:
+            method_counts = df_detections["track_link_method"].fillna("unknown").value_counts()
+            lines.append("\nDetection link methods:")
+            for method, count in method_counts.items():
+                lines.append(f"  {method}: {int(count)}")
+            if "track_link_distance_um" in df_detections.columns:
+                linked_dist = pd.to_numeric(df_detections["track_link_distance_um"], errors="coerce").dropna()
+                if not linked_dist.empty:
+                    lines.append(f"Median link distance um: {float(linked_dist.median()):.3f}")
+                    lines.append(f"95th percentile link distance um: {float(linked_dist.quantile(0.95)):.3f}")
+
+        if df_tracks is not None and not df_tracks.empty:
+            if "n_slices" in df_tracks.columns:
+                single_frac = float((df_tracks["n_slices"] <= 1).mean() * 100)
+                lines.append(f"\nSingle-slice tracks: {single_frac:.1f}%")
+                lines.append(f"Median n_slices: {float(df_tracks['n_slices'].median()):.2f}")
+            if "total_3d_length_um" in df_tracks.columns:
+                lines.append(f"Median 3D length um: {float(df_tracks['total_3d_length_um'].median()):.3f}")
+            if "z_span_um" in df_tracks.columns:
+                lines.append(f"Median Z-span um: {float(df_tracks['z_span_um'].median()):.3f}")
+            if "quality_flags" in df_tracks.columns:
+                flags = df_tracks["quality_flags"].fillna("").astype(str)
+                flag_counts = {
+                    "quality": int((flags == "").sum()),
+                    "all_flagged": int((flags != "").sum()),
+                    "long": int(flags.str.contains("long", regex=False).sum()),
+                    "tortuous": int(flags.str.contains("tortuous", regex=False).sum()),
+                    "thick": int(flags.str.contains("thick", regex=False).sum()),
+                    "taper": int(flags.str.contains("taper", regex=False).sum()),
+                    "single_slice": int(flags.str.contains("single_slice", regex=False).sum()),
+                }
+                lines.append("\nQuality / outlier counts:")
+                for key in ["quality", "all_flagged", "long", "tortuous", "thick", "taper", "single_slice"]:
+                    lines.append(f"  {key}: {flag_counts.get(key, 0)}")
+            if "track_stop_reason" in df_tracks.columns:
+                stopped = df_tracks["track_stop_reason"].fillna("").astype(str)
+                stopped = stopped[stopped != ""]
+                lines.append(f"\nTracks with recorded stop reason: {len(stopped)}")
+                if len(stopped):
+                    for reason, count in stopped.value_counts().head(10).items():
+                        lines.append(f"  {reason}: {int(count)}")
+
+        qc_path = os.path.join(out_dir, "post_detection_qc.txt")
+        with open(qc_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"  Post-detection QC exported to: {qc_path}")
+    except Exception as e:
+        print(f"  WARNING: Could not export post-detection QC: {e}")
+
+
 def get_audit_flag_counts(df_tracks, cfg=None):
     """Return consistent audit category counts for reports, regardless of GUI/report settings."""
     counts = {"long": 0, "tortuous": 0, "thick": 0, "taper": 0, "single_slice": 0, "all_flagged": 0, "quality": 0, "shape_outliers": 0}
@@ -2034,18 +2166,18 @@ def process_one_image(image_path, cfg, output_dir):
     Args:
         image_path (str): Absolute path to the input image file.
         cfg (dict): Full pipeline configuration dictionary.  Key fields:
-            - ``UM_PER_PX_XY`` — physical scale factor.
-            - ``Z_INDEX`` — which plane to extract from a Z-stack.
-            - ``OUTPUT_DIR`` — top-level output folder.
-            - ``SHOW_PREVIEW_WINDOW`` — whether to open the preview GUI.
-            - ``SAVE_MASK_TIFS``, ``SAVE_LABEL_TIFS`` — optional TIF outputs.
-            - ``SAVE_DETAIL_FIGURE`` — whether to save 3-panel figure.
+            - ``UM_PER_PX_XY`` - physical scale factor.
+            - ``Z_INDEX`` - which plane to extract from a Z-stack.
+            - ``OUTPUT_DIR`` - top-level output folder.
+            - ``SHOW_PREVIEW_WINDOW`` - whether to open the preview GUI.
+            - ``SAVE_MASK_TIFS``, ``SAVE_LABEL_TIFS`` - optional TIF outputs.
+            - ``SAVE_DETAIL_FIGURE`` - whether to save 3-panel figure.
         output_dir (str): Destination directory for this image's outputs.
 
     Returns:
         tuple[list[dict], dict]:
-            - ``results`` — list of per-spermatid measurement dicts.
-            - ``seg``     — full segmentation dict from :func:`segment_slice`
+            - ``results`` - list of per-spermatid measurement dicts.
+            - ``seg``     - full segmentation dict from :func:`segment_slice`
               including ``mask_clean``, ``skel_pruned``, ``skel_label``, etc.
     """
     ensure_dir(output_dir)
@@ -2070,7 +2202,7 @@ def process_one_image(image_path, cfg, output_dir):
     print(f"  Detected: {len(results)} spermatids  ({elapsed:.1f}s)")
     if results:
         ls = [r["length_px_geodesic"]*um for r in results]
-        print(f"  Geodesic length µm: median={np.median(ls):.2f}  max={max(ls):.2f}")
+        print(f"  Geodesic length um: median={np.median(ls):.2f}  max={max(ls):.2f}")
 
     overlay_rgb = make_overlay(img_raw, meas["skel_label"])
 
@@ -2119,19 +2251,33 @@ def process_batch(cfg):
 
     files, z_indices = load_batch_files(cfg["INPUT_DIR"], cfg["FILE_PATTERN"])
     um         = cfg["UM_PER_PX_XY"]
+    roi_mask = None
+    if cfg.get("ROI_MASK_PATH"):
+        first_img = ensure_2d_image(robust_imread(files[0]), os.path.basename(files[0]))
+        roi_mask = load_roi_mask_file(cfg["ROI_MASK_PATH"], expected_shape=first_img.shape)
+        roi_out = os.path.join(cfg["OUTPUT_DIR"], "roi_mask_used.tif")
+        tifffile.imwrite(roi_out, roi_mask.astype(np.uint8) * 255)
+        print(f"Using ROI mask: {cfg['ROI_MASK_PATH']}")
+        print(f"Saved ROI copy: {roi_out}")
     all_rows   = []
     summaries  = []
     t_batch    = time.time()
     t_slices   = []
+    max_proj_raw = None
+    max_proj_ov = None
 
     for idx_i, (fpath, z_idx) in enumerate(zip(files, z_indices)):
         t0 = time.time()
         print(f"\n[{idx_i+1}/{len(files)}]  Z={z_idx:02d}  {os.path.basename(fpath)}")
         img_raw = robust_imread(fpath)
-        seg     = segment_slice(img_raw, cfg, z_idx=z_idx,
+        img_2d  = ensure_2d_image(img_raw, os.path.basename(fpath))
+        seg     = segment_slice(img_2d, cfg, z_idx=z_idx,
                                 debug_dir=debug_dir if cfg["SAVE_DEBUG_IMAGES"] else None)
         meas    = measure_spermatids(seg, cfg)
         results = meas["results"]
+        skel_label = meas["skel_label"]
+        if roi_mask is not None:
+            results, skel_label = filter_results_to_roi(results, skel_label, roi_mask)
         ls_um   = [r["length_px_geodesic"]*um for r in results]
         ws_um   = [r["width_px"]*um for r in results]
 
@@ -2140,7 +2286,7 @@ def process_batch(cfg):
         eta = (len(files) - idx_i - 1) * float(np.mean(t_slices))
         print(f"  N={len(results)}", end="")
         if ls_um:
-            print(f"  med_len={np.median(ls_um):.2f}µm", end="")
+            print(f"  med_len={np.median(ls_um):.2f}um", end="")
         print(f"  {t_s:.1f}s  ETA {eta:.0f}s")
 
         all_rows.extend(rows_from_results(results, z_idx, um))
@@ -2152,10 +2298,10 @@ def process_batch(cfg):
             "mean_width_um":    round(float(np.mean(ws_um)),   3) if ws_um  else 0,
         })
 
-        overlay_rgb = make_overlay(img_raw, meas["skel_label"])
+        overlay_rgb = make_overlay(img_2d, skel_label)
         if cfg["SAVE_OVERLAYS"]:
             # Create side-by-side panel: [Original | Overlay]
-            orig_rgb = (normalize_display(img_raw) * 255).astype(np.uint8)
+            orig_rgb = (normalize_display(img_2d) * 255).astype(np.uint8)
             # if grayscale, convert to RGB for hstack
             if orig_rgb.ndim == 2:
                 orig_rgb = np.stack([orig_rgb]*3, axis=-1)
@@ -2163,19 +2309,34 @@ def process_batch(cfg):
             panel = np.hstack([orig_rgb, overlay_rgb])
             _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_panel.png"), panel)
 
+            if max_proj_raw is None:
+                max_proj_raw = img_2d.copy().astype(np.float32)
+                max_proj_ov = overlay_rgb.copy().astype(np.float32)
+            else:
+                max_proj_raw = np.maximum(max_proj_raw, img_2d.astype(np.float32))
+                max_proj_ov = np.maximum(max_proj_ov, overlay_rgb.astype(np.float32))
+
         if cfg["SAVE_DETAIL_FIGURE"]:
-            save_detail_figure(img_raw, overlay_rgb, results,
+            save_detail_figure(img_2d, overlay_rgb, results,
                                os.path.join(overlay_dir, f"z{z_idx:02d}_detail.png"),
                                z_idx, um)
         if cfg["SAVE_MASK_TIFS"]:
             tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_mask.tif"),
-                             seg["mask_clean"].astype(np.uint8) * 255)
+                             (seg["mask_clean"] & roi_mask if roi_mask is not None else seg["mask_clean"]).astype(np.uint8) * 255)
         if cfg["SAVE_LABEL_TIFS"]:
             tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_skel_labels.tif"),
-                             meas["skel_label"].astype(np.uint16))
+                             skel_label.astype(np.uint16))
 
     df     = pd.DataFrame(all_rows)
     df_sum = pd.DataFrame(summaries)
+    if cfg["SAVE_OVERLAYS"] and max_proj_raw is not None and max_proj_ov is not None:
+        raw_p = (normalize_display(max_proj_raw.astype(np.uint16)) * 255).astype(np.uint8)
+        if raw_p.ndim == 2:
+            raw_p = np.stack([raw_p] * 3, axis=-1)
+        ov_p = np.clip(max_proj_ov, 0, 255).astype(np.uint8)
+        global_panel = np.hstack([raw_p, ov_p])
+        _imwrite(os.path.join(cfg["OUTPUT_DIR"], "global_z_projection.png"), global_panel)
+
     df.to_csv(    os.path.join(cfg["OUTPUT_DIR"], f"spermatid_measurements_{_VERSION}.csv"), index=False)
     df_sum.to_csv(os.path.join(cfg["OUTPUT_DIR"], f"slice_summary_{_VERSION}.csv"), index=False)
 
@@ -2203,6 +2364,7 @@ def process_batch(cfg):
         
         # Export outlier_audit/ folder
         export_outlier_audit(cfg["OUTPUT_DIR"], ts, cfg)
+        export_post_detection_qc(cfg["OUTPUT_DIR"], df_trk, ts)
     
     # --- Reporting Phase (CLI/Batch) ---
     print(f"\nGenerating final reports in {cfg['OUTPUT_DIR']}...")
@@ -2211,7 +2373,7 @@ def process_batch(cfg):
 
     total = time.time() - t_batch
     print(f"\n{'='*55}")
-    print(f"v11 DONE | {len(files)} slices | {total:.1f}s")
+    print(f"{_VERSION} DONE | {len(files)} slices | {total:.1f}s")
     print(f"Saved to: {cfg['OUTPUT_DIR']}")
     print(df_sum.to_string(index=False))
 
@@ -2240,14 +2402,14 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
 
     Workbook structure
     ------------------
-    - **Batch_Summary** — one row per Z-slice with detection counts, mean/median
+    - **Batch_Summary** - one row per Z-slice with detection counts, mean/median
       length, and total area.  Includes an embedded histogram image and conditional
       formatting for high/low detection slices.
-    - **3D_Morphometrics** — track-level 3D metrics exported from
+    - **3D_Morphometrics** - track-level 3D metrics exported from
       :func:`track_across_slices`, with an embedded 3D length distribution plot.
-    - **Raw_2D_Detections** — full per-spermatid measurement table matching the CSV
+    - **Raw_2D_Detections** - full per-spermatid measurement table matching the CSV
       export, with number formatting and frozen header pane.
-    - **Statistics_Summary** — descriptive statistics (mean, median, std, IQR,
+    - **Statistics_Summary** - descriptive statistics (mean, median, std, IQR,
       percentiles) for the primary biometric columns.
 
     All sheets include a hyperlink from cell A1 back to the source Excel file so
@@ -2276,6 +2438,16 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
         with pd.ExcelWriter(excel_path, engine='xlsxwriter') as writer:
             workbook  = writer.book
             
+            def excel_col_letter(frame, column_name):
+                """Return the Excel column letter for a DataFrame column."""
+                idx = frame.columns.get_loc(column_name)
+                letters = ""
+                idx += 1
+                while idx:
+                    idx, rem = divmod(idx - 1, 26)
+                    letters = chr(65 + rem) + letters
+                return letters
+            
             # Formats
             bold = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
             num_fmt = workbook.add_format({'num_format': '0.00'})
@@ -2287,25 +2459,30 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 ws_sum.write(0, col, h, bold)
             
             row = 1
-            # 2D Length (from Raw_2D_Detections column G - length_um_geodesic)
+            # 2D Length from Raw_2D_Detections length_um_geodesic column.
             if not df.empty:
                 n_2d = len(df) + 1
+                length_col = excel_col_letter(df, "length_um_geodesic")
                 ws_sum.write(row, 0, "2D Geodesic Length (um)")
-                ws_sum.write_formula(row, 1, f"=AVERAGE('Raw_2D_Detections'!G2:G{n_2d})", num_fmt)
-                ws_sum.write_formula(row, 2, f"=MEDIAN('Raw_2D_Detections'!G2:G{n_2d})", num_fmt)
-                ws_sum.write_formula(row, 3, f"=STDEV.P('Raw_2D_Detections'!G2:G{n_2d})", num_fmt)
+                ws_sum.write_formula(row, 1, f"=AVERAGE('Raw_2D_Detections'!{length_col}2:{length_col}{n_2d})", num_fmt)
+                ws_sum.write_formula(row, 2, f"=MEDIAN('Raw_2D_Detections'!{length_col}2:{length_col}{n_2d})", num_fmt)
+                ws_sum.write_formula(row, 3, f"=STDEV.P('Raw_2D_Detections'!{length_col}2:{length_col}{n_2d})", num_fmt)
                 row += 1
             
             # 3D Metrics (all tracks as the primary report population)
             if df_tracks is not None and not df_tracks.empty:
                 n_3d = len(df_tracks) + 1 if not df_tracks.empty else 2  # Default to 2 to avoid #DIV/0! bounds
                 metrics_3d = [
-                    ("3D Geodesic Length (um)", "B"),
-                    ("3D Z-Extent (um)", "C"),
-                    ("3D Volume (um3)", "D"),
-                    ("3D Tortuosity", "E")
+                    ("3D Geodesic Length (um)", "total_3d_length_um"),
+                    ("3D Z-Span (um)", "z_span_um"),
+                    ("3D Z-Covered (um)", "z_covered_um"),
+                    ("3D Volume (um3)", "volume_um3"),
+                    ("3D Tortuosity", "tortuosity_3d")
                 ]
-                for m_name, col_letter in metrics_3d:
+                for m_name, col_name in metrics_3d:
+                    if col_name not in df_tracks.columns:
+                        continue
+                    col_letter = excel_col_letter(df_tracks, col_name)
                     ws_sum.write(row, 0, m_name)
                     ws_sum.write_formula(row, 1, f"=AVERAGE('3D_Morphometrics'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
                     ws_sum.write_formula(row, 2, f"=MEDIAN('3D_Morphometrics'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
@@ -2356,17 +2533,18 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             dictionary_data = [
                 ["Metric", "Formula / Definition", "Biological Interpretation"],
                 ["2D Geodesic Length", "Shortest-path length along a 2D skeleton", "Curved fragment length within a single optical slice."],
-                ["Total 3D Geodesic Length", "Σ sqrt((Δx)^2 + (Δy)^2 + (Δz)^2)", "Track-wise backbone length accumulated through x, y, and z."],
-                ["3D Euclidean Distance", "sqrt((x_end-x_start)^2 + (y_end-y_start)^2 + (z_end-z_start)^2)", "Straight-line displacement from first to last track position."],
-                ["3D Tortuosity", "3D Geodesic Length / 3D Euclidean Distance", "Curvature index. Values near 1 indicate straighter nuclei."],
-                ["Z-Extent (Vertical Span)", "(max_z - min_z) * UM_PER_SLICE_Z", "Vertical depth covered by a track through the tissue."],
-                ["3D Volume (µm³) †", "Σ(Area_slice × Z_step)", "PSF- and voxel-sensitive Riemann-sum approximation of nuclear volume. Use mainly for relative comparisons acquired under matched imaging settings."],
-                ["Effective Thickness (µm) †", "2 * sqrt((V_3D / L_3D) / π)", "PSF-sensitive cylinder-equivalent diameter. Comparative metric only; do not interpret as literal physical diameter."],
-                ["Pitch Angle (degrees)", "|arcsin(ΔZ / Euclidean_3D)| × 180/π", "Absolute plunge angle relative to the imaging plane."],
-                ["Taper Ratio †", "max(cross-sectional area) / min(cross-sectional area)", "PSF-sensitive area-derived metric. Useful for relative comparison and instability screening, not as a literal anatomical ratio."],
-                ["Nearest Neighbor (µm)", "Nearest 3D centroid-to-centroid distance", "Simple local packing-density readout."],
-                ["Quality Audit", "Post-tracking flag based on maximum 3D length, maximum 3D tortuosity, maximum effective thickness, maximum taper ratio, and minimum slice span", "Audit labels completed tracks after tracking. It does not change segmentation; it defines the audit-passed subset used for stricter summaries."],
-                ["Parameter Tuning Guidance", "Audit first → Tracking second → Segmentation last", "Change audit when summaries are too strict; change tracking when tracks are fragmented or over-merged; change segmentation only when the raw 2D detections themselves are wrong."],
+                ["Total 3D Geodesic Length", "sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)", "Projection-length plus Z-span estimate of whole-nucleus 3D length."],
+                ["3D Euclidean Distance", "sqrt(XY displacement^2 + z_span^2)", "Straight-line span used as the tortuosity denominator."],
+                ["3D Tortuosity", "Total 3D length / 3D Euclidean distance", "Curvature or over-merge index. Values near 1 indicate straighter nuclei."],
+                ["Z-Span (Vertical Span)", "(max_z - min_z) * UM_PER_SLICE_Z", "Endpoint-to-endpoint vertical span; single-slice tracks have span 0."],
+                ["Z-Covered", "(max_z - min_z + 1) * UM_PER_SLICE_Z", "Sampled slab thickness covered by the detections."],
+                ["3D Volume (um3) *", "sum(area_est_slice * XY_pixel_area * Z_step)", "PSF- and voxel-sensitive Riemann-sum approximation of nuclear volume. Use mainly for relative comparisons acquired under matched imaging settings."],
+                ["Effective Thickness (um) *", "2 * sqrt((V_3D / L_3D) / pi)", "PSF-sensitive cylinder-equivalent diameter. Comparative metric only; do not interpret as literal physical diameter."],
+                ["Pitch Angle (degrees)", "abs(arcsin(z_span / Euclidean_3D)) * 180/pi", "Absolute plunge angle relative to the imaging plane."],
+                ["Taper Ratio *", "max(area_est across track) / min(area_est across track)", "PSF-sensitive area-derived metric. Useful for relative comparison and instability screening, not as a literal anatomical ratio."],
+                ["Nearest Neighbor (um)", "Nearest 3D centroid-to-centroid distance", "Simple local packing-density readout."],
+                ["Quality Audit", "Post-tracking flag based on maximum 3D length, maximum 3D tortuosity, maximum effective thickness, maximum taper ratio, and minimum detected slice count", "Audit labels completed tracks after tracking. It does not change segmentation; it defines the audit-passed subset used for stricter summaries."],
+                ["Parameter Tuning Guidance", "Audit first -> Tracking second -> Segmentation last", "Change audit when summaries are too strict; change tracking when tracks are fragmented or over-merged; change segmentation only when the raw 2D detections themselves are wrong."],
                 ["Standard Deviation", "Std Dev", "Population spread around the mean."]
             ]
             pd.DataFrame(dictionary_data[1:], columns=dictionary_data[0]).to_excel(writer, sheet_name='Methods_Dictionary', index=False)
@@ -2399,7 +2577,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
 
 
 
-def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callback=None):
+def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callback=None, generate_pptx=True):
     """
     Compiles standard summary global output architectures including histograms, mathematical summaries,
     biological methodology pages, and graphical slice overlays natively to a `.pdf` file.
@@ -2427,6 +2605,9 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             # --- PAGE 1: GLOBAL SUMMARY ---
             fig_sum = plt.figure(figsize=(11, 8.5))
             fig_sum.suptitle(f"Spermatid Analysis Batch Summary - {_VERSION}\nLocation: {out_dir}", fontsize=14, fontweight='bold')
+            has_quality_tracks = df_tracks is not None and not df_tracks.empty and "is_quality_track" in df_tracks.columns
+            df_quality_tracks = df_tracks[df_tracks["is_quality_track"]].copy() if has_quality_tracks else pd.DataFrame()
+            has_quality_data = has_quality_tracks and not df_quality_tracks.empty
             
             # Global Z-Projection Image (Top Center)
             z_proj_path = os.path.join(out_dir, "global_z_projection.png")
@@ -2438,31 +2619,63 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             
             # Plot 1: Counts per slice
             ax1 = fig_sum.add_subplot(2, 2, 3)
-            ax1.plot(df_summary['z_slice'], df_summary['n_spermatids'], 'bo-', markersize=4)
-            ax1.set_title("Detections per Z-Slice")
+            ax1.plot(
+                df_summary['z_slice'],
+                df_summary['n_spermatids'],
+                color='lightgray',
+                marker='o',
+                markersize=3,
+                linewidth=1,
+                label='Raw 2D detections'
+            )
+            if has_quality_data and "z_start" in df_quality_tracks.columns:
+                q_counts = (
+                    df_quality_tracks["z_start"]
+                    .astype(int)
+                    .value_counts()
+                    .reindex(df_summary["z_slice"].astype(int), fill_value=0)
+                    .sort_index()
+                )
+                ax1.plot(q_counts.index, q_counts.values, 'go-', markersize=4, linewidth=1.5, label='Quality 3D tracks by start Z')
+                ax1.set_title("Quality 3D Tracks by Z-Start")
+            else:
+                ax1.set_title("Raw 2D Detections per Z-Slice")
             ax1.set_xlabel("Z-Index")
             ax1.set_ylabel("Count")
             ax1.grid(True, alpha=0.3)
+            ax1.legend(fontsize=7)
             
-            # Plot 2: Length Distribution (Global)
+            # Plot 2: Length Distribution (quality population when available)
             ax2 = fig_sum.add_subplot(2, 2, 4)
-            if not df.empty:
+            if has_quality_data and "total_3d_length_um" in df_quality_tracks.columns:
+                vals = df_quality_tracks['total_3d_length_um'].dropna()
+                if df_tracks is not None and "total_3d_length_um" in df_tracks.columns:
+                    vals_all = df_tracks['total_3d_length_um'].dropna()
+                    ax2.hist(vals_all, bins=25, color='lightgray', edgecolor='gray', alpha=0.45, label='All 3D tracks')
+                ax2.hist(vals, bins=25, color='darkorange', edgecolor='black', alpha=0.75, label='Quality 3D tracks')
+                m_med = vals.median()
+                m_avg = vals.mean()
+                ax2.axvline(m_med, color='red', linestyle='-', label=f"Median: {m_med:.1f}")
+                ax2.axvline(m_avg, color='black', linestyle='--', label=f"Mean: {m_avg:.1f}")
+                ax2.set_title("Quality 3D Length Distribution")
+                ax2.set_xlabel("Total 3D Length (um)")
+                ax2.set_ylabel("Frequency")
+                ax2.legend(fontsize=8)
+            elif not df.empty:
                 vals = df['length_um_geodesic']
                 ax2.hist(vals, bins=25, color='forestgreen', edgecolor='black', alpha=0.7)
                 m_med = vals.median()
                 m_avg = vals.mean()
                 ax2.axvline(m_med, color='red', linestyle='-', label=f"Median: {m_med:.1f}")
                 ax2.axvline(m_avg, color='orange', linestyle='--', label=f"Mean: {m_avg:.1f}")
-                ax2.set_title("Global 2D Length Distribution")
-                ax2.set_xlabel("Geodesic Length (um)")
+                ax2.set_title("Raw 2D Length Distribution (No Quality Tracks)")
+                ax2.set_xlabel("2D Geodesic Length (um)")
                 ax2.set_ylabel("Frequency")
                 ax2.legend(fontsize=8)
             
             fig_sum.savefig(os.path.join(plot_dir, "global_summary.png"), dpi=300, bbox_inches='tight')
             # NEW: Explicitly save global_histograms.png for Excel embedding
             fig_sum.savefig(os.path.join(plot_dir, "global_histograms.png"), dpi=300, bbox_inches='tight')
-            pdf.savefig(fig_sum, dpi=300, bbox_inches='tight')
-            plt.close(fig_sum)
             
             # Save length_by_slice.png
             fig_l_slice = plt.figure(figsize=(10, 5))
@@ -2563,12 +2776,18 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 pdf.savefig(fig_dyn, dpi=300, bbox_inches='tight')
                 plt.close(fig_dyn)
 
+            # Write the global summary after the tracking/audit page so the PDF opens
+            # on the population-quality overview when tracking results are available.
+            pdf.savefig(fig_sum, dpi=300, bbox_inches='tight')
+            plt.close(fig_sum)
+
             # --- PAGE 2: 3D MORPHOMETRICS SUMMARY (ALL TRACKS + QUALITY OVERLAY) ---
             if df_tracks is not None and not df_tracks.empty:
                 fig_3d = plt.figure(figsize=(11, 8.5))
                 
                 has_qf = "is_quality_track" in df_tracks.columns
                 df_q = df_tracks[df_tracks["is_quality_track"]] if has_qf else df_tracks
+                has_q_data = not df_q.empty
                 q_label = f" (Quality: {len(df_q):,} / {len(df_tracks):,})" if has_qf else ""
                 fig_3d.suptitle(f"3D Population Statistics{q_label}", fontsize=14, fontweight='bold')
                 
@@ -2577,9 +2796,11 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 vals_all = df_tracks['total_3d_length_um']
                 vals_q = df_q['total_3d_length_um']
                 ax3d_1.hist(vals_all, bins=20, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                ax3d_1.hist(vals_q, bins=20, color='darkorange', edgecolor='black', alpha=0.7, label='Quality')
-                m_med = vals_q.median()
-                m_avg = vals_q.mean()
+                if has_q_data:
+                    ax3d_1.hist(vals_q, bins=20, color='darkorange', edgecolor='black', alpha=0.7, label='Quality')
+                stats_len = vals_q if has_q_data else vals_all
+                m_med = stats_len.median()
+                m_avg = stats_len.mean()
                 ax3d_1.axvline(m_med, color='red', linestyle='-', label=f"Median: {m_med:.1f}")
                 ax3d_1.axvline(m_avg, color='black', linestyle='--', label=f"Mean: {m_avg:.1f}")
                 ax3d_1.set_title("Total 3D Geodesic Length")
@@ -2604,9 +2825,11 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 vt_all_viz = vt_all[(vt_all >= 0.95) & (vt_all <= 3.0)]
                 vt_q_viz = vt_q[(vt_q >= 0.95) & (vt_q <= 3.0)]
                 ax3d_2.hist(vt_all_viz, bins=25, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                ax3d_2.hist(vt_q_viz, bins=25, color='purple', edgecolor='black', alpha=0.6, label='Quality')
-                ax3d_2.axvline(vt_q.median(), color='red', linestyle='-', label=f"Median: {vt_q.median():.2f}")
-                ax3d_2.axvline(vt_q.mean(), color='black', linestyle='--', label=f"Mean: {vt_q.mean():.2f}")
+                if has_q_data:
+                    ax3d_2.hist(vt_q_viz, bins=25, color='purple', edgecolor='black', alpha=0.6, label='Quality')
+                stats_tort = vt_q if has_q_data else vt_all
+                ax3d_2.axvline(stats_tort.median(), color='red', linestyle='-', label=f"Median: {stats_tort.median():.2f}")
+                ax3d_2.axvline(stats_tort.mean(), color='black', linestyle='--', label=f"Mean: {stats_tort.mean():.2f}")
                 ax3d_2.set_xlim(0.95, 3.0)
                 ax3d_2.set_title("3D Tortuosity (Curvature)")
                 ax3d_2.set_xlabel("Ratio (Length / Distance)")
@@ -2615,14 +2838,17 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
 
                 # Vertical Extent
                 ax3d_3 = fig_3d.add_subplot(2, 2, 3)
-                ve_all = df_tracks['z_extent_um']
-                ve_q = df_q['z_extent_um']
+                z_col = "z_span_um" if "z_span_um" in df_tracks.columns else "z_extent_um"
+                ve_all = df_tracks[z_col]
+                ve_q = df_q[z_col]
                 ax3d_3.hist(ve_all, bins=15, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                ax3d_3.hist(ve_q, bins=15, color='teal', edgecolor='black', alpha=0.7, label='Quality')
-                ax3d_3.axvline(ve_q.median(), color='red', linestyle='-', label=f"Median: {ve_q.median():.1f}")
-                ax3d_3.axvline(ve_q.mean(), color='black', linestyle='--', label=f"Mean: {ve_q.mean():.1f}")
-                ax3d_3.set_title("Z-Extent (Vertical Span)")
-                ax3d_3.set_xlabel("Vertical Height (um)")
+                if has_q_data:
+                    ax3d_3.hist(ve_q, bins=15, color='teal', edgecolor='black', alpha=0.7, label='Quality')
+                stats_z = ve_q if has_q_data else ve_all
+                ax3d_3.axvline(stats_z.median(), color='red', linestyle='-', label=f"Median: {stats_z.median():.1f}")
+                ax3d_3.axvline(stats_z.mean(), color='black', linestyle='--', label=f"Mean: {stats_z.mean():.1f}")
+                ax3d_3.set_title("Z-Span (Vertical Span)")
+                ax3d_3.set_xlabel("Vertical Span (um)")
                 ax3d_3.set_ylabel("Frequency")
                 ax3d_3.legend(fontsize=7)
 
@@ -2631,9 +2857,11 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 vv_all = df_tracks['volume_um3']
                 vv_q = df_q['volume_um3']
                 ax3d_4.hist(vv_all, bins=20, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                ax3d_4.hist(vv_q, bins=20, color='gray', edgecolor='black', alpha=0.7, label='Quality')
-                ax3d_4.axvline(vv_q.median(), color='red', linestyle='-', label=f"Median: {vv_q.median():.0f}")
-                ax3d_4.axvline(vv_q.mean(), color='black', linestyle='--', label=f"Mean: {vv_q.mean():.0f}")
+                if has_q_data:
+                    ax3d_4.hist(vv_q, bins=20, color='gray', edgecolor='black', alpha=0.7, label='Quality')
+                stats_vol = vv_q if has_q_data else vv_all
+                ax3d_4.axvline(stats_vol.median(), color='red', linestyle='-', label=f"Median: {stats_vol.median():.0f}")
+                ax3d_4.axvline(stats_vol.mean(), color='black', linestyle='--', label=f"Mean: {stats_vol.mean():.0f}")
                 ax3d_4.set_title("Approximated 3D Volume")
                 ax3d_4.set_xlabel("Volume (um\u00b3)")
                 ax3d_4.set_ylabel("Frequency")
@@ -2702,36 +2930,36 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             guide_full = (
                 "METHODS, FORMULAE, AND AUDIT GUIDE\n"
                 f"{'='*80}\n\n"
-                "1. Total 3D Geodesic Length (µm)\n"
-                "   Formula: L_3D = Σ sqrt((Δx)² + (Δy)² + (Δz)²)\n"
-                "   Meaning: Track-wise backbone length accumulated through x, y, and z.\n\n"
-                "2. 3D Euclidean Distance (µm)\n"
-                "   Formula: D_3D = sqrt((x_end-x_start)² + (y_end-y_start)² + (z_end-z_start)²)\n"
-                "   Meaning: Straight-line end-to-end displacement of one tracked nucleus.\n\n"
+                "1. Total 3D Geodesic Length (um)\n"
+                "   Formula: L_3D = sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)\n"
+                "   Meaning: Projection-length plus Z-span estimate of whole-nucleus 3D length.\n\n"
+                "2. 3D Euclidean Distance (um)\n"
+                "   Formula: D_3D = sqrt(XY displacement^2 + z_span^2)\n"
+                "   Meaning: Straight-line span used as the tortuosity denominator.\n\n"
                 "3. 3D Tortuosity\n"
                 "   Formula: T = L_3D / D_3D\n"
                 "   Meaning: Curvature index. Values near 1 are straighter; high values suggest bent or fused tracks.\n\n"
-                "4. Z-Extent (Vertical Tissue Span)\n"
-                "   Formula: Z_extent = (max_z - min_z) × UM_PER_SLICE_Z\n"
-                "   Meaning: Total vertical span of a track through the stack.\n\n"
-                "5. Approximated 3D Volume (µm³)\n"
-                "   Formula: V_3D = Σ(Area_slice × Z_step)\n"
+                "4. Z-Span and Z-Covered\n"
+                "   Formula: z_span = (max_z - min_z) * UM_PER_SLICE_Z; z_covered = (max_z - min_z + 1) * UM_PER_SLICE_Z\n"
+                "   Meaning: Z-span is endpoint-to-endpoint displacement; Z-covered is sampled slab thickness.\n\n"
+                "5. Approximated 3D Volume (um3)\n"
+                "   Formula: V_3D = sum(area_est_slice * XY_pixel_area * Z_step)\n"
                 "   Meaning: PSF- and voxel-sensitive volume estimate. Best used for relative comparisons between datasets acquired with matched imaging settings, not as a literal absolute volume.\n\n"
-                "6. Effective Thickness (Average Diameter, µm)\n"
-                "   Formula: D_avg = 2 × sqrt((V_3D / L_3D) / π)\n"
-                "   Meaning: PSF-sensitive cylinder-equivalent diameter. Useful for relative WT-versus-mutant comparisons under matched imaging settings, not as a literal physical diameter.\n\n"
+                "6. Effective Thickness (Average Diameter, um)\n"
+                "   Formula: D_avg = 2 * sqrt((V_3D / L_3D) / pi)\n"
+                "   Meaning: PSF-sensitive cylinder-equivalent diameter. Useful for relative comparisons under matched imaging settings, not as a literal physical diameter.\n\n"
                 "7. Pitch Angle (Plunge Vector, Degrees)\n"
-                "   Formula: θ = |arcsin(ΔZ / D_3D)| × (180/π)\n"
+                "   Formula: theta = abs(arcsin(z_span / D_3D)) * 180/pi\n"
                 "   Meaning: Absolute plunge angle relative to the imaging plane.\n\n"
                 "8. Taper Ratio\n"
-                "   Formula: R = max(cross-sectional area) / min(cross-sectional area)\n"
+                "   Formula: R = max(area_est across track) / min(area_est across track)\n"
                 "   Meaning: PSF-sensitive area-derived instability metric. Large values can reflect abrupt narrowing, fusion, or segmentation instability; use mainly for relative comparison.\n\n"
-                "9. Spatial Packing Density (Nearest Neighbor Dist, µm)\n"
+                "9. Spatial Packing Density (Nearest Neighbor Dist, um)\n"
                 "   Formula: nearest 3D centroid-to-centroid distance\n"
                 "   Meaning: Simple local packing-density readout.\n\n"
                 "10. Quality Audit (post-tracking)\n"
                 "   Audit rules: length > AUDIT_MAX_LENGTH_UM, tortuosity > AUDIT_MAX_TORTUOSITY, thickness > AUDIT_MAX_THICKNESS_UM, taper > AUDIT_MAX_TAPER_RATIO, and n_slices < AUDIT_MIN_SLICES.\n"
-                "   Interpretation: Audit flags suspicious tracks after tracking. It should annotate the population, while reports distinguish all tracks from audit-passed tracks. In this Leica SP8 stack, single-slice nuclei can be biologically valid because the z-step (~1.04 µm) is larger than the true mature nucleus diameter (~0.3 µm).\n"
+                "   Interpretation: Audit flags suspicious tracks after tracking. It should annotate the population, while reports distinguish all tracks from audit-passed tracks. In this Leica SP8 stack, single-slice nuclei can be biologically valid because the z-step is larger than the true mature nucleus diameter.\n"
                 "\n11. PSF-sensitive metrics note\n"
                 "   Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling. Use them mainly for relative comparisons between matched WT and mutant datasets, not as literal physical dimensions.\n"
             )
@@ -2759,21 +2987,22 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 # -- All Tracks Section --
                 stats_rows.append(["--- ALL TRACKS ---", f"N={len(df_tracks)}", "", ""])
                 l3d = df_tracks['total_3d_length_um']
-                ze  = df_tracks['z_extent_um']
+                z_col = "z_span_um" if "z_span_um" in df_tracks.columns else "z_extent_um"
+                ze  = df_tracks[z_col]
                 vo  = df_tracks['volume_um3']
                 to  = df_tracks['tortuosity_3d']
                 th  = df_tracks['thickness_um']
                 stats_rows.append(["3D Length (um)", f"{l3d.mean():.2f}", f"{l3d.median():.2f}", f"{l3d.std():.2f}"])
-                stats_rows.append(["3D Z-Extent (um)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
-                stats_rows.append(["3D Volume (um3)†", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
+                stats_rows.append(["3D Z-Span (um)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
+                stats_rows.append(["3D Volume (um3)*", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append(["3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
-                stats_rows.append(["3D Thickness (um)†", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
+                stats_rows.append(["3D Thickness (um)*", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
                 
                 # -- Quality Population Section --
                 if has_qf and len(df_q) > 0:
                     stats_rows.append(["--- QUALITY POPULATION ---", f"N={len(df_q)}", "", ""])
                     l3q = df_q['total_3d_length_um']
-                    zeq = df_q['z_extent_um']
+                    zeq = df_q[z_col]
                     voq = df_q['volume_um3']
                     toq = df_q['tortuosity_3d']
                     thq = df_q['thickness_um']
@@ -2781,12 +3010,12 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                     taq = df_q['taper_ratio']
                     nnq = df_q['nearest_neighbor_um'].dropna()
                     stats_rows.append(["3D Length (um)", f"{l3q.mean():.2f}", f"{l3q.median():.2f}", f"{l3q.std():.2f}"])
-                    stats_rows.append(["3D Z-Extent (um)", f"{zeq.mean():.2f}", f"{zeq.median():.2f}", f"{zeq.std():.2f}"])
-                    stats_rows.append(["3D Volume (um3)†", f"{voq.mean():.1f}", f"{voq.median():.1f}", f"{voq.std():.1f}"])
+                    stats_rows.append(["3D Z-Span (um)", f"{zeq.mean():.2f}", f"{zeq.median():.2f}", f"{zeq.std():.2f}"])
+                    stats_rows.append(["3D Volume (um3)*", f"{voq.mean():.1f}", f"{voq.median():.1f}", f"{voq.std():.1f}"])
                     stats_rows.append(["3D Tortuosity", f"{toq.mean():.3f}", f"{toq.median():.3f}", f"{toq.std():.3f}"])
-                    stats_rows.append(["3D Thickness (um)†", f"{thq.mean():.2f}", f"{thq.median():.2f}", f"{thq.std():.2f}"])
+                    stats_rows.append(["3D Thickness (um)*", f"{thq.mean():.2f}", f"{thq.median():.2f}", f"{thq.std():.2f}"])
                     stats_rows.append(["3D Pitch (degrees)", f"{piq.mean():.1f}", f"{piq.median():.1f}", f"{piq.std():.1f}"])
-                    stats_rows.append(["3D Taper Ratio†", f"{taq.mean():.2f}", f"{taq.median():.2f}", f"{taq.std():.2f}"])
+                    stats_rows.append(["3D Taper Ratio*", f"{taq.mean():.2f}", f"{taq.median():.2f}", f"{taq.std():.2f}"])
                     if not nnq.empty:
                         stats_rows.append(["Nearest Neighbor (um)", f"{nnq.mean():.1f}", f"{nnq.median():.1f}", f"{nnq.std():.1f}"])
             
@@ -2829,7 +3058,7 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 if not slice_data.empty:
                     ax_hist.hist(slice_data['length_um_geodesic'], bins=15, color='skyblue', edgecolor='black')
                     ax_hist.set_title(f"Z={z} Length Distribution")
-                    ax_hist.set_xlabel("Spermatid Nucleus Length (µm)")
+                    ax_hist.set_xlabel("Spermatid Nucleus Length (um)")
                     ax_hist.set_ylabel("Frequency (Count)")
                     
                     m_med = slice_data['length_um_geodesic'].median()
@@ -2850,7 +3079,8 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
         
         # --- GENERATE POWERPOINT REPORT ---
         try:
-            generate_pptx_report(out_dir, df, df_summary, um, df_tracks)
+            if generate_pptx:
+                generate_pptx_report(out_dir, df, df_summary, um, df_tracks)
         except Exception as e:
             import traceback
             err_msg = traceback.format_exc()
@@ -2882,14 +3112,14 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
 
     Slide structure
     ---------------
-    1. **Global Population Analytics** — side-by-side column histograms of:
+    1. **Global Population Analytics** - side-by-side column histograms of:
        - 2D geodesic length distribution (from the current batch).
-       - 3D true track length distribution (if tracking was run).
-    2. **Population Tracking Consolidation** (if tracking was run) — pie chart
+       - 3D estimated track length distribution (if tracking was run).
+    2. **Population Tracking Consolidation** (if tracking was run) - pie chart
        showing the fraction of single-slice vs. multi-slice reassigned tracks.
-    3. **3D Biometrics Dashboard** — scatter plot of tortuosity vs. 3D length,
+    3. **3D Biometrics Dashboard** - scatter plot of tortuosity vs. 3D length,
        plus a bar chart of pitch angle distribution.
-    4. **Methods & Calculation Details** — text slide with biological justification
+    4. **Methods & Calculation Details** - text slide with biological justification
        and mathematical formulae for all metrics.
 
     Hyperlink behaviour
@@ -2901,14 +3131,15 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
     Biological context of each chart
     ---------------------------------
     - **Length histogram**: A Gaussian distribution centred near the species-expected
-      length (e.g., ~55 µm in *Drosophila*) indicates healthy elongation.  Bimodal
-      distributions may indicate two simultaneous maturation cohorts.
+      nuclear length (about 10 um for D. melanogaster in this workflow) supports
+      mature elongation. Bimodal distributions may indicate simultaneous maturation
+      cohorts, heteromorphic sperm classes, or segmentation/tracking mixtures.
     - **Pie chart**: Quantifies how many tracked objects span multiple Z-slices
-      (true 3D continuity) vs. transient single-slice events (possibly debris).
+      (multi-slice continuity) vs. transient single-slice events (possibly debris).
     - **Tortuosity vs. 3D length scatter**: Healthy spermatids cluster in the
       low-tortuosity, high-length quadrant.  High-tortuosity outliers indicate
       coiled or bent morphologies.
-    - **Pitch angle**: A right-skewed distribution towards 90° is expected during
+    - **Pitch angle**: A right-skewed distribution toward 90 degrees is expected during
       the apical plunging phase of spermatid elongation.
 
     Args:
@@ -2942,7 +3173,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             blank_slide_layout = prs.slide_layouts[0]
             
         def add_hyperlink(slide, sheet_name="Population_Summary"):
-            excel_name = "batch_analysis_results_v11.xlsx"
+            excel_name = f"batch_analysis_results_{_VERSION}.xlsx"
             # PowerPoint/Excel deep-link fragment: filename.xlsx#Sheet!A1
             target = f"{excel_name}#'{sheet_name}'!A1"
             
@@ -3013,17 +3244,12 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             chart_data = CategoryChartData()
             chart_data.categories = categories
             chart_data.add_series('Count', list(counts))
-            # ADD DUMMY SERIES FOR LEGEND STATS
-            chart_data.add_series(f'Mean: {avg:.2f}', [])
-            chart_data.add_series(f'Median: {med:.2f}', [])
             
             chart = slide.shapes.add_chart(
                 XL_CHART_TYPE.COLUMN_CLUSTERED, left, top, width, height, chart_data
             ).chart
-            chart.has_legend = True
-            chart.legend.position = XL_LEGEND_POSITION.CORNER
-            chart.legend.font.size = Pt(8)
-            chart.chart_title.text_frame.text = title
+            chart.has_legend = False
+            chart.chart_title.text_frame.text = f"{title} | Mean {avg:.2f}, Median {med:.2f}"
             chart.chart_title.text_frame.paragraphs[0].font.size = Pt(12)
             
             # Reduce axis label crowding
@@ -3122,17 +3348,20 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             tf = txBox.text_frame
             has_qf = "is_quality_track" in df_tracks.columns
             df_q = df_tracks[df_tracks["is_quality_track"]] if has_qf else df_tracks
+            plot_df = df_q if not df_q.empty else df_tracks
             q_label = f" (Quality: {len(df_q):,} / {len(df_tracks):,})" if has_qf else ""
+            if has_qf and df_q.empty:
+                q_label += " - all tracks shown"
             tf.text = f"Advanced 3D Biometrics Dashboard{q_label}"
             tf.paragraphs[0].font.size = Pt(22)
             tf.paragraphs[0].font.bold = True
             
-            # Slide 3 intentionally shows the quality population only.
-            # The full all-tracks population remains available in Excel/PDF outputs.
-            add_histogram(slide3, df_q['pitch_deg'], Inches(0.2), Inches(0.8), Inches(4.5), Inches(2.9), "Pitch Angle (Degrees)", bins=20)
-            add_histogram(slide3, df_q['thickness_um'], Inches(5.0), Inches(0.8), Inches(4.5), Inches(2.9), "Effective Thickness (\u00b5m)", bins=20)
-            add_histogram(slide3, df_q['taper_ratio'], Inches(0.2), Inches(3.8), Inches(4.5), Inches(2.9), "Morphological Taper Ratio", bins=20)
-            add_histogram(slide3, df_q['nearest_neighbor_um'].dropna(), Inches(5.0), Inches(3.8), Inches(4.5), Inches(2.9), "Nearest Neighbor Density (\u00b5m)", bins=20)
+            # Slide 3 shows quality tracks when available, falling back to all tracks
+            # if the audit-passed subset is empty.
+            add_histogram(slide3, plot_df['pitch_deg'], Inches(0.2), Inches(0.8), Inches(4.5), Inches(2.9), "Pitch Angle (Degrees)", bins=20)
+            add_histogram(slide3, plot_df['thickness_um'], Inches(5.0), Inches(0.8), Inches(4.5), Inches(2.9), "Effective Thickness (\u00b5m)", bins=20)
+            add_histogram(slide3, plot_df['taper_ratio'], Inches(0.2), Inches(3.8), Inches(4.5), Inches(2.9), "Morphological Taper Ratio", bins=20)
+            add_histogram(slide3, plot_df['nearest_neighbor_um'].dropna(), Inches(5.0), Inches(3.8), Inches(4.5), Inches(2.9), "Nearest Neighbor Density (\u00b5m)", bins=20)
             
             add_hyperlink(slide3, "3D_Morphometrics")
             
@@ -3161,12 +3390,13 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             
             def add_pop_rows(pop_df, prefix=""):
                 l3 = pop_df['total_3d_length_um']
-                ze = pop_df['z_extent_um']
+                z_col = "z_span_um" if "z_span_um" in pop_df.columns else "z_extent_um"
+                ze = pop_df[z_col]
                 vo = pop_df['volume_um3']
                 to = pop_df['tortuosity_3d']
                 th = pop_df['thickness_um']
                 stats_rows.append([f"{prefix}3D Length (\u00b5m)", f"{l3.mean():.2f}", f"{l3.median():.2f}", f"{l3.std():.2f}"])
-                stats_rows.append([f"{prefix}3D Z-Extent (\u00b5m)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
+                stats_rows.append([f"{prefix}3D Z-Span (\u00b5m)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
                 stats_rows.append([f"{prefix}3D Volume (\u00b5m\u00b3)", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append([f"{prefix}3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
                 stats_rows.append([f"{prefix}3D Thickness (\u00b5m)", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
@@ -3222,39 +3452,39 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
 
         # Synchronized text from the PDF report version
         methods_items = [
-            ("1. Total 3D Geodesic Length (µm)", [
-                ("Formula: ", "L_3D = Σ sqrt((Δx)² + (Δy)² + (Δz)²)"),
-                ("Meaning: ", "Track-wise backbone length accumulated through x, y, and z.")
+            ("1. Total 3D Geodesic Length (um)", [
+                ("Formula: ", "L_3D = sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)"),
+                ("Meaning: ", "Projection-length plus Z-span estimate of whole-nucleus 3D length.")
             ]),
-            ("2. 3D Euclidean Distance (µm)", [
-                ("Formula: ", "D_3D = sqrt((x_end-x_start)² + (y_end-y_start)² + (z_end-z_start)²)"),
-                ("Meaning: ", "Straight-line end-to-end displacement of one tracked nucleus.")
+            ("2. 3D Euclidean Distance (um)", [
+                ("Formula: ", "D_3D = sqrt(XY displacement^2 + z_span^2)"),
+                ("Meaning: ", "Straight-line span used as the tortuosity denominator.")
             ]),
             ("3. 3D Tortuosity", [
                 ("Formula: ", "T = L_3D / D_3D"),
-                ("Meaning: ", "Curvature index. Values near 1 are straighter; high values suggest bent or fused tracks.")
+                ("Meaning: ", "Curvature or over-merge index. Values near 1 are straighter; high values suggest bent or fused tracks.")
             ]),
-            ("4. Z-Extent (Vertical Tissue Span)", [
-                ("Formula: ", "Z_extent = (max_z - min_z) × UM_PER_SLICE_Z"),
-                ("Meaning: ", "Total vertical span of a track through the stack.")
+            ("4. Z-Span and Z-Covered", [
+                ("Formula: ", "z_span = (max_z - min_z) * UM_PER_SLICE_Z; z_covered = (max_z - min_z + 1) * UM_PER_SLICE_Z"),
+                ("Meaning: ", "Z-span is endpoint-to-endpoint displacement; Z-covered is sampled slab thickness.")
             ]),
-            ("5. Approximated 3D Volume (µm³)", [
-                ("Formula: ", "V_3D = Σ(Area_slice × Z_step)"),
-                ("Meaning: ", "PSF- and voxel-sensitive volume estimate. Use mainly for relative comparisons between datasets acquired with matched imaging settings, not as a literal absolute volume.")
+            ("5. Approximated 3D Volume (um3)", [
+                ("Formula: ", "V_3D = sum(area_est_slice * XY_pixel_area * Z_step)"),
+                ("Meaning: ", "PSF- and voxel-sensitive volume estimate. Use mainly for relative comparisons between matched datasets, not as a literal absolute volume.")
             ]),
-            ("6. Effective Thickness (Average Diameter, µm)", [
-                ("Formula: ", "D_avg = 2 × sqrt((V_3D / L_3D) / π)"),
-                ("Meaning: ", "PSF-sensitive cylinder-equivalent diameter. Useful for relative WT-versus-mutant comparisons under matched imaging settings, not as a literal physical diameter.")
+            ("6. Effective Thickness (Average Diameter, um)", [
+                ("Formula: ", "D_avg = 2 * sqrt((V_3D / L_3D) / pi)"),
+                ("Meaning: ", "PSF-sensitive cylinder-equivalent diameter. Useful for relative comparisons under matched imaging settings, not as a literal physical diameter.")
             ]),
             ("7. Pitch Angle (Plunge Vector, Degrees)", [
-                ("Formula: ", "θ = |arcsin(ΔZ / D_3D)| × (180/π)"),
+                ("Formula: ", "theta = abs(arcsin(z_span / D_3D)) * 180/pi"),
                 ("Meaning: ", "Absolute plunge angle relative to the imaging plane.")
             ]),
             ("8. Taper Ratio", [
-                ("Formula: ", "R = max(cross-sectional area) / min(cross-sectional area)"),
+                ("Formula: ", "R = max(area_est across track) / min(area_est across track)"),
                 ("Meaning: ", "PSF-sensitive area-derived instability metric. Large values can reflect abrupt narrowing, fusion, or segmentation instability; use mainly for relative comparison.")
             ]),
-            ("9. Spatial Packing Density (Nearest Neighbor Dist, µm)", [
+            ("9. Spatial Packing Density (Nearest Neighbor Dist, um)", [
                 ("Formula: ", "nearest 3D centroid-to-centroid distance"),
                 ("Meaning: ", "Simple local packing-density readout.")
             ]),
@@ -3267,7 +3497,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
                 ("Audit rules: ", "flag tracks when 3D length > AUDIT_MAX_LENGTH_UM, 3D tortuosity > AUDIT_MAX_TORTUOSITY, effective thickness > AUDIT_MAX_THICKNESS_UM, taper ratio > AUDIT_MAX_TAPER_RATIO, or track slices < AUDIT_MIN_SLICES."),
                 ("Meaning: ", "Audit does not change raw detection or tracking. It labels completed tracks so reports can distinguish all tracks from audit-passed tracks."),
                 ("Practical use: ", "Tune audit first for cleaner summaries. Tune tracking only when true nuclei are fragmenting or neighboring nuclei are being fused."),
-                ("Biology note: ", "At this acquisition z-step (~1.04 µm), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
+                ("Biology note: ", "At this acquisition z-step (~1.04 um), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
             ]),
             ("12. PSF-sensitive metrics note", [
                 ("Important: ", "Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling."),
@@ -3303,7 +3533,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
         add_hyperlink(slide5, "Population_Summary")
 
         # Save the presentation matching Batch Name
-        final_pptx_name = "batch_analysis_results_v11.pptx"
+        final_pptx_name = f"batch_analysis_results_{_VERSION}.pptx"
         output_path = os.path.join(out_dir, final_pptx_name)
         try:
             print(f"PPTX: Saving to {output_path}...")
@@ -3384,8 +3614,8 @@ PARAM_SECTIONS = {
 }
 
 PARAM_TITLES = {
-    "UM_PER_PX_XY": "XY pixel size (µm / pixel)",
-    "UM_PER_SLICE_Z": "Z step size (µm / slice)",
+    "UM_PER_PX_XY": "XY pixel size (um / pixel)",
+    "UM_PER_SLICE_Z": "Z step size (um / slice)",
     "CLAHE_CLIP": "CLAHE contrast limit",
     "CLAHE_KERNEL": "CLAHE tile size",
     "BG_SIGMA": "Background subtraction sigma",
@@ -3411,21 +3641,21 @@ PARAM_TITLES = {
     "MAX_ENDPOINT_COUNT": "Maximum endpoints",
     "ALLOW_LOOPS": "Allow looped skeletons",
     "DO_TRACKING": "Enable 3D tracking",
-    "TRACK_MAX_DIST_UM": "Maximum slice-to-slice centroid jump (µm)",
+    "TRACK_MAX_DIST_UM": "Maximum slice-to-slice centroid jump (um)",
     "TRACK_MAX_GAP_SLICES": "Maximum missing slices in one track",
     "TRACK_BBOX_PADDING_PX": "Bounding-box overlap padding (px)",
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": "Maximum width change ratio",
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": "Maximum length change ratio",
     "CONSERVATIVE_MAX_AREA_JUMP_RATIO": "Maximum area change ratio",
     "CONSERVATIVE_MAX_TORTUOSITY_JUMP": "Maximum tortuosity change",
-    "CONSERVATIVE_MAX_CENTROID_JUMP_UM": "Hard centroid jump stop-rule (µm)",
+    "CONSERVATIVE_MAX_CENTROID_JUMP_UM": "Hard centroid jump stop-rule (um)",
     "OVERLAP_STABILITY_THRESHOLD": "Overlap stability tolerance",
     "OVERLAP_ORIENTATION_DEG": "Maximum stable orientation difference (deg)",
     "OVERLAP_MULTIPLIER": "Overlap relaxation multiplier",
     "OVERLAP_MIN_STABLE_COUNT": "Minimum stable features for overlap continuation",
-    "AUDIT_MAX_LENGTH_UM": "Audit: maximum 3D length (µm)",
+    "AUDIT_MAX_LENGTH_UM": "Audit: maximum 3D length (um)",
     "AUDIT_MAX_TORTUOSITY": "Audit: maximum 3D tortuosity",
-    "AUDIT_MAX_THICKNESS_UM": "Audit: maximum effective thickness (µm, PSF-sensitive)",
+    "AUDIT_MAX_THICKNESS_UM": "Audit: maximum effective thickness (um, PSF-sensitive)",
     "AUDIT_MAX_TAPER_RATIO": "Audit: maximum taper ratio (PSF-sensitive)",
     "AUDIT_MIN_SLICES": "Audit: minimum slices required (1 recommended here)"
 }
@@ -3474,8 +3704,52 @@ PARAM_DESCRIPTIONS = {
     "AUDIT_MAX_TORTUOSITY": "Audit only. Flags unusually curved 3D tracks. Lower values make the quality set stricter; higher values keep more bent nuclei.",
     "AUDIT_MAX_THICKNESS_UM": "Audit only. Flags tracks that look too thick for a nucleus. PSF-sensitive: use mainly for relative WT-versus-mutant comparison under matched imaging settings rather than as a literal physical diameter cutoff.",
     "AUDIT_MAX_TAPER_RATIO": "Audit only. Flags tracks with extreme change from thickest to thinnest slice. PSF-sensitive and area-derived: useful for instability screening and relative comparison, not as a literal anatomical ratio.",
-    "AUDIT_MIN_SLICES": "Audit only. Minimum number of slices required to avoid the single-slice flag. For this Leica SP8 stack (z-step ~1.04 µm), set to 1 because mature Drosophila sperm nuclei can be biologically valid even when they appear in a single optical slice."
+    "AUDIT_MIN_SLICES": "Audit only. Minimum number of slices required to avoid the single-slice flag. For this Leica SP8 stack (z-step ~1.04 um), set to 1 because mature Drosophila sperm nuclei can be biologically valid even when they appear in a single optical slice."
 }
+
+PARAM_TITLES.update({
+    "UM_PER_PX_XY": "XY pixel size (um / pixel)",
+    "UM_PER_SLICE_Z": "Z step size (um / slice)",
+    "TRACK_MAX_DIST_UM": "Maximum slice-to-slice centroid jump (um)",
+    "CONSERVATIVE_MAX_CENTROID_JUMP_UM": "Hard centroid jump stop-rule (um)",
+    "AUDIT_MAX_LENGTH_UM": "Audit: maximum 3D length (um)",
+    "AUDIT_MAX_THICKNESS_UM": "Audit: maximum effective thickness (um, PSF-sensitive)",
+})
+
+PARAM_DESCRIPTIONS.update({
+    "UM_PER_SLICE_Z": (
+        "What it affects: z-span, z-covered, 3D length, pitch angle, and volume. "
+        "Increase only if the physical slice spacing is larger. This does not change "
+        "segmentation, only measurement scaling."
+    ),
+    "CONSERVATIVE_MAX_AREA_JUMP_RATIO": (
+        "What it affects: how much estimated 2D area can change from one slice to the next. "
+        "Area is estimated as geodesic length times median width, not raw skeleton pixel count. "
+        "Tuned by the evolutionary optimizer and useful for preventing track jumps in crowded regions."
+    ),
+    "OVERLAP_STABILITY_THRESHOLD": (
+        "What it affects: how similar width, estimated area, and length must remain when overlap "
+        "suggests the same object. Higher values reduce fragmentation; lower values are stricter."
+    ),
+    "AUDIT_MAX_LENGTH_UM": (
+        "Audit only. Tracks longer than this projection-length-plus-Z 3D estimate are flagged after "
+        "tracking. This does not change segmentation or tracking itself; it changes the audit-passed subset."
+    ),
+    "AUDIT_MAX_THICKNESS_UM": (
+        "Audit only. Flags tracks with a large cylinder-equivalent thickness derived from estimated volume "
+        "and 3D length. This is PSF-sensitive, so use mainly for relative comparisons under matched imaging "
+        "settings rather than as a literal physical diameter cutoff."
+    ),
+    "AUDIT_MAX_TAPER_RATIO": (
+        "Audit only. Flags tracks with extreme max/min estimated area across slices. Area is derived from "
+        "length times median width, so this is PSF-sensitive and best used for instability screening."
+    ),
+    "AUDIT_MIN_SLICES": (
+        "Audit only. Minimum number of detected slices required to avoid the single-slice flag. For this "
+        "Leica SP8 stack (z-step ~1.04 um), set to 1 because mature Drosophila sperm nuclei can be "
+        "biologically valid even when they appear in a single optical slice."
+    ),
+})
 
 TRACKING_TUNER_EXPLANATION = (
     "Several tracking parameters in this section were originally selected by an evolutionary tuning script. "
@@ -3485,7 +3759,7 @@ TRACKING_TUNER_EXPLANATION = (
 
 AUDIT_EXPLANATION = (
     "Quality audit is applied after 3D tracking. It does not delete tracks or change raw segmentation. "
-    "Instead, it labels completed tracks using five rules: maximum 3D length, maximum 3D tortuosity, maximum effective thickness, maximum taper ratio, and minimum slice span. "
+    "Instead, it labels completed tracks using five rules: maximum 3D length, maximum 3D tortuosity, maximum effective thickness, maximum taper ratio, and minimum detected slice count. "
     "Use audit parameters to make the quality subset stricter or looser without changing the underlying all-track population."
 )
 
@@ -3700,31 +3974,31 @@ class ParameterEditor(tk.Toplevel):
                 messagebox.showerror("Save Error", str(e))
 
 # =============================================================================
-# v12 ADVANCED AI BIOLOGICAL INTERPRETATION ENGINE
+# V5.2 ADVANCED AI BIOLOGICAL INTERPRETATION ENGINE
 # =============================================================================
 
 SPECIES_PROFILES = {
     "D. melanogaster": {
-        "length_target": "10.0 µm",
-        "thickness": "0.3-0.4 µm",
+        "length_target": "10.0 um",
+        "thickness": "0.3-0.4 um",
         "context": "Standard model species. Needle-like, highly condensed nucleus.",
         "heteromorphism": False
     },
     "D. simulans": {
-        "length_target": "9.5-10.5 µm",
-        "thickness": "0.3 µm",
+        "length_target": "9.5-10.5 um",
+        "thickness": "0.3 um",
         "context": "Close relative of D. mel, very similar nuclear profile.",
         "heteromorphism": False
     },
     "D. yakuba": {
-        "length_target": "10.0-11.0 µm",
-        "thickness": "0.35 µm",
+        "length_target": "10.0-11.0 um",
+        "thickness": "0.35 um",
         "context": "Close relative of D. mel, slightly different condensation timing.",
         "heteromorphism": False
     },
     "D. ananassae": {
-        "length_target": "8.0-10.0 µm",
-        "thickness": "0.3-0.4 µm",
+        "length_target": "8.0-10.0 um",
+        "thickness": "0.3-0.4 um",
         "context": "Melanogaster subgroup. Moderate nuclear elongation with distinct chromatin packaging.",
         "heteromorphism": False
     },
@@ -3735,8 +4009,8 @@ SPECIES_PROFILES = {
         "heteromorphism": True
     },
     "D. virilis (Dvir)": {
-        "length_target": "15.0-18.0 µm",
-        "thickness": "0.4 µm",
+        "length_target": "15.0-18.0 um",
+        "thickness": "0.4 um",
         "context": "Large species with robust, stable nuclear morphology.",
         "heteromorphism": False
     },
@@ -3747,6 +4021,39 @@ SPECIES_PROFILES = {
         "heteromorphism": "Possible"
     }
 }
+
+SPECIES_PROFILES.update({
+    "D. melanogaster": {
+        "length_target": "10.0 um",
+        "thickness": "0.3-0.4 um anatomical; reported thickness is PSF-sensitive",
+        "context": "Standard model species. Needle-like, highly condensed nucleus.",
+        "heteromorphism": False
+    },
+    "D. simulans": {
+        "length_target": "9.5-10.5 um",
+        "thickness": "0.3 um anatomical; reported thickness is PSF-sensitive",
+        "context": "Close relative of D. mel, very similar nuclear profile.",
+        "heteromorphism": False
+    },
+    "D. yakuba": {
+        "length_target": "10.0-11.0 um",
+        "thickness": "0.35 um anatomical; reported thickness is PSF-sensitive",
+        "context": "Close relative of D. mel, slightly different condensation timing.",
+        "heteromorphism": False
+    },
+    "D. ananassae": {
+        "length_target": "8.0-10.0 um",
+        "thickness": "0.3-0.4 um anatomical; reported thickness is PSF-sensitive",
+        "context": "Melanogaster subgroup. Moderate nuclear elongation with distinct chromatin packaging.",
+        "heteromorphism": False
+    },
+    "D. virilis (Dvir)": {
+        "length_target": "15.0-18.0 um",
+        "thickness": "0.4 um anatomical; reported thickness is PSF-sensitive",
+        "context": "Large species with robust, stable nuclear morphology.",
+        "heteromorphism": False
+    },
+})
 
 def get_ai_biological_interpretation(csv_summary_str, species, folder_name, model_id="gemini-2.5-pro"):
     """Calls Gemini API for biological narrative. Priority: Local File > Env Var."""
@@ -3777,16 +4084,20 @@ def get_ai_biological_interpretation(csv_summary_str, species, folder_name, mode
     - Target Species: {species}
     - Baseline Profile: {profile['context']}
     - Expected Length Class: {profile['length_target']}
+    - Thickness Reference: {profile['thickness']}
     - Heteromorphism (Multiple Morphs): {'Yes' if profile.get('heteromorphism') else 'No'}
     - Source Data Folder: {folder_name}
+    - Measurement Caveat: reported 3D length is a projection-length-plus-Z-span estimate. Volume,
+      effective thickness, taper, and area-derived metrics are PSF- and sampling-sensitive; use them
+      mainly for relative comparisons under matched imaging settings, not literal anatomical dimensions.
     
     INPUT DATA (CSV Summary):
     {csv_summary_str}
     
     YOUR TASK:
     1. Determine the 'Morphological Class' of this population. Does it align with the expected {species} profile?
-    2. Analyze maturation: Are these likely mature motile sperm or transitionary elongating spermatids based on length/thickness/tortuosity?
-    3. Identify Anomalies: Highlight any outliers in tortuosity or uneven thickness that indicate fixation artifacts or developmental defects.
+    2. Analyze maturation: Are these likely mature motile sperm or transitionary elongating spermatids based primarily on length and track morphology, with thickness treated as PSF-sensitive supporting evidence?
+    3. Identify Anomalies: Highlight outliers in tortuosity, estimated thickness, taper, or abrupt area change that may indicate fixation artifacts, segmentation instability, over-merging, or developmental defects.
     4. Evolutionary Insight: Provide 2-3 sentences on the evolutionary context of this sperm morphology.
     5. Formatting: Use professional, high-density scientific language. Use Markdown formatting.
     """
@@ -3800,7 +4111,7 @@ def get_ai_biological_interpretation(csv_summary_str, species, folder_name, mode
 
 def generate_ai_html_report(out_dir, ai_text, stats_summary, species):
     """Generates premium HTML dashboard."""
-    html_path = os.path.join(out_dir, "AI_Biological_Analysis_v12.html")
+    html_path = os.path.join(out_dir, f"AI_Biological_Analysis_{_VERSION}.html")
     try:
         import markdown
         ai_html = markdown.markdown(ai_text)
@@ -3814,7 +4125,7 @@ def generate_ai_html_report(out_dir, ai_text, stats_summary, species):
     <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Sperm AI Analysis - v12</title>
+        <title>Sperm AI Analysis - {_VERSION}</title>
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
         <style>
             :root {{ --primary: #2563eb; --bg: #f8fafc; --card: rgba(255, 255, 255, 0.8); }}
@@ -3832,14 +4143,14 @@ def generate_ai_html_report(out_dir, ai_text, stats_summary, species):
     </head>
     <body>
         <div class="container">
-            <span class="badge">Drosophila Morphometrics v12</span>
+            <span class="badge">Drosophila Morphometrics {_VERSION}</span>
             <h1>AI Biological Interpretation</h1>
             <p>Advanced Analysis for <strong>{species}</strong></p>
             <div class="stats-grid">{stats_html}</div>
             <div class="glass-card">
                 <div class="ai-content">{ai_html}</div>
             </div>
-            <footer>Generated | {time.strftime('%Y-%m-%d %H:%M:%S')} | v12 AI Layer</footer>
+            <footer>Generated | {time.strftime('%Y-%m-%d %H:%M:%S')} | {_VERSION} AI Layer</footer>
         </div>
     </body>
     </html>
@@ -3854,19 +4165,19 @@ class SpermGUI:
     The primary Tkinter-based graphical user interface for the Sperm Segmentation ROI Tool.
 
     The GUI provides a two-panel layout:
-    - **Left sidebar** — controls for directory loading, Z-slice navigation,
+    - **Left sidebar** - controls for directory loading, Z-slice navigation,
       tool selection, ROI drawing, single-slice analysis, batch analysis,
       and two progress bars (2D segmentation and post-analysis reporting).
-    - **Right canvas** — a matplotlib ``FigureCanvasTkAgg`` that renders the
+    - **Right canvas** - a matplotlib ``FigureCanvasTkAgg`` that renders the
       currently selected Z-slice image (raw, overlay, or debug) and accepts
       polygon ROI drawing interactions.
 
     Key interaction modes (controlled by ``mode_var``)
     ---------------------------------------------------
-    - ``'view'``   — pans and inspects the raw image.
-    - ``'review'`` — displays the saved overlay PNG for the current slice (requires
+    - ``'view'``   - pans and inspects the raw image.
+    - ``'review'`` - displays the saved overlay PNG for the current slice (requires
       a prior batch run).
-    - ``'roi'``    — left-click to add polygon vertices; right-click to undo the
+    - ``'roi'``    - left-click to add polygon vertices; right-click to undo the
       last vertex; call *Finalize Polygon* to close and rasterise the mask.
 
     Thread architecture
@@ -3909,13 +4220,13 @@ class SpermGUI:
                 if key in CONFIG:
                     old_val = CONFIG[key]
                     CONFIG[key] = value
-                    applied.append(f"  {key}: {old_val} → {value}")
+                    applied.append(f"  {key}: {old_val} -> {value}")
             
             if applied:
                 n = len(applied)
                 short_name = os.path.basename(filepath)
                 self.lbl_params_status.config(
-                    text=f'✅ Loaded {n} params from {short_name}',
+                    text=f'OK Loaded {n} params from {short_name}',
                     fg='green'
                 )
                 detail = "\n".join(applied)
@@ -3930,6 +4241,82 @@ class SpermGUI:
                     f"No recognized CONFIG keys found in {os.path.basename(filepath)}")
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load parameters:\n{e}")
+
+    def _launch_parameter_tuner(self, mode):
+        """Launch the external V5.2 tuner without blocking the GUI."""
+        from tkinter import messagebox, simpledialog
+
+        if not self.input_dir:
+            messagebox.showwarning(
+                "Load Directory First",
+                "Load the image directory before launching the tuner."
+            )
+            return
+
+        default_slices = "0-12"
+        if self.files:
+            z_values = []
+            for f in self.files:
+                m = re.search(r"z(\d+)", os.path.basename(f), re.IGNORECASE)
+                if m:
+                    z_values.append(int(m.group(1)))
+            if z_values:
+                z_values = sorted(set(z_values))
+                start = z_values[0]
+                end = z_values[min(len(z_values) - 1, 12)]
+                default_slices = f"{start}-{end}"
+
+        slice_str = simpledialog.askstring(
+            "Tuner Slices",
+            "Enter representative z-slices for tuning (for example 0-12 or 10,15,20,25):",
+            initialvalue=default_slices,
+            parent=self.root
+        )
+        if not slice_str:
+            return
+
+        tuner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "tune_parameters_Saturnv5_2.py")
+        if not os.path.exists(tuner_path):
+            messagebox.showerror("Tuner Missing", f"Could not find tuner:\n{tuner_path}")
+            return
+
+        outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parameter_tuning_results")
+        ensure_dir(outdir)
+        try:
+            roi_mask = self.build_roi_mask()
+            if roi_mask is not None:
+                roi_path = os.path.join(outdir, "last_drawn_roi_saturnv5_2_tune.tif")
+                tifffile.imwrite(roi_path, roi_mask.astype(np.uint8) * 255)
+        except Exception as e:
+            print(f"Could not export current ROI for tuner: {e}")
+
+        cmd = [
+            sys.executable,
+            tuner_path,
+            "--mode", mode,
+            "--dir", self.input_dir,
+            "--slices", slice_str,
+            "--outdir", outdir,
+        ]
+
+        if mode == "segmentation":
+            cmd.extend(["--maxiter", "6", "--popsize", "6", "--review-candidates", "8"])
+
+        try:
+            creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            subprocess.Popen(cmd, cwd=os.path.dirname(os.path.abspath(__file__)), creationflags=creationflags)
+            self.lbl_params_status.config(
+                text=f"Started {mode} tuner for z={slice_str}",
+                fg="#0f766e"
+            )
+            messagebox.showinfo(
+                "Tuner Started",
+                f"Started {mode} tuning in a separate process.\n\n"
+                f"Results will be saved to:\n{outdir}\n\n"
+                "When it finishes, use 'Load Tuned Params' to apply a JSON candidate."
+            )
+        except Exception as e:
+            messagebox.showerror("Tuner Launch Error", f"Could not launch tuner:\n{e}")
     
     def _on_sidebar_frame_configure(self, event=None):
         self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox('all'))
@@ -3937,6 +4324,19 @@ class SpermGUI:
     def _on_sidebar_canvas_configure(self, event):
         target_width = max(event.width - 4, 320)
         self.sidebar_canvas.itemconfigure(self.sidebar_window, width=target_width)
+
+    def _bind_sidebar_widget_tree(self, widget):
+        """Make mouse wheel scrolling work over buttons, labels, entries, and frames."""
+        widget.bind('<MouseWheel>', self._on_sidebar_mousewheel, add='+')
+        widget.bind('<Shift-MouseWheel>', self._on_sidebar_shift_mousewheel, add='+')
+        widget.bind('<Button-4>', self._on_sidebar_linux_scroll_up, add='+')
+        widget.bind('<Button-5>', self._on_sidebar_linux_scroll_down, add='+')
+        widget.bind('<Home>', self._sidebar_scroll_top, add='+')
+        widget.bind('<End>', self._sidebar_scroll_bottom, add='+')
+        widget.bind('<Prior>', self._sidebar_page_up, add='+')
+        widget.bind('<Next>', self._sidebar_page_down, add='+')
+        for child in widget.winfo_children():
+            self._bind_sidebar_widget_tree(child)
 
     def _bind_sidebar_mousewheel(self, event=None):
         self.sidebar_canvas.bind_all('<MouseWheel>', self._on_sidebar_mousewheel)
@@ -3955,20 +4355,77 @@ class SpermGUI:
         if delta == 0:
             return
         step = -1 * int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
-        self.sidebar_canvas.yview_scroll(step, 'units')
+        self.sidebar_canvas.yview_scroll(step * 4, 'units')
+        return "break"
 
     def _on_sidebar_shift_mousewheel(self, event):
         delta = getattr(event, 'delta', 0)
         if delta == 0:
             return
         step = -1 * int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
-        self.sidebar_canvas.xview_scroll(step, 'units')
+        self.sidebar_canvas.xview_scroll(step * 4, 'units')
+        return "break"
 
     def _on_sidebar_linux_scroll_up(self, event):
-        self.sidebar_canvas.yview_scroll(-1, 'units')
+        self.sidebar_canvas.yview_scroll(-4, 'units')
+        return "break"
 
     def _on_sidebar_linux_scroll_down(self, event):
-        self.sidebar_canvas.yview_scroll(1, 'units')
+        self.sidebar_canvas.yview_scroll(4, 'units')
+        return "break"
+
+    def _sidebar_scroll_top(self, event=None):
+        self.sidebar_canvas.yview_moveto(0.0)
+        return "break"
+
+    def _sidebar_scroll_bottom(self, event=None):
+        self.sidebar_canvas.yview_moveto(1.0)
+        return "break"
+
+    def _sidebar_page_up(self, event=None):
+        self.sidebar_canvas.yview_scroll(-1, 'pages')
+        return "break"
+
+    def _sidebar_page_down(self, event=None):
+        self.sidebar_canvas.yview_scroll(1, 'pages')
+        return "break"
+
+    def _make_sidebar_section(self, parent, title, default_open=True, accent="#dbeafe"):
+        """Create a compact collapsible section for the main sidebar."""
+        outer = tk.Frame(parent, bg="#f0f0f0", bd=1, relief="groove")
+        outer.pack(fill="x", padx=6, pady=(6, 2))
+
+        body = tk.Frame(outer, bg="#f7f7f7")
+        state = {"open": bool(default_open)}
+
+        def sync_header():
+            marker = "-" if state["open"] else "+"
+            header.config(text=f"{marker} {title}")
+
+        def toggle():
+            state["open"] = not state["open"]
+            if state["open"]:
+                body.pack(fill="x", padx=0, pady=(0, 4))
+            else:
+                body.pack_forget()
+            sync_header()
+            self._on_sidebar_frame_configure()
+
+        header = tk.Button(
+            outer,
+            command=toggle,
+            anchor="w",
+            bg=accent,
+            relief="flat",
+            font=("Arial", 9, "bold"),
+            padx=8,
+            pady=4
+        )
+        header.pack(fill="x")
+        if state["open"]:
+            body.pack(fill="x", padx=0, pady=(0, 4))
+        sync_header()
+        return body
 
     def _revert_to_defaults(self):
         """Revert CONFIG back to the original defaults captured at startup."""
@@ -4003,7 +4460,7 @@ class SpermGUI:
         self.roi_active = False
         self._loaded_roi_mask = None
 
-        # --- v12 AI ANALYSIS CONTROLS ---
+        # --- AI ANALYSIS CONTROLS ---
         self.species_var = tk.StringVar(value='D. melanogaster')
         self.model_var = tk.StringVar(value='Gemini 2.5 Pro (Thinking)')
         self._last_batch_ts = None
@@ -4018,6 +4475,38 @@ class SpermGUI:
         self.sidebar_scrollbar = ttk.Scrollbar(self.sidebar_container, orient='vertical', command=self.sidebar_canvas.yview)
         self.sidebar_hscrollbar = ttk.Scrollbar(self.sidebar_container, orient='horizontal', command=self.sidebar_canvas.xview)
         self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set, xscrollcommand=self.sidebar_hscrollbar.set)
+
+        self.sidebar_quick_actions = tk.Frame(self.sidebar_container, bg='#e5e7eb', bd=1, relief='ridge')
+        self.sidebar_quick_actions.pack(side='bottom', fill='x')
+        tk.Label(
+            self.sidebar_quick_actions,
+            text='Quick Actions',
+            bg='#e5e7eb',
+            fg='#374151',
+            font=('Arial', 8, 'bold')
+        ).pack(anchor='w', padx=6, pady=(4, 0))
+        quick_row1 = tk.Frame(self.sidebar_quick_actions, bg='#e5e7eb')
+        quick_row1.pack(fill='x', padx=6, pady=(3, 2))
+        tk.Button(
+            quick_row1,
+            text='Run Slice',
+            command=self.run_analysis_slice,
+            width=10
+        ).pack(side='left', expand=True, fill='x', padx=(0, 2))
+        tk.Button(
+            quick_row1,
+            text='Run Batch',
+            command=self.run_batch_analysis,
+            bg='#d4edda',
+            font=('Arial', 9, 'bold'),
+            width=10
+        ).pack(side='right', expand=True, fill='x', padx=(2, 0))
+        quick_row2 = tk.Frame(self.sidebar_quick_actions, bg='#e5e7eb')
+        quick_row2.pack(fill='x', padx=6, pady=(2, 6))
+        tk.Button(quick_row2, text='Top', command=self._sidebar_scroll_top, width=6).pack(side='left', fill='x', padx=(0, 2))
+        tk.Button(quick_row2, text='Bottom', command=self._sidebar_scroll_bottom, width=7).pack(side='left', fill='x', padx=(2, 2))
+        tk.Button(quick_row2, text='Save ROI', command=self.save_roi_mask, width=8).pack(side='left', expand=True, fill='x', padx=(2, 2))
+        tk.Button(quick_row2, text='Load ROI', command=self.load_roi_mask, width=8).pack(side='right', expand=True, fill='x', padx=(2, 0))
 
         self.sidebar_canvas.pack(side='left', fill='both', expand=True)
         self.sidebar_scrollbar.pack(side='right', fill='y')
@@ -4035,64 +4524,86 @@ class SpermGUI:
         # -----------------------------------------------------------------------------------------------
 
         self.default_config = CONFIG.copy()
-        tk.Button(self.sidebar, text='⚙ Configure Parameters', command=self.open_parameter_editor, bg='#e2e3e5').pack(fill='x', padx=6, pady=(10,2))
-
-        # --- Stage 2: Load/Revert Tuned Parameters ---
-        params_frame = tk.Frame(self.sidebar, bg='#f0f0f0')
-        params_frame.pack(fill='x', padx=6, pady=(2,6))
-        tk.Button(params_frame, text='📂 Load Tuned Params', command=self._load_tuned_params, bg='#d4edda', width=16).pack(side='left', expand=True, fill='x', padx=(0,2))
-        tk.Button(params_frame, text='↩ Revert Defaults', command=self._revert_to_defaults, bg='#f8d7da', width=14).pack(side='right', expand=True, fill='x', padx=(2,0))
-        self.lbl_params_status = tk.Label(self.sidebar, text='Using default parameters', wraplength=260, justify='left', fg='#555', font=('Arial', 8))
-        self.lbl_params_status.pack(pady=(0,4))
-
-        tk.Button(self.sidebar, text='Load Directory', command=self.load_directory, height=2).pack(fill='x', padx=6, pady=6)
-        self.lbl_status = tk.Label(self.sidebar, text='No directory loaded', wraplength=260, justify='left')
-        self.lbl_status.pack(pady=6)
-
-        tk.Label(self.sidebar, text='Z-Slice Navigation').pack(pady=(20, 0))
-        self.scale_z = tk.Scale(self.sidebar, from_=0, to=0, orient='horizontal', command=self.on_slide_change)
-        self.scale_z.pack(fill='x', padx=10)
-        self.lbl_z = tk.Label(self.sidebar, text='Z: 0 / 0')
-        self.lbl_z.pack()
-
-        tk.Label(self.sidebar, text='Tools').pack(pady=(20, 5))
         self.mode_var = tk.StringVar(value='view')
-        tk.Radiobutton(self.sidebar, text='View/Nav (Raw Image)', variable=self.mode_var, value='view', command=self.render).pack(anchor='w', padx=10)
-        tk.Radiobutton(self.sidebar, text='Review Overlays (After Batch)', variable=self.mode_var, value='review', command=self.render).pack(anchor='w', padx=10)
-        tk.Radiobutton(self.sidebar, text='Draw ROI (Polygon)', variable=self.mode_var, value='roi', command=self.render).pack(anchor='w', padx=10)
-        tk.Label(self.sidebar, text='(Left-click points, Right-click undo)', font=('Arial', 8, 'italic'), fg='dimgray').pack()
-        tk.Button(self.sidebar, text='Finalize Polygon', command=self.finalize_roi, bg='#ffeeba').pack(fill='x', padx=20, pady=2)
 
-        # ── v12 ADVANCED AI ANALYTICS ─────────────────────────────────────────
-        tk.Label(self.sidebar, text='v12 AI Biological Analysis', font=('Arial', 10, 'bold'), fg='#8b5cf6').pack(pady=(20, 0))
+        data_section = self._make_sidebar_section(self.sidebar, "Data", default_open=True, accent="#dbeafe")
+        tk.Button(data_section, text='Load Directory', command=self.load_directory, height=2).pack(fill='x', padx=8, pady=(8, 4))
+        self.lbl_status = tk.Label(data_section, text='No directory loaded', wraplength=260, justify='left', bg="#f7f7f7", fg="#374151")
+        self.lbl_status.pack(fill='x', padx=8, pady=(0, 8))
+
+        params_section = self._make_sidebar_section(self.sidebar, "Parameters", default_open=True, accent="#e2e3e5")
+        tk.Button(params_section, text='Configure Parameters', command=self.open_parameter_editor, bg='#e2e3e5').pack(fill='x', padx=8, pady=(8, 4))
+        params_frame = tk.Frame(params_section, bg='#f7f7f7')
+        params_frame.pack(fill='x', padx=8, pady=(0, 4))
+        tk.Button(params_frame, text='Load Tuned Params', command=self._load_tuned_params, bg='#d4edda', width=16).pack(side='left', expand=True, fill='x', padx=(0, 2))
+        tk.Button(params_frame, text='Revert Defaults', command=self._revert_to_defaults, bg='#f8d7da', width=14).pack(side='right', expand=True, fill='x', padx=(2, 0))
+        self.lbl_params_status = tk.Label(params_section, text='Using default parameters', wraplength=260, justify='left', fg='#555', bg="#f7f7f7", font=('Arial', 8))
+        self.lbl_params_status.pack(fill='x', padx=8, pady=(0, 8))
+
+        tuning_section = self._make_sidebar_section(self.sidebar, "Tuning", default_open=True, accent="#cffafe")
+        tuner_frame = tk.Frame(tuning_section, bg='#f7f7f7')
+        tuner_frame.pack(fill='x', padx=8, pady=8)
+        tk.Button(
+            tuner_frame,
+            text='Tune Segmentation',
+            command=lambda: self._launch_parameter_tuner("segmentation"),
+            bg='#cffafe',
+            width=16
+        ).pack(side='left', expand=True, fill='x', padx=(0, 2))
+        tk.Button(
+            tuner_frame,
+            text='Tune Tracking',
+            command=lambda: self._launch_parameter_tuner("tracking"),
+            bg='#e0e7ff',
+            width=14
+        ).pack(side='right', expand=True, fill='x', padx=(2, 0))
+
+        nav_section = self._make_sidebar_section(self.sidebar, "Z Navigation", default_open=True, accent="#fef3c7")
+        self.scale_z = tk.Scale(nav_section, from_=0, to=0, orient='horizontal', command=self.on_slide_change, bg="#f7f7f7", highlightthickness=0)
+        self.scale_z.pack(fill='x', padx=8, pady=(8, 2))
+        self.lbl_z = tk.Label(nav_section, text='Z: 0 / 0', bg="#f7f7f7")
+        self.lbl_z.pack(pady=(0, 8))
+
+        tools_section = self._make_sidebar_section(self.sidebar, "View / ROI Drawing", default_open=True, accent="#fde68a")
+        tk.Radiobutton(tools_section, text='View/Nav (Raw Image)', variable=self.mode_var, value='view', command=self.render, bg="#f7f7f7").pack(anchor='w', padx=10, pady=(6, 0))
+        tk.Radiobutton(tools_section, text='Review Overlays (After Batch)', variable=self.mode_var, value='review', command=self.render, bg="#f7f7f7").pack(anchor='w', padx=10)
+        tk.Radiobutton(tools_section, text='Draw ROI (Polygon)', variable=self.mode_var, value='roi', command=self.render, bg="#f7f7f7").pack(anchor='w', padx=10)
+        tk.Label(tools_section, text='Left-click points, right-click undo', font=('Arial', 8, 'italic'), fg='dimgray', bg="#f7f7f7").pack(fill='x', padx=10, pady=(2, 4))
+        tk.Button(tools_section, text='Finalize Polygon', command=self.finalize_roi, bg='#ffeeba').pack(fill='x', padx=20, pady=(0, 8))
+
+        roi_section = self._make_sidebar_section(self.sidebar, "ROI Files", default_open=True, accent="#dcfce7")
+        roi_buttons = tk.Frame(roi_section, bg="#f7f7f7")
+        roi_buttons.pack(fill='x', padx=8, pady=(8, 4))
+        tk.Button(roi_buttons, text='Reset ROI', command=self.reset_roi).pack(side='left', expand=True, fill='x', padx=(0, 2))
+        tk.Button(roi_buttons, text='Save ROI', command=self.save_roi_mask).pack(side='left', expand=True, fill='x', padx=2)
+        tk.Button(roi_buttons, text='Load ROI', command=self.load_roi_mask).pack(side='right', expand=True, fill='x', padx=(2, 0))
+        self.lbl_roi = tk.Label(roi_section, text='ROI: none', wraplength=260, justify='left', bg="#f7f7f7", fg="#374151")
+        self.lbl_roi.pack(fill='x', padx=8, pady=(0, 8))
+
+        analysis_section = self._make_sidebar_section(self.sidebar, "Analysis", default_open=True, accent="#d4edda")
+        tk.Button(analysis_section, text='Run Analysis on Slice', command=self.run_analysis_slice).pack(fill='x', padx=8, pady=(8, 4))
+        tk.Button(analysis_section, text='Run Batch (All Slices + 3D Track)', command=self.run_batch_analysis, bg='#d4edda', font=('Arial', 10, 'bold')).pack(fill='x', padx=8, pady=(0, 8))
+
+        ai_section = self._make_sidebar_section(self.sidebar, f'{_VERSION} AI Biological Analysis', default_open=False, accent="#ede9fe")
         species_list = [
             'D. melanogaster', 'D. simulans', 'D. yakuba',
             'D. ananassae', 'D. pseudoobscura (Dpse)',
             'D. virilis (Dvir)', 'General / Evolutionary'
         ]
-        self.species_dropdown = ttk.Combobox(self.sidebar, textvariable=self.species_var, values=species_list, state='readonly')
-        self.species_dropdown.pack(fill='x', padx=10, pady=5)
-        
-        tk.Label(self.sidebar, text='AI Model:', font=('Arial', 8)).pack()
+        self.species_dropdown = ttk.Combobox(ai_section, textvariable=self.species_var, values=species_list, state='readonly')
+        self.species_dropdown.pack(fill='x', padx=8, pady=(8, 5))
+        tk.Label(ai_section, text='AI Model:', font=('Arial', 8), bg="#f7f7f7").pack(anchor='w', padx=8)
         models = ['Gemini 2.5 Pro (Thinking)', 'Gemini 2.5 Flash (Fast)']
-        self.model_dropdown = ttk.Combobox(self.sidebar, textvariable=self.model_var, values=models, state='readonly')
-        self.model_dropdown.pack(fill='x', padx=10, pady=(0, 5))
-
-        tk.Button(self.sidebar, text='🔑 Set API Key (Free)', command=self.set_ai_key, font=('Arial', 8)).pack(padx=10, pady=(0, 5))
-        self.btn_ai = tk.Button(self.sidebar, text='🧬 Run AI Analysis', command=self.run_ai_analysis,
+        self.model_dropdown = ttk.Combobox(ai_section, textvariable=self.model_var, values=models, state='readonly')
+        self.model_dropdown.pack(fill='x', padx=8, pady=(0, 5))
+        tk.Button(ai_section, text='Set API Key (Free)', command=self.set_ai_key, font=('Arial', 8)).pack(fill='x', padx=8, pady=(0, 5))
+        self.btn_ai = tk.Button(ai_section, text='Run AI Analysis', command=self.run_ai_analysis,
                                  bg='#8b5cf6', fg='white', font=('Arial', 9, 'bold'), state='disabled')
-        self.btn_ai.pack(fill='x', padx=10, pady=(0, 10))
-        
-        # ──────────────────────────────────────────────────────────────────────
+        self.btn_ai.pack(fill='x', padx=8, pady=(0, 8))
 
-        tk.Button(self.sidebar, text='Run Analysis on Slice', command=self.run_analysis_slice).pack(fill='x', padx=6, pady=18)
-        tk.Button(self.sidebar, text='Run Batch (All Slices + 3D Track)', command=self.run_batch_analysis, bg='#d4edda', font=('Arial', 10, 'bold')).pack(fill='x', padx=6, pady=6)
-        tk.Button(self.sidebar, text='Reset ROI', command=self.reset_roi).pack(fill='x', padx=6, pady=6)
-        tk.Button(self.sidebar, text='Save ROI Mask', command=self.save_roi_mask).pack(fill='x', padx=6, pady=6)
-        tk.Button(self.sidebar, text='Load ROI Mask', command=self.load_roi_mask).pack(fill='x', padx=6, pady=6)
-
-        self.lbl_roi = tk.Label(self.sidebar, text='ROI: none', wraplength=260, justify='left')
-        self.lbl_roi.pack(pady=10)
+        self._bind_sidebar_widget_tree(self.sidebar)
+        self._bind_sidebar_widget_tree(self.sidebar_quick_actions)
+        self.sidebar_canvas.bind('<Button-1>', lambda event: self.sidebar_canvas.focus_set(), add='+')
 
         self.canvas_frame = tk.Frame(root, bg='black')
         self.canvas_frame.pack(side='right', expand=True, fill='both')
@@ -4195,7 +4706,7 @@ class SpermGUI:
             return
 
         self.lbl_batch_op.config(text='AI Analyzing Biological Data...', fg='#8b5cf6')
-        self.btn_ai.config(state='disabled', text='🧬 AI Working...')
+        self.btn_ai.config(state='disabled', text='AI Working...')
         self.root.update()
 
         # Token mitigation: Send fewer tracks to stay within Pro free tier limits
@@ -4225,11 +4736,14 @@ class SpermGUI:
                         err_hint = "\n\nTIP: Gemini 2.5 Pro has lower free-tier quotas. Try switching to 'Gemini 2.5 Flash' in the sidebar or wait a minute."
                     print(f"AI FAIL: {ai_text}")
                     self.root.after(0, lambda: messagebox.showwarning("AI Analysis", f"The AI analysis could not proceed:\n\n{ai_text}{err_hint}"))
-                    self.root.after(0, lambda: self.btn_ai.config(state='normal', text='🧬 Run AI Analysis'))
+                    self.root.after(0, lambda: self.btn_ai.config(state='normal', text='Run AI Analysis'))
                     return
 
                 stats_summary = {
                     "Median_Length_um": f"{ts['total_3d_length_um'].median():.2f}",
+                    "Median_Z_Span_um": f"{ts['z_span_um'].median():.2f}" if "z_span_um" in ts.columns else "NA",
+                    "Median_Effective_Thickness_um_PSF_sensitive": f"{ts['thickness_um'].median():.2f}" if "thickness_um" in ts.columns else "NA",
+                    "Median_Taper_Ratio_PSF_sensitive": f"{ts['taper_ratio'].median():.2f}" if "taper_ratio" in ts.columns else "NA",
                     "Avg_Tortuosity": f"{ts['tortuosity_3d'].mean():.2f}",
                     "Track_Count": f"{len(ts)}",
                     "Species": species
@@ -4249,7 +4763,7 @@ class SpermGUI:
                         except Exception as oe:
                             print(f"AI OPEN ERROR: {oe}")
 
-                    self.root.after(0, lambda: self.lbl_batch_op.config(text='AI REPORT READY ✓', fg='green'))
+                    self.root.after(0, lambda: self.lbl_batch_op.config(text='AI REPORT READY OK', fg='green'))
                     self.root.after(500, _open_report)
                     self.root.after(1200, lambda: messagebox.showinfo("AI Analysis Complete",
                         f"Biological interpretation report generated and opened:\n\n{os.path.basename(report_path)}"))
@@ -4262,7 +4776,7 @@ class SpermGUI:
                 err_msg = f"Failed during biological interpretation:\n\n{str(e)}"
                 self.root.after(0, lambda m=err_msg: messagebox.showerror("AI Error", m))
             finally:
-                self.root.after(0, lambda: self.btn_ai.config(state='normal', text='🧬 Run AI Analysis'))
+                self.root.after(0, lambda: self.btn_ai.config(state='normal', text='Run AI Analysis'))
 
         threading.Thread(target=_ai_thread, daemon=True).start()
 
@@ -4511,16 +5025,16 @@ class SpermGUI:
             crop_offset_y, crop_offset_x = 0, 0
             H, W = full_img.shape
 
-            # ═══════════════════════════════════════════════════════════════════
+            # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
             # TWO-PASS HYBRID SEGMENTATION ENGINE
             # Pass 1: Full-frame analysis (correct global percentiles for sparse outer nuclei)
             # Pass 2: Tight ROI crop analysis (local percentiles naturally separate dense clusters)
             # Merge: Spatially deduplicate overlapping centroids, keeping unique detections from both
-            # ═══════════════════════════════════════════════════════════════════
+            # ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
             t0 = _t.time()
 
-            # ── PASS 1: Full-frame analysis ──────────────────────────────────
+            # ------ PASS 1: Full-frame analysis ------------------------------------------------------------------------------------------------------
             log(f"  PASS 1: Full-frame analysis...")
             seg1 = segment_slice(full_img, params, roi_mask=roi_mask, z_idx=self.current_idx)
             meas1 = measure_spermatids(seg1, params)
@@ -4541,7 +5055,7 @@ class SpermGUI:
                 skel_label1 = np.where(np.isin(skel_label1, keep1), skel_label1, 0).astype(np.int32)
             log(f"  PASS 1: {len(results1)} detections (full-frame statistics)")
 
-            # ── PASS 2: Tight ROI crop analysis ──────────────────────────────
+            # ------ PASS 2: Tight ROI crop analysis ------------------------------------------------------------------------------------------
             results2_global = []
             skel_label2_full = np.zeros((H, W), dtype=np.int32)
 
@@ -4592,7 +5106,7 @@ class SpermGUI:
             else:
                 log(f"  PASS 2: Skipped (no ROI)")
 
-            # ── MERGE: Spatial deduplication ──────────────────────────────────
+            # ------ MERGE: Spatial deduplication ------------------------------------------------------------------------------------------------------
             # For each Pass 2 detection, check if Pass 1 already found a spermatid
             # within 5 pixels of the same centroid. If not, it's a new unique detection.
             dedup_radius = 5.0  # pixels
@@ -4679,7 +5193,7 @@ class SpermGUI:
 
             self.lbl_roi.config(text=f'Analysis done: {len(results)} spermatids')
 
-            # ── INTERACTIVE MANUAL CORRECTION LOGIC ──
+            # ------ INTERACTIVE MANUAL CORRECTION LOGIC ------
             class ManualCorrector:
                 def __init__(self, canvas, ax_overlay, seg_data, prms, crop_oy, crop_ox, fimg):
                     self.canvas = canvas
@@ -4882,7 +5396,7 @@ class SpermGUI:
                 crop_oy, crop_ox = 0, 0
                 crop_roi = roi_mask
                 
-                # ── BUGFIX: NEVER crop the image before analysis ──
+                # ------ BUGFIX: NEVER crop the image before analysis ------
                 # Cropping to a tight ROI artificially removes the dark background,
                 # which completely destroys the np.percentile() thresholding math that
                 # relies on the global image statistics!
@@ -4901,7 +5415,7 @@ class SpermGUI:
                             filtered.append(r)
                             keep.append(r['label'])
                     res = filtered
-                    sl_crop = np.where(np.isin(sl_crop, keep), sl_crop, 0).astype(np.int32)
+                    sl_crop = np.where(np.isin(sl_crop, keep) & crop_roi, sl_crop, 0).astype(np.int32)
                 
                 for r in res:
                     r['centroid_x'] += crop_ox
@@ -4914,12 +5428,15 @@ class SpermGUI:
                 
                 um = params['UM_PER_PX_XY']
                 ls_um = [r['length_px_geodesic']*um for r in res]
+                ws_um = [r['width_px']*um for r in res]
                 
                 all_rows.extend(rows_from_results(res, z_idx, um))
                 summaries.append({
                     "z_slice": z_idx,
                     "n_spermatids": len(res),
+                    "mean_length_um": round(float(np.mean(ls_um)), 3) if ls_um else 0,
                     "median_length_um": round(float(np.median(ls_um)), 3) if ls_um else 0,
+                    "mean_width_um": round(float(np.mean(ws_um)), 3) if ws_um else 0,
                 })
                 
                 if params['SAVE_OVERLAYS']:
@@ -4944,10 +5461,10 @@ class SpermGUI:
                     
                     # Update Z-Projections
                     if max_proj_raw is None:
-                        max_proj_raw = img_raw.copy().astype(np.float32)
+                        max_proj_raw = full_img.copy().astype(np.float32)
                         max_proj_ov = ov.copy().astype(np.float32)
                     else:
-                        max_proj_raw = np.maximum(max_proj_raw, img_raw)
+                        max_proj_raw = np.maximum(max_proj_raw, full_img.astype(np.float32))
                         max_proj_ov = np.maximum(max_proj_ov, ov.astype(np.float32))
 
                 # Update Progress Bar for each slice
@@ -4984,7 +5501,7 @@ class SpermGUI:
 
                 df_trk.to_csv(os.path.join(out_dir, "measurements_with_tracks.csv"), index=False)
                 
-                # ── AUTO QUALITY AUDIT ──────────────────────────────────────
+                # ------ AUTO QUALITY AUDIT ------------------------------------------------------------------------------------------------------------------
                 self.lbl_batch_op.config(text='Running Quality Audit...', fg='#e67e22')
                 self.root.update()
                 
@@ -4999,6 +5516,7 @@ class SpermGUI:
                 
                 # Generate outlier_audit/ subfolder automatically
                 export_outlier_audit(out_dir, ts, params)
+                export_post_detection_qc(out_dir, df_trk, ts)
                 
                 n_quality = len(ts_quality)
                 n_flagged = len(ts) - n_quality
@@ -5034,7 +5552,7 @@ class SpermGUI:
                 self.lbl_post_progress_val.config(text=f"{v}%")
                 self.root.update()
 
-            generate_batch_report(out_dir, df, df_sum, um, ts if not df.empty else None, update_cb)
+            generate_batch_report(out_dir, df, df_sum, um, ts if not df.empty else None, update_cb, generate_pptx=False)
             generate_excel_report(out_dir, df, df_sum, ts if not df.empty else None)
             
             # --- Store batch data for AI button ---
@@ -5049,7 +5567,7 @@ class SpermGUI:
             try:
                 ok = generate_pptx_report(out_dir, df, df_sum, um, ts if not df.empty else None)
                 if not ok:
-                    print("WARNING: PPTX generation returned False — check console for traceback.")
+                    print("WARNING: PPTX generation returned False - check console for traceback.")
             except Exception as pptx_err:
                 import traceback as _tb
                 print(f"ERROR generating PPTX: {pptx_err}")
@@ -5100,12 +5618,13 @@ if __name__ == "__main__":
     print(f" Features: [Incremental Folders] [Multi-Tab Excel] [3D Stats]")
     print(f"{'='*60}\n")
     
-    ap = argparse.ArgumentParser(description=f"Spermatid segmentation {_VERSION} / ROI GUI v11")
+    ap = argparse.ArgumentParser(description=f"Spermatid segmentation {_VERSION} / ROI GUI")
     ap.add_argument("--batch",  action="store_true", help="Run batch processing")
     ap.add_argument("--single", action="store_true", help="Run a single-image analysis")
     ap.add_argument("--gui",    action="store_true", help="Launch ROI GUI")
     ap.add_argument("--z",      type=int, default=None, help="Choose z-index in single mode")
     ap.add_argument("--params", type=str, default=None, help="Path to tuned parameters JSON file to override CONFIG")
+    ap.add_argument("--roi-mask", type=str, default=None, help="Optional .npy/.tif ROI mask for batch processing")
     args = ap.parse_args()
 
     # Load tuned parameters from JSON if provided
@@ -5123,6 +5642,10 @@ if __name__ == "__main__":
             print(f"  Loaded {applied} tuned parameters from: {os.path.basename(params_path)}")
         else:
             print(f"  WARNING: Params file not found: {params_path}")
+
+    if args.roi_mask:
+        CONFIG["ROI_MASK_PATH"] = os.path.abspath(args.roi_mask)
+        print(f"  Loaded ROI mask path: {CONFIG['ROI_MASK_PATH']}")
 
     validate_config(CONFIG)
 

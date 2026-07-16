@@ -1,0 +1,69 @@
+SATURN V5.3 PROTOTYPE TRACKING TUNING SUMMARY
+========================================================================
+Mode: tracking
+Output directory: parameter_tuning_results\roi_z28_middle_tracking_v5_3_strict
+Images tuned: 5 | z=[28, 29, 30, 31, 32]
+Calibration: 0.756836 um/px | z-step: 1.040460 um
+
+Best parameters:
+  TRACK_MAX_DIST_UM: 6.8711
+  ASSIGNMENT_MAX_COST: 7.2
+  ASSIGNMENT_DIST_WEIGHT: 1.0
+  ASSIGNMENT_OVERLAP_WEIGHT: 2.0
+  ASSIGNMENT_LENGTH_WEIGHT: 2.0
+  ASSIGNMENT_WIDTH_WEIGHT: 1.2
+  ASSIGNMENT_AREA_WEIGHT: 1.0
+  ASSIGNMENT_ANGLE_WEIGHT: 0.4
+  TRACKING_BACKEND: global_assignment
+
+Best metrics:
+  n_tracks: 1275
+  multi_slice: 647
+  total_linked: 1752
+  avg_depth: 2.71
+  single_slice: 628
+  n_long: 283
+  n_tort: 99
+  n_thick: 689
+  n_taper: 381
+  long_frac: 0.222
+  thick_frac: 0.5404
+  taper_frac: 0.2988
+  n_stopped: 242
+  stop_frac: 0.1898
+  n_overlap_unstable: 0
+  overlap_unstable_frac: 0.0
+  l3d_median_um: 10.963
+  l3d_mean_um: 12.299
+  zspan_median_um: 1.04
+  score: -1089.21
+
+Continuity guardrails:
+  safe candidate rule: zspan_median_um >= 0.5, single_frac <= 0.52, l3d_median_um <= 11.6, l3d_mean_um <= 12.9, taper_frac <= 0.40
+  safe candidates found: 1
+  Best safe metrics:
+    n_tracks: 1275
+    multi_slice: 647
+    total_linked: 1752
+    avg_depth: 2.71
+    single_slice: 628
+    n_long: 283
+    n_tort: 99
+    n_thick: 689
+    n_taper: 381
+    long_frac: 0.222
+    thick_frac: 0.5404
+    taper_frac: 0.2988
+    n_stopped: 242
+    stop_frac: 0.1898
+    n_overlap_unstable: 0
+    overlap_unstable_frac: 0.0
+    l3d_median_um: 10.963
+    l3d_mean_um: 12.299
+    zspan_median_um: 1.04
+    score: -1089.21
+  Best safe parameter file: parameter_tuning_results\roi_z28_middle_tracking_v5_3_strict\best_safe_tracking_params_v5_3_001.json
+
+Biology / hardware note:
+  This V5.3 prototype tuner preserves biologically plausible single-slice nuclei for this Leica
+  SP8 stack and penalizes likely over-merges more strongly than shallow tracks.
