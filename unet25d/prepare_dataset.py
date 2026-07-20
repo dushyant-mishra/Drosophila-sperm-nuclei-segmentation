@@ -49,6 +49,51 @@ def load_context(stack_dir, image_pattern, z):
     return robust_normalize_stack(np.stack(planes, axis=0))
 
 
+def dilate_binary(mask, radius):
+    radius = int(radius)
+    if radius <= 0:
+        return mask.astype(bool)
+
+    src = mask.astype(bool)
+    out = src.copy()
+    h, w = src.shape
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dx * dx + dy * dy > radius * radius:
+                continue
+            y_src0 = max(0, -dy)
+            y_src1 = min(h, h - dy)
+            x_src0 = max(0, -dx)
+            x_src1 = min(w, w - dx)
+            y_dst0 = max(0, dy)
+            y_dst1 = min(h, h + dy)
+            x_dst0 = max(0, dx)
+            x_dst1 = min(w, w + dx)
+            out[y_dst0:y_dst1, x_dst0:x_dst1] |= src[y_src0:y_src1, x_src0:x_src1]
+    return out
+
+
+def make_supervision_mask(context, label_mask, cfg):
+    if not cfg.get("partial_labels", False):
+        return np.ones(label_mask.shape, dtype=np.uint8)
+
+    center = context[1]
+    percentile = float(cfg.get("ignore_unlabeled_intensity_percentile", 94.0))
+    label_dilate = int(cfg.get("ignore_labeled_dilate_px", 3))
+    candidate_dilate = int(cfg.get("ignore_candidate_dilate_px", 1))
+
+    threshold = np.percentile(center, percentile)
+    likely_foreground = center >= threshold
+    if candidate_dilate:
+        likely_foreground = dilate_binary(likely_foreground, candidate_dilate)
+
+    protected_label = dilate_binary(label_mask > 0, label_dilate)
+    supervision = np.ones(label_mask.shape, dtype=np.uint8)
+    supervision[likely_foreground & ~protected_label] = 0
+    supervision[label_mask > 0] = 1
+    return supervision
+
+
 def rasterize_coco(coco_path, z_regex):
     with open(coco_path, "r", encoding="utf-8") as f:
         coco = json.load(f)
@@ -92,29 +137,35 @@ def write_split(split_name, coco_path, cfg):
     masks_dir.mkdir(parents=True, exist_ok=True)
 
     samples = rasterize_coco(coco_path, cfg["z_regex"])
-    manifest_rows = ["split,file_name,z,npz_path,mask_png,annotation_count,mask_pixels"]
+    manifest_rows = [
+        "split,file_name,z,npz_path,mask_png,supervision_png,annotation_count,mask_pixels,supervised_pixels"
+    ]
 
     for sample in samples:
         z = sample["z"]
         x = load_context(cfg["stack_image_dir"], cfg["image_pattern"], z)
         y = sample["mask"].astype(np.uint8)
+        supervision = make_supervision_mask(x, y, cfg)
 
         stem = Path(sample["file_name"]).stem
         npz_path = out_dir / f"{stem}.npz"
         mask_path = masks_dir / f"{stem}_mask.png"
+        supervision_path = masks_dir / f"{stem}_supervision.png"
 
         np.savez_compressed(
             npz_path,
             image=x.astype(np.float32),
             mask=y,
+            supervision_mask=supervision,
             z=np.array([z], dtype=np.int16),
             file_name=np.array([sample["file_name"]]),
         )
         Image.fromarray(y * 255).save(mask_path)
+        Image.fromarray(supervision * 255).save(supervision_path)
 
         manifest_rows.append(
-            f"{split_name},{sample['file_name']},{z},{npz_path},{mask_path},"
-            f"{sample['annotation_count']},{int(y.sum())}"
+            f"{split_name},{sample['file_name']},{z},{npz_path},{mask_path},{supervision_path},"
+            f"{sample['annotation_count']},{int(y.sum())},{int(supervision.sum())}"
         )
 
     manifest_path = out_dir / "manifest.csv"
@@ -140,4 +191,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

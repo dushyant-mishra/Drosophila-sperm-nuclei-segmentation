@@ -32,6 +32,15 @@ To continue training from an existing compatible checkpoint:
 python train_unet25d.py --config configs/pilot_unet25d.yaml --warm-start outputs/checkpoints/best.pt
 ```
 
+To test a pseudo-label cleanup loop from previously generated masks:
+
+```powershell
+python prepare_from_masks.py --config configs/pilot_resatt_round2_pseudo_downloaded.yaml
+python train_unet25d.py --config configs/pilot_resatt_round2_pseudo_downloaded.yaml --warm-start C:\path\to\best.pt
+```
+
+Use this only as a workflow test unless the masks have been manually corrected.
+
 ## Notes
 
 - COCO polygons are rasterized into binary center-slice masks.

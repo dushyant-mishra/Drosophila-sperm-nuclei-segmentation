@@ -18,12 +18,13 @@ def load_config(path):
 
 
 class SpermPatchDataset(Dataset):
-    def __init__(self, sample_dir, patch_size, patches_per_image, augment, seed):
+    def __init__(self, sample_dir, patch_size, patches_per_image, augment, seed, positive_patch_probability=0.8):
         self.paths = sorted(Path(sample_dir).glob("*.npz"))
         self.patch_size = int(patch_size)
         self.patches_per_image = int(patches_per_image)
         self.augment = augment
         self.rng = random.Random(seed)
+        self.positive_patch_probability = float(positive_patch_probability)
         if not self.paths:
             raise FileNotFoundError(f"No .npz samples found in {sample_dir}")
 
@@ -35,11 +36,12 @@ class SpermPatchDataset(Dataset):
         data = np.load(path)
         image = data["image"].astype(np.float32)
         mask = data["mask"].astype(np.float32)
+        supervision = data["supervision_mask"].astype(np.float32) if "supervision_mask" in data else np.ones_like(mask, dtype=np.float32)
         _, h, w = image.shape
         ps = self.patch_size
 
         positives = np.argwhere(mask > 0)
-        if len(positives) and self.rng.random() < 0.8:
+        if len(positives) and self.rng.random() < self.positive_patch_probability:
             cy, cx = positives[self.rng.randrange(len(positives))]
             y0 = int(np.clip(cy - self.rng.randrange(ps), 0, max(0, h - ps)))
             x0 = int(np.clip(cx - self.rng.randrange(ps), 0, max(0, w - ps)))
@@ -49,20 +51,24 @@ class SpermPatchDataset(Dataset):
 
         x = image[:, y0 : y0 + ps, x0 : x0 + ps]
         y = mask[y0 : y0 + ps, x0 : x0 + ps][None, ...]
+        valid = supervision[y0 : y0 + ps, x0 : x0 + ps][None, ...]
 
         if self.augment:
             if self.rng.random() < 0.5:
                 x = x[:, :, ::-1].copy()
                 y = y[:, :, ::-1].copy()
+                valid = valid[:, :, ::-1].copy()
             if self.rng.random() < 0.5:
                 x = x[:, ::-1, :].copy()
                 y = y[:, ::-1, :].copy()
+                valid = valid[:, ::-1, :].copy()
             k = self.rng.randrange(4)
             if k:
                 x = np.rot90(x, k=k, axes=(1, 2)).copy()
                 y = np.rot90(y, k=k, axes=(1, 2)).copy()
+                valid = np.rot90(valid, k=k, axes=(1, 2)).copy()
 
-        return torch.from_numpy(x), torch.from_numpy(y)
+        return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(valid)
 
 
 class ConvBlock(nn.Module):
@@ -180,15 +186,29 @@ def build_model(cfg):
     raise ValueError(f"Unknown architecture: {architecture}")
 
 
-def dice_loss(logits, target, eps=1e-6):
+def dice_loss(logits, target, valid=None, eps=1e-6):
     prob = torch.sigmoid(logits)
+    if valid is None:
+        valid = torch.ones_like(target)
+    prob = prob * valid
+    target = target * valid
     inter = (prob * target).sum(dim=(1, 2, 3))
     denom = prob.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3))
     return 1.0 - ((2.0 * inter + eps) / (denom + eps)).mean()
 
 
-def batch_metrics(logits, target, threshold=0.5):
+def masked_bce_loss(logits, target, valid):
+    loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    valid_sum = valid.sum().clamp_min(1.0)
+    return (loss * valid).sum() / valid_sum
+
+
+def batch_metrics(logits, target, valid=None, threshold=0.5):
     pred = (torch.sigmoid(logits) > threshold).float()
+    if valid is None:
+        valid = torch.ones_like(target)
+    pred = pred * valid
+    target = target * valid
     tp = (pred * target).sum()
     fp = (pred * (1 - target)).sum()
     fn = ((1 - pred) * target).sum()
@@ -201,19 +221,20 @@ def run_epoch(model, loader, optimizer, device, train):
     total_loss = 0.0
     total_dice = 0.0
     n = 0
-    for x, y in loader:
+    for x, y, valid in loader:
         x = x.to(device)
         y = y.to(device)
+        valid = valid.to(device)
         with torch.set_grad_enabled(train):
             logits = model(x)
-            loss = F.binary_cross_entropy_with_logits(logits, y) + dice_loss(logits, y)
+            loss = masked_bce_loss(logits, y, valid) + dice_loss(logits, y, valid)
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
         bs = x.shape[0]
         total_loss += float(loss.detach().cpu()) * bs
-        total_dice += batch_metrics(logits, y) * bs
+        total_dice += batch_metrics(logits, y, valid) * bs
         n += bs
     return total_loss / max(1, n), total_dice / max(1, n)
 
@@ -247,8 +268,23 @@ def main():
         mirror_dir.mkdir(parents=True, exist_ok=True)
         print(f"Mirroring checkpoints to: {mirror_dir}")
 
-    train_ds = SpermPatchDataset(out_dir / "dataset" / "train", cfg["patch_size"], cfg["patches_per_image"], True, seed)
-    valid_ds = SpermPatchDataset(out_dir / "dataset" / "valid", cfg["patch_size"], max(8, cfg["patches_per_image"] // 4), False, seed + 1)
+    positive_patch_probability = float(cfg.get("positive_patch_probability", 0.8))
+    train_ds = SpermPatchDataset(
+        out_dir / "dataset" / "train",
+        cfg["patch_size"],
+        cfg["patches_per_image"],
+        True,
+        seed,
+        positive_patch_probability,
+    )
+    valid_ds = SpermPatchDataset(
+        out_dir / "dataset" / "valid",
+        cfg["patch_size"],
+        max(8, cfg["patches_per_image"] // 4),
+        False,
+        seed + 1,
+        positive_patch_probability,
+    )
 
     train_loader = DataLoader(train_ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0)
     valid_loader = DataLoader(valid_ds, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0)
