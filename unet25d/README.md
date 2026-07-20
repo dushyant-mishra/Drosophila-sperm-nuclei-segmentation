@@ -41,6 +41,18 @@ python train_unet25d.py --config configs/pilot_resatt_round2_pseudo_downloaded.y
 
 Use this only as a workflow test unless the masks have been manually corrected.
 
+For partial-label training where unlabeled bright nuclei should not be treated
+as definite background, use `configs/pilot_resatt_partial_labels_tight_colab.yaml`.
+It ignores only the brightest unlabeled candidate pixels (`97th` percentile)
+and uses less aggressive positive patch sampling than the first partial-label
+experiment.
+
+To compare inference thresholds after training:
+
+```powershell
+python sweep_thresholds.py --config configs/pilot_resatt_partial_labels_tight_colab.yaml --checkpoint outputs_resatt_partial_tight/checkpoints/best.pt --thresholds 0.5 0.6 0.7
+```
+
 ## Notes
 
 - COCO polygons are rasterized into binary center-slice masks.
