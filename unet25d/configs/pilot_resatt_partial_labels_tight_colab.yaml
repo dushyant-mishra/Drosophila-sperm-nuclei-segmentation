@@ -27,4 +27,13 @@ weight_decay: 0.00001
 seed: 790
 threshold: 0.5
 
+roi_mask_path: ""
+unet_inference_mode: roi_tiled
+unet_tile_size: 256
+unet_tile_overlap: 64
+unet_roi_padding_px: 32
+unet_outside_roi_zero: true
+unet_candidate_threshold: 0.05
+unet_seed_threshold: 0.30
+
 infer_z_indices: [5, 6, 12, 35, 60, 87]

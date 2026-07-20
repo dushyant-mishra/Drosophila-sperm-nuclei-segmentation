@@ -53,6 +53,25 @@ To compare inference thresholds after training:
 python sweep_thresholds.py --config configs/pilot_resatt_partial_labels_tight_colab.yaml --checkpoint outputs_resatt_partial_tight/checkpoints/best.pt --thresholds 0.5 0.6 0.7
 ```
 
+To run ROI-aware tiled soft inference for Saturn v5.7:
+
+```powershell
+python infer_tiled_unet25d.py `
+  --config configs/pilot_resatt_partial_labels_tight_colab.yaml `
+  --checkpoint outputs_resatt_partial_tight/checkpoints/best.pt `
+  --roi /content/drive/MyDrive/unet25d_input/roi_z28.1.npy `
+  --output-dir /content/drive/MyDrive/unet25d_output/tiled_soft_inference
+```
+
+This writes continuous probability maps plus two review masks:
+
+- candidate mask: permissive field, default probability >= `0.05`
+- seed mask: high-confidence cores, default probability >= `0.30`
+
+For Saturn integration, COCO stays training-only. Runtime inference should use
+the trained checkpoint and raw image stack, then pass probability maps into
+Saturn for ROI-aware candidate repair, measurement, and QC.
+
 ## Notes
 
 - COCO polygons are rasterized into binary center-slice masks.
