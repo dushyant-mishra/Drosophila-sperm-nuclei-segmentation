@@ -63,6 +63,9 @@ UNET_RESCUE_PARAM_SPACE = [
     ("UNET_RESCUE_THRESHOLD", 0.45, 0.80, False),
     ("UNET_RESCUE_EXCLUDE_DILATION_PX", 0, 3, True),
     ("UNET_RESCUE_MIN_COMPONENT_PX", 2, 8, True),
+    ("UNET_INSTANCE_SEED_THRESHOLD", 0.65, 0.90, False),
+    ("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 3, 10, True),
+    ("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0, 0.02, False),
     ("MAX_WIDTH_UM", 3.5, 5.5, False),
     ("MIN_LENGTH_WIDTH_RATIO", 1.6, 2.6, False),
     ("MAX_TORTUOSITY", 2.2, 3.8, False),
@@ -333,6 +336,7 @@ def evaluate_unet_rescue_candidate(params):
     cfg["UNET_THRESHOLD_MODE"] = "soft"
     cfg["UNET_RESCUE_ENABLE"] = True
     cfg["UNET_RESCUE_SPLIT_RETRY_ENABLE"] = True
+    cfg["UNET_INSTANCE_SPLIT_ENABLE"] = True
     cfg["TUNING_OBJECTIVE"] = "unet_rescue"
     rows, segs = segment_eval_images(cfg)
     summary = summarize_candidate(rows, segs, cfg)
@@ -342,6 +346,7 @@ def evaluate_unet_rescue_candidate(params):
     summary["UNET_RESCUE_ENABLE"] = cfg["UNET_RESCUE_ENABLE"]
     summary["UNET_RESCUE_SPLIT_RETRY_ENABLE"] = cfg.get("UNET_RESCUE_SPLIT_RETRY_ENABLE", True)
     summary["UNET_RESCUE_SPLIT_THRESHOLDS"] = cfg.get("UNET_RESCUE_SPLIT_THRESHOLDS", [0.70, 0.80, 0.90])
+    summary["UNET_INSTANCE_SPLIT_ENABLE"] = cfg.get("UNET_INSTANCE_SPLIT_ENABLE", True)
     results_list.append(summary)
     return summary
 

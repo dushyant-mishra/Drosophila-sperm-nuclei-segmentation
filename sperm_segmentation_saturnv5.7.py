@@ -154,7 +154,7 @@ import seaborn as sns
 from matplotlib.path import Path
 print(f"[matplotlib backend: {matplotlib.get_backend()}]")
 
-from skimage import measure, morphology, exposure
+from skimage import measure, morphology, exposure, segmentation as skseg, feature
 from skimage.filters import meijering, gaussian, apply_hysteresis_threshold
 from skimage.morphology import skeletonize
 from scipy.ndimage import distance_transform_edt, grey_dilation
@@ -232,6 +232,10 @@ CONFIG = {
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
     "UNET_RESCUE_SPLIT_THRESHOLDS": [0.70, 0.80, 0.90],
+    "UNET_INSTANCE_SPLIT_ENABLE": True,
+    "UNET_INSTANCE_SEED_THRESHOLD": 0.75,
+    "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
+    "UNET_INSTANCE_WATERSHED_COMPACTNESS": 0.001,
     "UNET_TRACKING_SUPPORT": True,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": 0.6,
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": 0.25,
@@ -387,6 +391,8 @@ _REQUIRED = {
     "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": int,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": bool, "UNET_RESCUE_SPLIT_THRESHOLDS": list,
+    "UNET_INSTANCE_SPLIT_ENABLE": bool, "UNET_INSTANCE_SEED_THRESHOLD": (int, float),
+    "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": int, "UNET_INSTANCE_WATERSHED_COMPACTNESS": (int, float),
     "UNET_TRACKING_SUPPORT": bool,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": (int, float),
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": (int, float),
@@ -1890,6 +1896,64 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
 # MEASUREMENT  (single geodesic pass, all topology in one function)
 # =============================================================================
 
+def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, peak_min_distance, compactness):
+    """
+    Split a connected U-Net probability mask into putative nucleus instances.
+
+    The U-Net probability map is trusted as the biological evidence layer; this
+    helper only separates connected probability regions before Saturn measures
+    length/width/topology. It does not make final accept/reject decisions.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    prob = np.asarray(prob, dtype=np.float32)
+    if not np.any(mask):
+        return np.zeros(mask.shape, dtype=np.int32)
+
+    final = np.zeros(mask.shape, dtype=np.int32)
+    next_label = 1
+    components = measure.label(mask)
+    for comp in measure.regionprops(components):
+        comp_mask = components == comp.label
+        if np.count_nonzero(comp_mask) < min_component_px:
+            continue
+
+        core = comp_mask & (prob >= seed_threshold)
+        core = remove_objects_smaller_than(core, max(1, int(min_component_px)))
+        markers = measure.label(core)
+
+        if int(markers.max()) < 2:
+            coords = feature.peak_local_max(
+                prob,
+                labels=comp_mask.astype(np.uint8),
+                min_distance=max(1, int(peak_min_distance)),
+                threshold_abs=float(seed_threshold),
+                exclude_border=False,
+            )
+            markers = np.zeros(mask.shape, dtype=np.int32)
+            for i, (yy, xx) in enumerate(coords, start=1):
+                markers[int(yy), int(xx)] = i
+            if coords.shape[0] >= 2:
+                markers = morphology.dilation(markers, morphology.disk(1))
+                markers *= comp_mask
+            else:
+                markers = measure.label(comp_mask)
+
+        labels = skseg.watershed(
+            -prob,
+            markers=markers,
+            mask=comp_mask,
+            compactness=max(0.0, float(compactness)),
+        )
+        labels = measure.label(labels > 0)
+        for sub in measure.regionprops(labels):
+            sub_mask = labels == sub.label
+            if np.count_nonzero(sub_mask) < min_component_px:
+                continue
+            final[sub_mask] = next_label
+            next_label += 1
+    return final.astype(np.int32)
+
+
 def measure_spermatids(seg, cfg):
     """
     Analyzes mathematically discretised nuclei arrays and derives geometric indices for individual shape profiles.
@@ -2067,16 +2131,24 @@ def measure_spermatids(seg, cfg):
             float(v) for v in cfg.get("UNET_RESCUE_SPLIT_THRESHOLDS", [0.70, 0.80, 0.90])
             if float(v) > rescue_thr
         ]
+        instance_split = bool(cfg.get("UNET_INSTANCE_SPLIT_ENABLE", True))
+        instance_seed_thr = float(cfg.get("UNET_INSTANCE_SEED_THRESHOLD", max(rescue_thr, 0.75)))
+        peak_min_distance = max(1, int(cfg.get("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 6)))
+        watershed_compactness = float(cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.001))
 
         occupied = clean_skel.copy()
         if exclude_px > 0 and np.any(occupied):
             occupied = morphology.binary_dilation(occupied, morphology.disk(exclude_px))
         rescue_mask = (unet_prob >= rescue_thr) & valid & ~occupied
         rescue_mask = remove_objects_smaller_than(rescue_mask, min_component)
-        rescue_dist = distance_transform_edt(rescue_mask)
-        rescue_skel = skeletonize(rescue_mask)
-        rescue_skel &= valid & ~occupied
-        rescue_lab = measure.label(rescue_skel)
+        rescue_lab = _split_unet_rescue_instances(
+            unet_prob,
+            rescue_mask,
+            min_component,
+            instance_seed_thr,
+            peak_min_distance,
+            watershed_compactness,
+        ) if instance_split else measure.label(rescue_mask)
         rescue_candidates = []
 
         def evaluate_rescue_coords(coords, dist_map, sp, source):
@@ -2161,20 +2233,39 @@ def measure_spermatids(seg, cfg):
             return split_hits
 
         for sp in measure.regionprops(rescue_lab):
-            coords = sp.coords
-            candidate, reason = evaluate_rescue_coords(coords, rescue_dist, sp, "unet_rescued")
-            if candidate is not None:
-                rescue_candidates.append(candidate)
+            instance_mask = rescue_lab == sp.label
+            instance_dist = distance_transform_edt(instance_mask)
+            instance_skel = skeletonize(instance_mask) & valid & ~occupied
+            instance_skel = remove_objects_smaller_than(instance_skel, max(1, int(round(cfg["MIN_SKEL_LEN_PX"] * 0.35))))
+            if not np.any(instance_skel):
+                reject_rescue("short", sp.coords)
                 continue
-
-            if split_retry and reason in {"long", "branches", "loop", "tortuous", "endpoints"}:
-                component_mask = rescue_lab == sp.label
-                split_hits = split_and_retry_component(component_mask)
-                if split_hits:
-                    rescue_candidates.extend(split_hits)
+            instance_skel_lab = measure.label(instance_skel)
+            accepted_any = False
+            rejected_reasons = []
+            for skel_sp in measure.regionprops(instance_skel_lab):
+                coords = skel_sp.coords
+                candidate, reason = evaluate_rescue_coords(coords, instance_dist, skel_sp, "unet_rescued")
+                if candidate is not None:
+                    rescue_candidates.append(candidate)
+                    accepted_any = True
                     continue
 
-            reject_rescue(reason, coords)
+                if split_retry and reason in {"long", "branches", "loop", "tortuous", "endpoints"}:
+                    component_mask = instance_skel_lab == skel_sp.label
+                    split_hits = split_and_retry_component(component_mask)
+                    if split_hits:
+                        rescue_candidates.extend(split_hits)
+                        accepted_any = True
+                        continue
+                rejected_reasons.append((reason, coords))
+            if accepted_any:
+                continue
+            if rejected_reasons:
+                reason, coords = rejected_reasons[0]
+                reject_rescue(reason, coords)
+            else:
+                reject_rescue("short", sp.coords)
 
         rescue_candidates.sort(key=lambda item: item["score"], reverse=True)
         if max_additions > 0:
@@ -5773,6 +5864,8 @@ PARAM_SECTIONS = {
         "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
         "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
         "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
+        "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
+        "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
         "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
     ],
@@ -5853,6 +5946,10 @@ PARAM_TITLES = {
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Maximum rescued detections per slice",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "Retry splitting rejected U-Net candidates",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "U-Net split retry thresholds",
+    "UNET_INSTANCE_SPLIT_ENABLE": "Split U-Net probability instances first",
+    "UNET_INSTANCE_SEED_THRESHOLD": "U-Net instance seed threshold",
+    "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum seed peak spacing (px)",
+    "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Watershed compactness",
     "UNET_TRACKING_SUPPORT": "Use U-Net evidence for 3D linking",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Assignment U-Net support penalty",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Assignment U-Net continuity penalty",
@@ -5937,6 +6034,10 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "If enabled, U-Net rescue candidates rejected as long, branched, looped, tortuous, or endpoint-heavy are retried at stricter probability-core thresholds before final rejection.",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
+    "UNET_INSTANCE_SPLIT_ENABLE": "If enabled, connected U-Net rescue probability regions are split into putative instances before skeletonization and measurement.",
+    "UNET_INSTANCE_SEED_THRESHOLD": "Probability threshold for watershed/core seeds used to split connected U-Net rescue regions. Higher values create cleaner but fewer seeds.",
+    "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum distance between fallback U-Net probability peaks used as instance seeds. Lower values can split crowded regions more aggressively.",
+    "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Compactness term for watershed instance splitting. Larger values favor compact regions; near-zero follows probability topology more closely.",
     "UNET_TRACKING_SUPPORT": "If enabled in hybrid/U-Net mode, per-detection U-Net probabilities can reduce confidence in weak 3D links and favor links with consistent model support.",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Global-assignment penalty for linking detections with weak U-Net support. Set to 0 to ignore U-Net evidence during assignment.",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Global-assignment penalty for abrupt U-Net probability changes across adjacent slices.",
