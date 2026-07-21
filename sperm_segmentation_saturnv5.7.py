@@ -229,6 +229,7 @@ CONFIG = {
     "UNET_RESCUE_THRESHOLD": 0.60,
     "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
     "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": 7.0,
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
     "UNET_RESCUE_SPLIT_THRESHOLDS": [0.70, 0.80, 0.90],
@@ -389,6 +390,7 @@ _REQUIRED = {
     "UNET_SAVE_PROBABILITY_MAPS": bool, "UNET_CANDIDATE_ACCOUNTING": bool,
     "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
     "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": (int, float),
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": int,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": bool, "UNET_RESCUE_SPLIT_THRESHOLDS": list,
     "UNET_INSTANCE_SPLIT_ENABLE": bool, "UNET_INSTANCE_SEED_THRESHOLD": (int, float),
@@ -2125,6 +2127,11 @@ def measure_spermatids(seg, cfg):
         rescue_thr = float(cfg.get("UNET_RESCUE_THRESHOLD", cfg.get("UNET_SEED_THRESHOLD", 0.50)))
         exclude_px = max(0, int(cfg.get("UNET_RESCUE_EXCLUDE_DILATION_PX", 3)))
         min_component = max(1, int(cfg.get("UNET_RESCUE_MIN_COMPONENT_PX", cfg.get("MIN_OBJ_PX", 3))))
+        rescue_min_skel_um = float(cfg.get("UNET_RESCUE_MIN_SKEL_LEN_UM", cfg.get("MIN_SKEL_LEN_UM", 0.0)))
+        rescue_min_skel_px = max(
+            float(cfg.get("MIN_SKEL_LEN_PX", 0.0)),
+            rescue_min_skel_um / max(float(cfg.get("UM_PER_PX_XY", 1.0)), 1e-9),
+        )
         max_additions = max(0, int(cfg.get("UNET_RESCUE_MAX_ADDITIONS_PER_SLICE", 0)))
         split_retry = bool(cfg.get("UNET_RESCUE_SPLIT_RETRY_ENABLE", True))
         split_thresholds = [
@@ -2152,7 +2159,7 @@ def measure_spermatids(seg, cfg):
         rescue_candidates = []
 
         def evaluate_rescue_coords(coords, dist_map, sp, source):
-            if coords.shape[0] < cfg["MIN_SKEL_LEN_PX"]:
+            if coords.shape[0] < rescue_min_skel_px:
                 return None, "short"
 
             topo = measure_topology(coords, W, allow_loops=cfg.get("ALLOW_LOOPS", False))
@@ -2163,8 +2170,8 @@ def measure_spermatids(seg, cfg):
             tort = topo["tortuosity"]
             n_ep = topo["n_endpoints"]
             n_br = topo["n_branch_nodes"]
-            if not (cfg["MIN_SKEL_LEN_PX"] <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
-                if gl < cfg["MIN_SKEL_LEN_PX"]:
+            if not (rescue_min_skel_px <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
+                if gl < rescue_min_skel_px:
                     return None, "short"
                 return None, "long"
 
@@ -5862,7 +5869,8 @@ PARAM_SECTIONS = {
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP", "UNET_ROI_PADDING_PX",
         "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
-        "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
+        "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
+        "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
         "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
         "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
         "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
@@ -5943,6 +5951,7 @@ PARAM_TITLES = {
     "UNET_RESCUE_THRESHOLD": "U-Net rescue probability threshold",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "Rescue exclusion around Saturn hits (px)",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum rescue component size (px)",
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Minimum rescued skeleton length (um)",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Maximum rescued detections per slice",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "Retry splitting rejected U-Net candidates",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "U-Net split retry thresholds",
@@ -6031,6 +6040,7 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_THRESHOLD": "Probability cutoff for the rescue lane. Higher values rescue fewer, more confident U-Net detections; lower values increase sensitivity but can add fragments.",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum binary component size before U-Net rescue skeletonization. Increase to suppress tiny U-Net specks; decrease to recover very faint fragments.",
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Minimum skeleton length for U-Net-only rescued detections. Increase to remove tiny fragments without making the core Saturn detector stricter.",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "If enabled, U-Net rescue candidates rejected as long, branched, looped, tortuous, or endpoint-heavy are retried at stricter probability-core thresholds before final rejection.",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
