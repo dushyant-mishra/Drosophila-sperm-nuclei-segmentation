@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import csv
 import random
 import shutil
@@ -197,8 +197,12 @@ def dice_loss(logits, target, valid=None, eps=1e-6):
     return 1.0 - ((2.0 * inter + eps) / (denom + eps)).mean()
 
 
-def masked_bce_loss(logits, target, valid):
+def masked_bce_loss(logits, target, valid, positive_weight=1.0):
     loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    if positive_weight != 1.0:
+        weights = torch.ones_like(target)
+        weights = torch.where(target > 0.5, weights * float(positive_weight), weights)
+        loss = loss * weights
     valid_sum = valid.sum().clamp_min(1.0)
     return (loss * valid).sum() / valid_sum
 
@@ -227,7 +231,8 @@ def run_epoch(model, loader, optimizer, device, train):
         valid = valid.to(device)
         with torch.set_grad_enabled(train):
             logits = model(x)
-            loss = masked_bce_loss(logits, y, valid) + dice_loss(logits, y, valid)
+            positive_weight = float(getattr(loader.dataset, "positive_loss_weight", 1.0))
+            loss = masked_bce_loss(logits, y, valid, positive_weight) + dice_loss(logits, y, valid)
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -285,6 +290,8 @@ def main():
         seed + 1,
         positive_patch_probability,
     )
+    train_ds.positive_loss_weight = float(cfg.get("positive_loss_weight", 1.0))
+    valid_ds.positive_loss_weight = float(cfg.get("positive_loss_weight", 1.0))
 
     train_loader = DataLoader(train_ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0)
     valid_loader = DataLoader(valid_ds, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0)

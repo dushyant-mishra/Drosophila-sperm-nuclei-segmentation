@@ -1,5 +1,6 @@
-import argparse
+﻿import argparse
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -278,6 +279,26 @@ def main():
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(summary_rows)
+
+    metadata = {
+        "output_type": "stitched_full_frame_probability_maps",
+        "measurement_note": (
+            "Probability maps are stitched before thresholding and are not length/width/count measurements. "
+            "Candidate and seed masks are review aids; Saturn should perform final ROI-aware geometry, "
+            "tracking, and biological QC."
+        ),
+        "stitching_mode": str(cfg.get("unet_stitch_mode", "weighted_average")),
+        "tile_size": int(cfg.get("unet_tile_size", 256)),
+        "tile_overlap": int(cfg.get("unet_tile_overlap", 64)),
+        "roi_padding_px": int(cfg.get("unet_roi_padding_px", 32)),
+        "outside_roi_zero": bool(cfg.get("unet_outside_roi_zero", True)),
+        "candidate_threshold": candidate_threshold,
+        "seed_threshold": seed_threshold,
+        "checkpoint": str(checkpoint),
+        "config": str(args.config),
+    }
+    with open(out_dir / "inference_metadata.json", "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
 
     if candidate_pages:
         candidate_pages[0].save(

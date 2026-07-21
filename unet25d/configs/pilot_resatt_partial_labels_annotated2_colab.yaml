@@ -1,11 +1,11 @@
 ﻿project_root: /content/unet25d_workspace/data
 stack_image_dir: /content/unet25d_workspace/data/images
 
-train_coco: /content/unet25d_workspace/data/sam3_pilot/train/_annotations.coco.json
-valid_coco: /content/unet25d_workspace/data/sam3_pilot/valid_technical_only/_annotations.coco.json
+annotation_manifest: /content/unet25d_workspace/data/annotated-2/manifest.json
+valid_z_indices: [1, 37]
 
-output_dir: /content/unet25d_workspace/repo/unet25d/outputs_resatt_partial_tight
-checkpoint_mirror_dir: /content/drive/MyDrive/unet25d_output/checkpoints_resatt_partial_tight
+output_dir: /content/unet25d_workspace/repo/unet25d/outputs_resatt_partial_annotated2
+checkpoint_mirror_dir: /content/drive/MyDrive/unet25d_output/checkpoints_resatt_partial_annotated2
 
 z_regex: 'Project001_Series002_z(\d+)_ch00'
 image_pattern: 'Project001_Series002_z{z:02d}_ch00.tif'
@@ -20,13 +20,13 @@ train_mask_dilate_px: 1
 positive_loss_weight: 1.5
 
 patch_size: 256
-patches_per_image: 64
-epochs: 30
+patches_per_image: 96
+epochs: 40
 batch_size: 8
 base_channels: 24
-learning_rate: 0.0005
+learning_rate: 0.0003
 weight_decay: 0.00001
-seed: 790
+seed: 791
 threshold: 0.5
 
 roi_mask_path: ""

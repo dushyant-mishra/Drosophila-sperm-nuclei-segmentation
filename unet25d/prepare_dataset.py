@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import re
 from pathlib import Path
@@ -73,6 +73,20 @@ def dilate_binary(mask, radius):
     return out
 
 
+def make_training_mask(label_mask, cfg):
+    """
+    Build the target used for training without modifying the saved raw annotation.
+
+    A small dilation makes training tolerant of slightly tight hand masks. This is
+    deliberately prepare-time only; inference still writes probability maps, and
+    Saturn measurement should use its own geometry/QC rules.
+    """
+    radius = int(cfg.get("train_mask_dilate_px", 0))
+    if radius <= 0:
+        return label_mask.astype(np.uint8)
+    return dilate_binary(label_mask > 0, radius).astype(np.uint8)
+
+
 def make_supervision_mask(context, label_mask, cfg):
     if not cfg.get("partial_labels", False):
         return np.ones(label_mask.shape, dtype=np.uint8)
@@ -130,47 +144,130 @@ def rasterize_coco(coco_path, z_regex):
     return samples
 
 
-def write_split(split_name, coco_path, cfg):
+def _annotation_root(annotation_path):
+    return Path(annotation_path).resolve().parent
+
+
+def _resolve_manifest_image_path(annotation_path, image_name):
+    root = _annotation_root(annotation_path)
+    pure = Path(str(image_name).replace("\\", "/"))
+    candidates = [
+        root / pure,
+        root / "images" / pure.name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Could not find manifest image {image_name!r} relative to {root}")
+
+
+def rasterize_sreeni_manifest(manifest_path, z_regex):
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    samples = []
+    for im in manifest.get("images", []):
+        file_name = Path(str(im["image"]).replace("\\", "/")).name
+        image_path = _resolve_manifest_image_path(manifest_path, im["image"])
+        width, height = Image.open(image_path).size
+        mask_img = Image.new("L", (width, height), 0)
+        draw = ImageDraw.Draw(mask_img)
+
+        instances = im.get("instances", [])
+        for inst in instances:
+            segmentation = inst.get("segmentation", [])
+            if len(segmentation) >= 6:
+                xy = [(float(segmentation[i]), float(segmentation[i + 1])) for i in range(0, len(segmentation), 2)]
+                draw.polygon(xy, outline=1, fill=1)
+
+        mask = np.asarray(mask_img, dtype=np.uint8)
+        samples.append(
+            {
+                "file_name": file_name,
+                "z": parse_z(file_name, z_regex),
+                "mask": mask,
+                "annotation_count": len(instances),
+            }
+        )
+    return samples
+
+
+def load_annotation_samples(annotation_path, z_regex):
+    with open(annotation_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    if "annotations" in payload and "categories" in payload:
+        return rasterize_coco(annotation_path, z_regex)
+    if "classes" in payload and "images" in payload:
+        return rasterize_sreeni_manifest(annotation_path, z_regex)
+    raise ValueError(f"Unsupported annotation format: {annotation_path}")
+
+
+def filter_samples(samples, include_z=None, exclude_z=None):
+    include = {int(z) for z in include_z} if include_z else None
+    exclude = {int(z) for z in exclude_z} if exclude_z else set()
+    out = []
+    for sample in samples:
+        z = int(sample["z"])
+        if include is not None and z not in include:
+            continue
+        if z in exclude:
+            continue
+        out.append(sample)
+    return out
+
+
+def write_samples(split_name, samples, cfg):
     out_dir = Path(cfg["output_dir"]) / "dataset" / split_name
     out_dir.mkdir(parents=True, exist_ok=True)
     masks_dir = out_dir / "masks_png"
     masks_dir.mkdir(parents=True, exist_ok=True)
 
-    samples = rasterize_coco(coco_path, cfg["z_regex"])
     manifest_rows = [
-        "split,file_name,z,npz_path,mask_png,supervision_png,annotation_count,mask_pixels,supervised_pixels"
+        "split,file_name,z,npz_path,mask_png,raw_mask_png,supervision_png,"
+        "annotation_count,raw_mask_pixels,training_mask_pixels,supervised_pixels"
     ]
 
     for sample in samples:
         z = sample["z"]
         x = load_context(cfg["stack_image_dir"], cfg["image_pattern"], z)
-        y = sample["mask"].astype(np.uint8)
-        supervision = make_supervision_mask(x, y, cfg)
+        raw_y = sample["mask"].astype(np.uint8)
+        y = make_training_mask(raw_y, cfg)
+        supervision = make_supervision_mask(x, raw_y, cfg)
 
         stem = Path(sample["file_name"]).stem
         npz_path = out_dir / f"{stem}.npz"
         mask_path = masks_dir / f"{stem}_mask.png"
+        raw_mask_path = masks_dir / f"{stem}_raw_annotation_mask.png"
         supervision_path = masks_dir / f"{stem}_supervision.png"
 
         np.savez_compressed(
             npz_path,
             image=x.astype(np.float32),
             mask=y,
+            raw_annotation_mask=raw_y,
             supervision_mask=supervision,
             z=np.array([z], dtype=np.int16),
             file_name=np.array([sample["file_name"]]),
         )
         Image.fromarray(y * 255).save(mask_path)
+        Image.fromarray(raw_y * 255).save(raw_mask_path)
         Image.fromarray(supervision * 255).save(supervision_path)
 
         manifest_rows.append(
-            f"{split_name},{sample['file_name']},{z},{npz_path},{mask_path},{supervision_path},"
-            f"{sample['annotation_count']},{int(y.sum())},{int(supervision.sum())}"
+            f"{split_name},{sample['file_name']},{z},{npz_path},{mask_path},{raw_mask_path},{supervision_path},"
+            f"{sample['annotation_count']},{int(raw_y.sum())},{int(y.sum())},{int(supervision.sum())}"
         )
 
     manifest_path = out_dir / "manifest.csv"
     manifest_path.write_text("\n".join(manifest_rows) + "\n", encoding="utf-8")
     return len(samples), manifest_path
+
+
+def write_split(split_name, annotation_path, cfg, include_z=None, exclude_z=None):
+    samples = load_annotation_samples(annotation_path, cfg["z_regex"])
+    samples = filter_samples(samples, include_z=include_z, exclude_z=exclude_z)
+    return write_samples(split_name, samples, cfg)
 
 
 def main():
@@ -182,8 +279,27 @@ def main():
     output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    train_count, train_manifest = write_split("train", cfg["train_coco"], cfg)
-    valid_count, valid_manifest = write_split("valid", cfg["valid_coco"], cfg)
+    annotation_manifest = cfg.get("annotation_manifest")
+    valid_z_indices = cfg.get("valid_z_indices", [])
+    train_z_indices = cfg.get("train_z_indices", [])
+
+    if annotation_manifest:
+        samples = load_annotation_samples(annotation_manifest, cfg["z_regex"])
+        train_samples = filter_samples(
+            samples,
+            include_z=train_z_indices,
+            exclude_z=valid_z_indices if not train_z_indices else None,
+        )
+        valid_samples = filter_samples(samples, include_z=valid_z_indices)
+        if not train_samples:
+            raise ValueError("No training samples selected from annotation_manifest")
+        if not valid_samples:
+            raise ValueError("No validation samples selected from annotation_manifest")
+        train_count, train_manifest = write_samples("train", train_samples, cfg)
+        valid_count, valid_manifest = write_samples("valid", valid_samples, cfg)
+    else:
+        train_count, train_manifest = write_split("train", cfg["train_coco"], cfg)
+        valid_count, valid_manifest = write_split("valid", cfg["valid_coco"], cfg)
 
     print(f"Prepared train samples: {train_count} -> {train_manifest}")
     print(f"Prepared valid samples: {valid_count} -> {valid_manifest}")

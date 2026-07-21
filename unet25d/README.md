@@ -1,4 +1,4 @@
-# 2.5D U-Net Sperm Nucleus Pilot
+﻿# 2.5D U-Net Sperm Nucleus Pilot
 
 This folder is a small, independent pilot for testing whether a compact 2.5D U-Net can learn sperm nucleus masks from the existing COCO annotations.
 
@@ -47,10 +47,38 @@ It ignores only the brightest unlabeled candidate pixels (`97th` percentile)
 and uses less aggressive positive patch sampling than the first partial-label
 experiment.
 
+This config also uses training-only forgiveness for imperfect hand masks:
+
+- partial-label-aware loss through `supervision_mask`
+- ignored unlabeled bright pixels
+- slight positive-mask dilation through `train_mask_dilate_px`
+- ROI/crop-friendly positive patch sampling
+- a mild positive-pixel loss weight through `positive_loss_weight`
+
+These settings affect only the training targets/loss. They do not dilate or
+resize inference outputs. Tiled inference writes stitched full-frame probability
+maps first, then saves thresholded candidate/seed masks only as review aids.
+Saturn should still compute final length, width, count, tracking, and QC from
+its own ROI-aware candidate measurement logic.
+
 To compare inference thresholds after training:
 
 ```powershell
 python sweep_thresholds.py --config configs/pilot_resatt_partial_labels_tight_colab.yaml --checkpoint outputs_resatt_partial_tight/checkpoints/best.pt --thresholds 0.5 0.6 0.7
+```
+
+For the expanded Sreeni annotated-2 export, upload `annotated-2.zip` into the
+Colab data folder and train with:
+
+```bash
+cd /content/unet25d_workspace/repo/unet25d
+
+python prepare_dataset.py \
+  --config configs/pilot_resatt_partial_labels_annotated2_colab.yaml
+
+python train_unet25d.py \
+  --config configs/pilot_resatt_partial_labels_annotated2_colab.yaml \
+  --warm-start /content/drive/MyDrive/unet25d_output/checkpoints_resatt_partial_tight/best.pt
 ```
 
 To run ROI-aware tiled soft inference for Saturn v5.7:
