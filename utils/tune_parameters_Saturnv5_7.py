@@ -27,6 +27,8 @@ matplotlib.use("Agg", force=True)
 
 VERSION = "v5.7-unet-ready"
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 module_name = "sperm_segmentation_saturnv5_7"
 module_path = os.path.join(parent_dir, "sperm_segmentation_saturnv5.7.py")
 spec = importlib.util.spec_from_file_location(module_name, module_path)
@@ -55,6 +57,17 @@ TRACKING_PARAM_SPACE = [
     ("HYBRID_REPAIR_MAX_COST", 2.0, 5.5, False),
 ]
 
+UNET_RESCUE_PARAM_SPACE = [
+    ("UNET_CANDIDATE_THRESHOLD", 0.03, 0.12, False),
+    ("UNET_SEED_THRESHOLD", 0.25, 0.55, False),
+    ("UNET_RESCUE_THRESHOLD", 0.45, 0.80, False),
+    ("UNET_RESCUE_EXCLUDE_DILATION_PX", 0, 3, True),
+    ("UNET_RESCUE_MIN_COMPONENT_PX", 2, 8, True),
+    ("MAX_WIDTH_UM", 3.5, 5.5, False),
+    ("MIN_LENGTH_WIDTH_RATIO", 1.6, 2.6, False),
+    ("MAX_TORTUOSITY", 2.2, 3.8, False),
+]
+
 PROFILE_CHOICES = ("standard", "low_signal", "high_contrast", "no_clahe", "auto")
 PROFILE_DEFS = {
     "no_clahe": ("no_clahe", 0.0),
@@ -65,6 +78,7 @@ PROFILE_DEFS = {
 
 images_to_eval = []
 z_values_eval = []
+files_by_z_eval = {}
 roi_mask_global = None
 exclusion_mask_global = None
 preprocess_context_global = None
@@ -148,6 +162,8 @@ def params_from_vector(x, space):
         out[key] = int(round(val)) if is_int else float(val)
     if "THRESHOLD_HI" in out and "THRESHOLD_LO" in out and out["THRESHOLD_LO"] >= out["THRESHOLD_HI"]:
         out["THRESHOLD_LO"] = out["THRESHOLD_HI"] - 1.0
+    if "UNET_SEED_THRESHOLD" in out and "UNET_CANDIDATE_THRESHOLD" in out and out["UNET_SEED_THRESHOLD"] <= out["UNET_CANDIDATE_THRESHOLD"]:
+        out["UNET_SEED_THRESHOLD"] = min(0.95, out["UNET_CANDIDATE_THRESHOLD"] + 0.10)
     return out
 
 
@@ -155,6 +171,10 @@ def segment_eval_images(cfg, save_debug=False):
     rows = []
     segs = []
     for img, z_idx in zip(images_to_eval, z_values_eval):
+        unet_context = None
+        engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
+        if engine in {"hybrid", "unet_assisted", "unet_primary"} and str(cfg.get("UNET_MODEL_PATH", "")).strip():
+            unet_context = segmentation._make_unet_context_from_paths(files_by_z_eval, z_idx)
         seg = segmentation.segment_slice(
             img,
             cfg,
@@ -163,6 +183,7 @@ def segment_eval_images(cfg, save_debug=False):
             roi_mask=roi_mask_global,
             preprocess_context=preprocess_context_global,
             exclusion_mask=exclusion_mask_global,
+            unet_context_stack=unet_context,
         )
         meas = segmentation.measure_spermatids(seg, cfg)
         segs.append((seg, meas))
@@ -186,11 +207,47 @@ def summarize_candidate(rows, segs, cfg):
     short_frac = float(np.mean(lengths < 6.0)) if lengths.size else 1.0
     long_frac = float(np.mean(lengths > 14.0)) if lengths.size else 0.0
     wide_frac = float(np.mean(widths > 4.2)) if widths.size else 0.0
+    source_counts = {}
+    if rows:
+        for r in rows:
+            source = str(r.get("detection_source", "saturn_classical"))
+            source_counts[source] = source_counts.get(source, 0) + 1
+    unet_rescued = int(source_counts.get("unet_rescued", 0))
+    unet_rescued_split = int(source_counts.get("unet_rescued_split", 0))
+    total_unet_rescued = unet_rescued + unet_rescued_split
+    total_detections = max(len(rows), 1)
+    rescue_fraction = float(total_unet_rescued / total_detections)
+    unet_means = np.array([
+        float(r.get("unet_mean_probability", np.nan))
+        for r in rows
+        if str(r.get("detection_source", "")).startswith("unet_rescued") and np.isfinite(r.get("unet_mean_probability", np.nan))
+    ], dtype=float)
+    rejected_reason_pixels = {}
+    for _seg, meas in segs:
+        reason = meas.get("unet_rescue_rejected_reason")
+        codes = meas.get("unet_rescue_reason_codes", {})
+        if reason is None:
+            continue
+        inv = {int(v): str(k) for k, v in codes.items()}
+        vals, cnts = np.unique(reason, return_counts=True)
+        for code, count in zip(vals, cnts):
+            code = int(code)
+            if code == 0:
+                continue
+            key = inv.get(code, str(code))
+            rejected_reason_pixels[key] = rejected_reason_pixels.get(key, 0) + int(count)
+    severe_rejected_px = sum(rejected_reason_pixels.get(k, 0) for k in ("long", "branches", "loop", "tortuous", "endpoints"))
+    shape_rejected_px = sum(rejected_reason_pixels.get(k, 0) for k in ("wide", "ratio"))
+    off_roi_prob_px = int(sum(
+        np.count_nonzero((s.get("unet_probability", np.zeros_like(s["mask_clean"], dtype=float)) > 0) & ~roi_mask_global)
+        for s, _ in segs
+    )) if roi_mask_global is not None else 0
     technical_score = (
         count_cv * 20.0
         + max(0.0, mask_occ - 0.24) * 100.0
         + bridge_infl * 0.05
         + exclusion_hits * 100.0
+        + off_roi_prob_px * 100.0
     )
     morphology_prior_score = (
         abs(median_len - 9.5) * 2.0
@@ -204,11 +261,36 @@ def summarize_candidate(rows, segs, cfg):
         score = technical_score
     else:
         score = technical_score + morphology_prior_score
+    unet_rescue_score = (
+        technical_score
+        + severe_rejected_px * 0.0006
+        + shape_rejected_px * 0.0012
+        + max(0.0, 0.08 - rescue_fraction) * 30.0
+        + max(0.0, rescue_fraction - 0.42) * 35.0
+        + split_ratio_penalty(total_unet_rescued, unet_rescued_split)
+        + short_frac * 4.0
+        + long_frac * 4.0
+        + wide_frac * 4.0
+    )
+    if str(cfg.get("TUNING_OBJECTIVE", "")).lower() == "unet_rescue":
+        score = unet_rescue_score
     return {
         "score": float(score),
         "technical_score": float(technical_score),
+        "unet_rescue_score": float(unet_rescue_score),
         "morphology_prior_score_reported_not_optimized": float(morphology_prior_score),
         "n_2d": int(len(rows)),
+        "source_counts": source_counts,
+        "saturn_classical_count": int(source_counts.get("saturn_classical", 0)),
+        "unet_rescued_count": unet_rescued,
+        "unet_rescued_split_count": unet_rescued_split,
+        "unet_total_rescued_count": total_unet_rescued,
+        "unet_rescue_fraction": rescue_fraction,
+        "unet_rescue_mean_probability_median": float(np.median(unet_means)) if unet_means.size else 0.0,
+        "unet_rescue_rejected_reason_pixels": rejected_reason_pixels,
+        "unet_rescue_severe_rejected_pixels": int(severe_rejected_px),
+        "unet_rescue_shape_rejected_pixels": int(shape_rejected_px),
+        "unet_probability_outside_roi_pixels": off_roi_prob_px,
         "count_median": float(np.median(counts)) if counts else 0.0,
         "count_cv": count_cv,
         "median_length_um": median_len,
@@ -227,12 +309,39 @@ def summarize_candidate(rows, segs, cfg):
     }
 
 
+def split_ratio_penalty(total_rescued, split_rescued):
+    if total_rescued <= 0:
+        return 0.0
+    split_fraction = float(split_rescued / total_rescued)
+    return max(0.0, split_fraction - 0.75) * 4.0
+
+
 def evaluate_segmentation_candidate(params):
     cfg = CONFIG.copy()
     cfg.update(params)
     rows, segs = segment_eval_images(cfg)
     summary = summarize_candidate(rows, segs, cfg)
     summary.update(params)
+    results_list.append(summary)
+    return summary
+
+
+def evaluate_unet_rescue_candidate(params):
+    cfg = CONFIG.copy()
+    cfg.update(params)
+    cfg["SEGMENTATION_ENGINE"] = "hybrid"
+    cfg["UNET_THRESHOLD_MODE"] = "soft"
+    cfg["UNET_RESCUE_ENABLE"] = True
+    cfg["UNET_RESCUE_SPLIT_RETRY_ENABLE"] = True
+    cfg["TUNING_OBJECTIVE"] = "unet_rescue"
+    rows, segs = segment_eval_images(cfg)
+    summary = summarize_candidate(rows, segs, cfg)
+    summary.update(params)
+    summary["SEGMENTATION_ENGINE"] = cfg["SEGMENTATION_ENGINE"]
+    summary["UNET_THRESHOLD_MODE"] = cfg["UNET_THRESHOLD_MODE"]
+    summary["UNET_RESCUE_ENABLE"] = cfg["UNET_RESCUE_ENABLE"]
+    summary["UNET_RESCUE_SPLIT_RETRY_ENABLE"] = cfg.get("UNET_RESCUE_SPLIT_RETRY_ENABLE", True)
+    summary["UNET_RESCUE_SPLIT_THRESHOLDS"] = cfg.get("UNET_RESCUE_SPLIT_THRESHOLDS", [0.70, 0.80, 0.90])
     results_list.append(summary)
     return summary
 
@@ -299,7 +408,7 @@ def save_results(outdir, mode, best, records):
         json.dump(records, f, indent=2)
     pd.DataFrame(records).to_csv(outdir / f"tuning_results_saturnv5_7_{mode}.csv", index=False)
     with open(outdir / f"tuning_summary_saturnv5_7_{mode}.txt", "w", encoding="utf-8") as f:
-        f.write(f"SATURN V5.6 ROI-ADAPTIVE {mode.upper()} TUNING SUMMARY\n")
+        f.write(f"SATURN V5.7 U-NET-READY {mode.upper()} TUNING SUMMARY\n")
         f.write(f"Analysis mode: {CONFIG.get('ANALYSIS_MODE', 'comparative')}\n")
         f.write("Comparative mode reports morphology but does not optimize toward WT-like length, width, taper, tortuosity, count, volume, or Z-span.\n")
         f.write(f"Selected Z indices: {z_values_eval}\n")
@@ -310,6 +419,13 @@ def save_results(outdir, mode, best, records):
 def run_self_check():
     checks = []
     checks.append(("v5.7 module import", hasattr(segmentation, "segment_slice")))
+    checks.append(("repository root importable", parent_dir in sys.path))
+    try:
+        import utils.saturn_unet25d_bridge as _unet_bridge
+        bridge_ok = hasattr(_unet_bridge, "predict_probability_tiled")
+    except Exception:
+        bridge_ok = False
+    checks.append(("U-Net bridge importable from tuner", bridge_ok))
     checks.append(("v5.7 version string", getattr(segmentation, "_VERSION", "") == VERSION))
     checks.append(("no v5.5 module path", "v5.5" not in module_path))
     cfg = CONFIG.copy()
@@ -360,6 +476,22 @@ def run_self_check():
     checks.append(("exclusion mask honored", calls and calls[0]["exclusion_mask"] is exclusion_mask_global))
     checks.append(("profile output naming", "profile_comparison_v5_7_001.csv".startswith("profile_comparison_v5_7_")))
     checks.append(("segmentation output naming", "best_segmentation_params_v5_7_001.json".startswith("best_segmentation_params_v5_7_")))
+    checks.append(("U-Net rescue mode available", "unet_rescue" in ("profile", "segmentation", "tracking", "unet_rescue")))
+    checks.append(("U-Net rescue candidate sampling", "UNET_RESCUE_THRESHOLD" in sample_candidates(UNET_RESCUE_PARAM_SPACE, 1, 1)[0]))
+    ctx_calls = []
+    def fake_context(files_by_z, z_idx):
+        ctx_calls.append((files_by_z, z_idx))
+        return np.zeros((3, 8, 8), dtype=np.float32)
+    orig_context = segmentation._make_unet_context_from_paths
+    segmentation._make_unet_context_from_paths = fake_context
+    globals()["files_by_z_eval"] = {0: "z0.tif"}
+    fake_cfg = CONFIG.copy()
+    fake_cfg.update({"SEGMENTATION_ENGINE": "hybrid", "UNET_MODEL_PATH": "dummy.pt"})
+    segmentation.segment_slice = fake_segment_slice
+    segment_eval_images(fake_cfg)
+    segmentation.segment_slice = orig
+    segmentation._make_unet_context_from_paths = orig_context
+    checks.append(("U-Net context passed during tuner segmentation", ctx_calls and calls[-1].get("unet_context_stack") is not None))
     random.seed(123); first = [random.random() for _ in range(3)]
     random.seed(123); second = [random.random() for _ in range(3)]
     checks.append(("deterministic seed", first == second))
@@ -374,7 +506,7 @@ def run_self_check():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Saturn v5.7 U-Net-ready parameter tuner")
-    parser.add_argument("--mode", choices=["profile", "segmentation", "tracking"], default="segmentation")
+    parser.add_argument("--mode", choices=["profile", "segmentation", "tracking", "unet_rescue"], default="segmentation")
     parser.add_argument("--dir", default=None)
     parser.add_argument("--slices", default="auto")
     parser.add_argument("--auto-slice-count", type=int, default=6)
@@ -382,6 +514,7 @@ def main(argv=None):
     parser.add_argument("--exclusion-mask", default=None)
     parser.add_argument("--profile", choices=PROFILE_CHOICES, default="auto")
     parser.add_argument("--base-params", action="append", default=[])
+    parser.add_argument("--unet-model", default=None)
     parser.add_argument("--save-all-debug-candidates", action="store_true")
     parser.add_argument("--review-candidates", type=int, default=6)
     parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_DIR))
@@ -398,6 +531,8 @@ def main(argv=None):
     outdir.mkdir(parents=True, exist_ok=True)
     cfg = CONFIG.copy()
     cfg.update(merge_base_params(args.base_params))
+    if args.unet_model:
+        cfg["UNET_MODEL_PATH"] = args.unet_model
     if args.profile != "auto":
         cfg["CLAHE_MODE"] = args.profile
 
@@ -418,13 +553,25 @@ def main(argv=None):
     segmentation.save_stack_preprocess_context(preprocess_context_global, outdir)
     globals()["images_to_eval"] = [segmentation.ensure_2d_image(segmentation.robust_imread(files[i]), files[i]) for i in slice_indices]
     globals()["z_values_eval"] = [segmentation.extract_z_index(files[i], sequence_idx=i) for i in slice_indices]
+    globals()["files_by_z_eval"] = {
+        int(segmentation.extract_z_index(files[i], sequence_idx=i)): files[i]
+        for i in range(len(files))
+    }
 
     if args.mode == "profile":
         best = run_profile_mode(outdir, cfg)
         print(f"Best preprocessing profile: {best['profile']} score={best['score']:.3f}")
         return
 
-    space = SEGMENTATION_PARAM_SPACE if args.mode == "segmentation" else TRACKING_PARAM_SPACE
+    if args.mode == "unet_rescue" and not str(cfg.get("UNET_MODEL_PATH", "")).strip():
+        raise SystemExit("--mode unet_rescue requires --unet-model or a base params JSON with UNET_MODEL_PATH")
+
+    if args.mode == "segmentation":
+        space = SEGMENTATION_PARAM_SPACE
+    elif args.mode == "tracking":
+        space = TRACKING_PARAM_SPACE
+    else:
+        space = UNET_RESCUE_PARAM_SPACE
     records = []
     if args.mode == "tracking":
         rows, segs = segment_eval_images(cfg)
@@ -434,6 +581,10 @@ def main(argv=None):
             rec.update(seg_cache_summary)
             rec["score"] = seg_cache_summary["score"] + abs(cand.get("TRACK_MAX_DIST_UM", 5.0) - 5.5)
             records.append(rec)
+    elif args.mode == "unet_rescue":
+        for cand in sample_candidates(space, args.maxiter, args.seed):
+            cfg_cand = {"UNET_MODEL_PATH": cfg["UNET_MODEL_PATH"], **cand}
+            records.append(evaluate_unet_rescue_candidate(cfg_cand))
     else:
         for cand in sample_candidates(space, args.maxiter, args.seed):
             records.append(evaluate_segmentation_candidate(cand))
