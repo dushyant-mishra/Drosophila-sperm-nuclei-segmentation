@@ -8,6 +8,7 @@ exclusion mask, and a stack preprocessing context to segmentation calls.
 """
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -39,6 +40,15 @@ spec.loader.exec_module(segmentation)
 CONFIG = segmentation.CONFIG.copy()
 DEFAULT_OUTPUT_DIR = Path("parameter_tuning_results_v5_7")
 ROI_SAVE_PATH = DEFAULT_OUTPUT_DIR / "last_drawn_roi_saturnv5_7_tune.tif"
+UNET_CACHE_CONFIG_KEYS = (
+    "UNET_TILE_SIZE",
+    "UNET_TILE_OVERLAP",
+    "UNET_TILE_BATCH_SIZE",
+    "UNET_ROI_PADDING_PX",
+    "UNET_OUTSIDE_ROI_ZERO",
+    "UNET_INFERENCE_MODE",
+    "UNET_CONTEXT_MODE",
+)
 
 SEGMENTATION_PARAM_SPACE = [
     ("THRESHOLD_HI",              88.0, 94.0, False),
@@ -160,6 +170,99 @@ def build_global_context(files, indices, cfg, roi_mask, exclusion_mask):
     return ctx
 
 
+def array_digest(arr):
+    if arr is None:
+        return None
+    data = np.ascontiguousarray(arr).view(np.uint8)
+    return hashlib.sha256(data).hexdigest()
+
+
+def checkpoint_signature(path):
+    p = Path(path)
+    if not p.exists():
+        return {"path": str(p), "exists": False}
+    st = p.stat()
+    return {
+        "path": str(p.resolve()),
+        "size": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+    }
+
+
+def unet_cache_manifest(cfg):
+    return {
+        "version": VERSION,
+        "checkpoint": checkpoint_signature(cfg.get("UNET_MODEL_PATH", "")),
+        "z_values": [int(z) for z in z_values_eval],
+        "image_files_by_z": {str(int(z)): str(files_by_z_eval[int(z)]) for z in z_values_eval},
+        "image_shape": list(np.asarray(images_to_eval[0]).shape) if images_to_eval else None,
+        "roi_digest": array_digest(roi_mask_global),
+        "exclusion_digest": array_digest(exclusion_mask_global),
+        "unet_config": {k: cfg.get(k) for k in UNET_CACHE_CONFIG_KEYS},
+    }
+
+
+def load_manifest(path):
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def build_unet_probability_cache(cfg, cache_dir, force=False):
+    """
+    Precompute U-Net probability maps for tuner eval slices.
+
+    The returned dict maps integer z indices to full-frame float32 probability
+    arrays. Saturn then thresholds/splits/measures those maps for every tuning
+    candidate without rerunning neural inference.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = cache_dir / "unet_probability_cache_manifest.json"
+    manifest = unet_cache_manifest(cfg)
+    previous = load_manifest(manifest_path)
+    compatible = (previous == manifest)
+
+    cache = {}
+    missing = []
+    for z in z_values_eval:
+        out_path = cache_dir / f"z{int(z):02d}_unet_probability.tif"
+        if compatible and not force and out_path.exists():
+            arr = tifffile.imread(str(out_path)).astype(np.float32)
+            if arr.shape != np.asarray(images_to_eval[0]).shape:
+                missing.append(int(z))
+            else:
+                cache[int(z)] = np.clip(arr, 0.0, 1.0)
+        else:
+            missing.append(int(z))
+
+    if missing:
+        from utils.saturn_unet25d_bridge import predict_probability_tiled
+
+        print(f"Precomputing U-Net probability maps for {len(missing)} slice(s): {missing}")
+        for z in missing:
+            context = segmentation._make_unet_context_from_paths(files_by_z_eval, int(z))
+            prob = predict_probability_tiled(
+                context,
+                cfg["UNET_MODEL_PATH"],
+                roi_mask=roi_mask_global,
+                cfg=cfg,
+            ).astype(np.float32)
+            prob = np.clip(prob, 0.0, 1.0)
+            tifffile.imwrite(str(cache_dir / f"z{int(z):02d}_unet_probability.tif"), prob)
+            cache[int(z)] = prob
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+    else:
+        print(f"Using cached U-Net probability maps: {cache_dir}")
+
+    return cache
+
+
 def params_from_vector(x, space):
     out = {}
     for val, (key, lo, hi, is_int) in zip(x, space):
@@ -178,7 +281,12 @@ def segment_eval_images(cfg, save_debug=False):
     for img, z_idx in zip(images_to_eval, z_values_eval):
         unet_context = None
         engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
-        if engine in {"hybrid", "unet_assisted", "unet_primary"} and str(cfg.get("UNET_MODEL_PATH", "")).strip():
+        has_cache = cfg.get("_UNET_PROBABILITY_CACHE") is not None
+        if (
+            not has_cache
+            and engine in {"hybrid", "unet_assisted", "unet_primary"}
+            and str(cfg.get("UNET_MODEL_PATH", "")).strip()
+        ):
             unet_context = segmentation._make_unet_context_from_paths(files_by_z_eval, z_idx)
         seg = segmentation.segment_slice(
             img,
@@ -326,7 +434,7 @@ def evaluate_segmentation_candidate(params):
     cfg.update(params)
     rows, segs = segment_eval_images(cfg)
     summary = summarize_candidate(rows, segs, cfg)
-    summary.update(params)
+    summary.update({k: v for k, v in params.items() if not str(k).startswith("_")})
     results_list.append(summary)
     return summary
 
@@ -342,7 +450,9 @@ def evaluate_unet_rescue_candidate(params):
     cfg["TUNING_OBJECTIVE"] = "unet_rescue"
     rows, segs = segment_eval_images(cfg)
     summary = summarize_candidate(rows, segs, cfg)
-    summary.update(params)
+    summary.update({k: v for k, v in params.items() if not str(k).startswith("_")})
+    if cfg.get("_UNET_PROBABILITY_CACHE_DIR"):
+        summary["UNET_PROBABILITY_CACHE_DIR"] = cfg["_UNET_PROBABILITY_CACHE_DIR"]
     summary["SEGMENTATION_ENGINE"] = cfg["SEGMENTATION_ENGINE"]
     summary["UNET_THRESHOLD_MODE"] = cfg["UNET_THRESHOLD_MODE"]
     summary["UNET_RESCUE_ENABLE"] = cfg["UNET_RESCUE_ENABLE"]
@@ -522,6 +632,8 @@ def main(argv=None):
     parser.add_argument("--profile", choices=PROFILE_CHOICES, default="auto")
     parser.add_argument("--base-params", action="append", default=[])
     parser.add_argument("--unet-model", default=None)
+    parser.add_argument("--unet-cache-dir", default=None)
+    parser.add_argument("--rebuild-unet-cache", action="store_true")
     parser.add_argument("--save-all-debug-candidates", action="store_true")
     parser.add_argument("--review-candidates", type=int, default=6)
     parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_DIR))
@@ -572,6 +684,14 @@ def main(argv=None):
 
     if args.mode == "unet_rescue" and not str(cfg.get("UNET_MODEL_PATH", "")).strip():
         raise SystemExit("--mode unet_rescue requires --unet-model or a base params JSON with UNET_MODEL_PATH")
+    if args.mode == "unet_rescue":
+        cache_dir = Path(args.unet_cache_dir) if args.unet_cache_dir else outdir / "unet_probability_cache"
+        cfg["_UNET_PROBABILITY_CACHE"] = build_unet_probability_cache(
+            cfg,
+            cache_dir,
+            force=args.rebuild_unet_cache,
+        )
+        cfg["_UNET_PROBABILITY_CACHE_DIR"] = str(cache_dir)
 
     if args.mode == "segmentation":
         space = SEGMENTATION_PARAM_SPACE
@@ -590,7 +710,12 @@ def main(argv=None):
             records.append(rec)
     elif args.mode == "unet_rescue":
         for cand in sample_candidates(space, args.maxiter, args.seed):
-            cfg_cand = {"UNET_MODEL_PATH": cfg["UNET_MODEL_PATH"], **cand}
+            cfg_cand = {
+                "UNET_MODEL_PATH": cfg["UNET_MODEL_PATH"],
+                "_UNET_PROBABILITY_CACHE": cfg.get("_UNET_PROBABILITY_CACHE"),
+                "_UNET_PROBABILITY_CACHE_DIR": cfg.get("_UNET_PROBABILITY_CACHE_DIR"),
+                **cand,
+            }
             records.append(evaluate_unet_rescue_candidate(cfg_cand))
     else:
         for cand in sample_candidates(space, args.maxiter, args.seed):

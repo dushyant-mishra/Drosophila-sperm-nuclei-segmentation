@@ -220,6 +220,7 @@ CONFIG = {
     "UNET_INFERENCE_MODE": "roi_tiled",
     "UNET_TILE_SIZE": 256,
     "UNET_TILE_OVERLAP": 64,
+    "UNET_TILE_BATCH_SIZE": 8,
     "UNET_ROI_PADDING_PX": 32,
     "UNET_STITCH_MODE": "weighted_average",
     "UNET_OUTSIDE_ROI_ZERO": True,
@@ -387,7 +388,8 @@ _REQUIRED = {
     "UNET_THRESHOLD": (int, float), "UNET_THRESHOLD_MODE": str,
     "UNET_CANDIDATE_THRESHOLD": (int, float), "UNET_SEED_THRESHOLD": (int, float),
     "UNET_CONTEXT_MODE": str, "UNET_INFERENCE_MODE": str,
-    "UNET_TILE_SIZE": int, "UNET_TILE_OVERLAP": int, "UNET_ROI_PADDING_PX": int,
+    "UNET_TILE_SIZE": int, "UNET_TILE_OVERLAP": int, "UNET_TILE_BATCH_SIZE": int,
+    "UNET_ROI_PADDING_PX": int,
     "UNET_STITCH_MODE": str, "UNET_OUTSIDE_ROI_ZERO": bool,
     "UNET_SAVE_PROBABILITY_MAPS": bool, "UNET_CANDIDATE_ACCOUNTING": bool,
     "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
@@ -1598,21 +1600,37 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
     engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
     model_path = str(cfg.get("UNET_MODEL_PATH", "")).strip()
     empty = np.zeros(full_shape, dtype=np.float32)
-    if engine not in {"unet_assisted", "hybrid"} or not model_path or unet_context_stack is None:
+    cache = cfg.get("_UNET_PROBABILITY_CACHE")
+    has_cached_map = cache is not None and z_idx is not None and any(
+        key in cache for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}")
+    )
+    if engine not in {"unet_assisted", "hybrid"} or not model_path or (unet_context_stack is None and not has_cached_map):
         return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
             "unet_enabled": False,
             "unet_reason": "disabled_or_missing_context",
         }
 
     try:
-        from utils.saturn_unet25d_bridge import predict_probability_tiled
+        unet_prob = None
+        cache_hit = False
+        if cache is not None and z_idx is not None:
+            for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}"):
+                if key in cache:
+                    unet_prob = np.asarray(cache[key], dtype=np.float32)
+                    cache_hit = True
+                    break
+            if unet_prob is not None and unet_prob.shape != full_shape:
+                raise ValueError(f"cached U-Net probability shape {unet_prob.shape} does not match {full_shape}")
 
-        unet_prob = predict_probability_tiled(
-            unet_context_stack,
-            model_path,
-            roi_mask=roi_mask_full,
-            cfg=cfg,
-        )
+        if unet_prob is None:
+            from utils.saturn_unet25d_bridge import predict_probability_tiled
+
+            unet_prob = predict_probability_tiled(
+                unet_context_stack,
+                model_path,
+                roi_mask=roi_mask_full,
+                cfg=cfg,
+            )
         y0, y1, x0, x1 = bbox
         prob_crop = unet_prob[y0:y1, x0:x1].astype(np.float32)
         cand_thr = float(cfg.get("UNET_CANDIDATE_THRESHOLD", cfg.get("UNET_THRESHOLD", 0.05)))
@@ -1637,6 +1655,7 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
         full_seed[y0:y1, x0:x1] = seed_crop
         return mask_hyst, ridge, full_prob, full_candidate, full_seed, {
             "unet_enabled": True,
+            "unet_probability_source": "cache" if cache_hit else "model",
             "unet_engine": engine,
             "unet_threshold_mode": threshold_mode,
             "unet_mask_action": mask_action,
@@ -5950,7 +5969,8 @@ PARAM_SECTIONS = {
     "2.5D U-Net Integration": [
         "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_THRESHOLD_MODE",
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
-        "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP", "UNET_ROI_PADDING_PX",
+        "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
+        "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX",
         "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
         "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
         "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
@@ -6030,6 +6050,7 @@ PARAM_TITLES = {
     "UNET_INFERENCE_MODE": "U-Net inference mode",
     "UNET_TILE_SIZE": "U-Net tile size (px)",
     "UNET_TILE_OVERLAP": "U-Net tile overlap (px)",
+    "UNET_TILE_BATCH_SIZE": "U-Net tile batch size",
     "UNET_ROI_PADDING_PX": "U-Net ROI padding (px)",
     "UNET_RESCUE_ENABLE": "Enable U-Net rescue lane",
     "UNET_RESCUE_THRESHOLD": "U-Net rescue probability threshold",
@@ -6121,6 +6142,7 @@ PARAM_DESCRIPTIONS = {
     "UNET_INFERENCE_MODE": "roi_tiled runs U-Net only on ROI-aware tiles and stitches probabilities back into full-frame coordinates.",
     "UNET_TILE_SIZE": "Tile width/height sent to the U-Net. Smaller tiles zoom into local detail less by themselves, but reduce memory and keep nuclei prominent in each crop.",
     "UNET_TILE_OVERLAP": "Overlap between tiles. More overlap reduces edge artifacts during stitched inference but costs more GPU time.",
+    "UNET_TILE_BATCH_SIZE": "How many ROI tiles are sent through the U-Net at once. Increase for faster GPU inference if memory allows; lower it if you hit CUDA memory errors.",
     "UNET_ROI_PADDING_PX": "Extra context around the selected ROI when preparing U-Net tiles. Helps avoid boundary artifacts without letting off-ROI tissue influence output.",
     "UNET_RESCUE_ENABLE": "If enabled, U-Net high-probability regions not already covered by accepted Saturn detections are skeletonized and measured as a separate rescue lane.",
     "UNET_RESCUE_THRESHOLD": "Probability cutoff for the rescue lane. Higher values rescue fewer, more confident U-Net detections; lower values increase sensitivity but can add fragments.",

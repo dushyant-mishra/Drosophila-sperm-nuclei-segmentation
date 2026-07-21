@@ -150,12 +150,15 @@ def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg
     tile_size = int(_cfg_get(cfg, "UNET_TILE_SIZE", "unet_tile_size", 256))
     overlap = int(_cfg_get(cfg, "UNET_TILE_OVERLAP", "unet_tile_overlap", 64))
     padding = int(_cfg_get(cfg, "UNET_ROI_PADDING_PX", "unet_roi_padding_px", 32))
+    batch_size = int(_cfg_get(cfg, "UNET_TILE_BATCH_SIZE", "unet_tile_batch_size", 8))
     outside_zero = bool(_cfg_get(cfg, "UNET_OUTSIDE_ROI_ZERO", "unet_outside_roi_zero", True))
 
     if tile_size <= 0:
         raise ValueError("UNET_TILE_SIZE must be positive")
     if overlap < 0 or overlap >= tile_size:
         raise ValueError("UNET_TILE_OVERLAP must be >= 0 and < UNET_TILE_SIZE")
+    if batch_size <= 0:
+        raise ValueError("UNET_TILE_BATCH_SIZE must be positive")
 
     y0, y1, x0, x1 = _roi_bbox(roi, padding)
     y_starts = _tile_starts(y0, y1, tile_size, overlap)
@@ -163,6 +166,19 @@ def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg
     prob_sum = np.zeros((h, w), dtype=np.float32)
     weight_sum = np.zeros((h, w), dtype=np.float32)
 
+    def flush_batch(batch, meta):
+        if not batch:
+            return
+        tensor = torch.from_numpy(np.stack(batch, axis=0)).to(device)
+        preds = torch.sigmoid(model(tensor))[:, 0].detach().cpu().numpy()
+        for pred, (yy, xx, ph, pw) in zip(preds, meta):
+            pred = pred[:ph, :pw].astype(np.float32)
+            win = _blend_window(ph, pw)
+            prob_sum[yy:yy + ph, xx:xx + pw] += pred * win
+            weight_sum[yy:yy + ph, xx:xx + pw] += win
+
+    batch = []
+    meta = []
     with torch.inference_mode():
         for yy in y_starts:
             for xx in x_starts:
@@ -172,12 +188,13 @@ def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg
                     padded = np.zeros((3, tile_size, tile_size), dtype=np.float32)
                     padded[:, :ph, :pw] = patch
                     patch = padded
-                tensor = torch.from_numpy(patch[None, ...]).to(device)
-                pred = torch.sigmoid(model(tensor))[0, 0].detach().cpu().numpy()
-                pred = pred[:ph, :pw].astype(np.float32)
-                win = _blend_window(ph, pw)
-                prob_sum[yy:yy + ph, xx:xx + pw] += pred * win
-                weight_sum[yy:yy + ph, xx:xx + pw] += win
+                batch.append(patch)
+                meta.append((yy, xx, ph, pw))
+                if len(batch) >= batch_size:
+                    flush_batch(batch, meta)
+                    batch = []
+                    meta = []
+        flush_batch(batch, meta)
 
     prob = np.zeros((h, w), dtype=np.float32)
     valid = weight_sum > 0
