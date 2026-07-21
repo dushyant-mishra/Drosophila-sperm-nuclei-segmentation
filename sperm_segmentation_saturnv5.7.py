@@ -230,6 +230,8 @@ CONFIG = {
     "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
     "UNET_RESCUE_MIN_COMPONENT_PX": 3,
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
+    "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
+    "UNET_RESCUE_SPLIT_THRESHOLDS": [0.70, 0.80, 0.90],
     "UNET_TRACKING_SUPPORT": True,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": 0.6,
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": 0.25,
@@ -384,6 +386,7 @@ _REQUIRED = {
     "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
     "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": int,
+    "UNET_RESCUE_SPLIT_RETRY_ENABLE": bool, "UNET_RESCUE_SPLIT_THRESHOLDS": list,
     "UNET_TRACKING_SUPPORT": bool,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": (int, float),
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": (int, float),
@@ -2059,6 +2062,11 @@ def measure_spermatids(seg, cfg):
         exclude_px = max(0, int(cfg.get("UNET_RESCUE_EXCLUDE_DILATION_PX", 3)))
         min_component = max(1, int(cfg.get("UNET_RESCUE_MIN_COMPONENT_PX", cfg.get("MIN_OBJ_PX", 3))))
         max_additions = max(0, int(cfg.get("UNET_RESCUE_MAX_ADDITIONS_PER_SLICE", 0)))
+        split_retry = bool(cfg.get("UNET_RESCUE_SPLIT_RETRY_ENABLE", True))
+        split_thresholds = [
+            float(v) for v in cfg.get("UNET_RESCUE_SPLIT_THRESHOLDS", [0.70, 0.80, 0.90])
+            if float(v) > rescue_thr
+        ]
 
         occupied = clean_skel.copy()
         if exclude_px > 0 and np.any(occupied):
@@ -2071,16 +2079,13 @@ def measure_spermatids(seg, cfg):
         rescue_lab = measure.label(rescue_skel)
         rescue_candidates = []
 
-        for sp in measure.regionprops(rescue_lab):
-            coords = sp.coords
+        def evaluate_rescue_coords(coords, dist_map, sp, source):
             if coords.shape[0] < cfg["MIN_SKEL_LEN_PX"]:
-                reject_rescue("short", coords)
-                continue
+                return None, "short"
 
             topo = measure_topology(coords, W, allow_loops=cfg.get("ALLOW_LOOPS", False))
             if topo is None:
-                reject_rescue("loop", coords)
-                continue
+                return None, "loop"
 
             gl = topo["geo_len"]
             tort = topo["tortuosity"]
@@ -2088,32 +2093,25 @@ def measure_spermatids(seg, cfg):
             n_br = topo["n_branch_nodes"]
             if not (cfg["MIN_SKEL_LEN_PX"] <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
                 if gl < cfg["MIN_SKEL_LEN_PX"]:
-                    reject_rescue("short", coords)
-                else:
-                    reject_rescue("long", coords)
-                continue
+                    return None, "short"
+                return None, "long"
 
-            width = float(np.median(2.0 * rescue_dist[coords[:, 0], coords[:, 1]]))
+            width = float(np.median(2.0 * dist_map[coords[:, 0], coords[:, 1]]))
             if width > cfg["MAX_WIDTH_PX"]:
-                reject_rescue("wide", coords)
-                continue
+                return None, "wide"
             if gl / (width + 1e-9) < cfg["MIN_LENGTH_WIDTH_RATIO"]:
-                reject_rescue("ratio", coords)
-                continue
+                return None, "ratio"
             if n_br > cfg["MAX_BRANCH_NODES"]:
-                reject_rescue("branches", coords)
-                continue
+                return None, "branches"
             if n_ep >= 2 and tort > cfg["MAX_TORTUOSITY"]:
-                reject_rescue("tortuous", coords)
-                continue
+                return None, "tortuous"
             if n_ep > cfg["MAX_ENDPOINT_COUNT"]:
-                reject_rescue("endpoints", coords)
-                continue
+                return None, "endpoints"
 
             unet_vals = np.asarray(unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32)
             unet_vals = unet_vals[np.isfinite(unet_vals)]
             cy, cx = sp.centroid
-            rescue_candidates.append({
+            return {
                 "coords": coords,
                 "score": float(np.mean(unet_vals)) if unet_vals.size else 0.0,
                 "result": {
@@ -2135,9 +2133,48 @@ def measure_spermatids(seg, cfg):
                     "orientation": float(sp.orientation),
                     "unet_mean_probability": float(np.mean(unet_vals)) if unet_vals.size else np.nan,
                     "unet_max_probability": float(np.max(unet_vals)) if unet_vals.size else np.nan,
-                    "detection_source": "unet_rescued",
+                    "detection_source": source,
                 },
-            })
+            }, None
+
+        def split_and_retry_component(component_mask):
+            split_hits = []
+            for level in split_thresholds:
+                core = component_mask & (unet_prob >= level) & valid & ~occupied
+                core = remove_objects_smaller_than(core, min_component)
+                if not np.any(core):
+                    continue
+                core_dist = distance_transform_edt(core)
+                core_skel = skeletonize(core) & valid & ~occupied
+                core_lab = measure.label(core_skel)
+                for sub_sp in measure.regionprops(core_lab):
+                    candidate, _reason = evaluate_rescue_coords(
+                        sub_sp.coords,
+                        core_dist,
+                        sub_sp,
+                        "unet_rescued_split",
+                    )
+                    if candidate is not None:
+                        split_hits.append(candidate)
+                if split_hits:
+                    return split_hits
+            return split_hits
+
+        for sp in measure.regionprops(rescue_lab):
+            coords = sp.coords
+            candidate, reason = evaluate_rescue_coords(coords, rescue_dist, sp, "unet_rescued")
+            if candidate is not None:
+                rescue_candidates.append(candidate)
+                continue
+
+            if split_retry and reason in {"long", "branches", "loop", "tortuous", "endpoints"}:
+                component_mask = rescue_lab == sp.label
+                split_hits = split_and_retry_component(component_mask)
+                if split_hits:
+                    rescue_candidates.extend(split_hits)
+                    continue
+
+            reject_rescue(reason, coords)
 
         rescue_candidates.sort(key=lambda item: item["score"], reverse=True)
         if max_additions > 0:
@@ -2251,7 +2288,7 @@ def make_unet_rescue_review_overlay(img_raw, skel_label, results, rescue_rejecte
             if label <= 0:
                 continue
             source = label_source.get(int(label), "saturn_classical")
-            if source == "unet_rescued":
+            if str(source).startswith("unet_rescued"):
                 rgb[dilated == label] = (0.0, 0.9, 1.0)
             else:
                 rgb[dilated == label] = (0.0, 1.0, 0.25)
@@ -5735,6 +5772,7 @@ PARAM_SECTIONS = {
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP", "UNET_ROI_PADDING_PX",
         "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
         "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
+        "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
         "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
     ],
@@ -5813,6 +5851,8 @@ PARAM_TITLES = {
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "Rescue exclusion around Saturn hits (px)",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum rescue component size (px)",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Maximum rescued detections per slice",
+    "UNET_RESCUE_SPLIT_RETRY_ENABLE": "Retry splitting rejected U-Net candidates",
+    "UNET_RESCUE_SPLIT_THRESHOLDS": "U-Net split retry thresholds",
     "UNET_TRACKING_SUPPORT": "Use U-Net evidence for 3D linking",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Assignment U-Net support penalty",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Assignment U-Net continuity penalty",
@@ -5895,6 +5935,8 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum binary component size before U-Net rescue skeletonization. Increase to suppress tiny U-Net specks; decrease to recover very faint fragments.",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
+    "UNET_RESCUE_SPLIT_RETRY_ENABLE": "If enabled, U-Net rescue candidates rejected as long, branched, looped, tortuous, or endpoint-heavy are retried at stricter probability-core thresholds before final rejection.",
+    "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
     "UNET_TRACKING_SUPPORT": "If enabled in hybrid/U-Net mode, per-detection U-Net probabilities can reduce confidence in weak 3D links and favor links with consistent model support.",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Global-assignment penalty for linking detections with weak U-Net support. Set to 0 to ignore U-Net evidence during assignment.",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Global-assignment penalty for abrupt U-Net probability changes across adjacent slices.",
