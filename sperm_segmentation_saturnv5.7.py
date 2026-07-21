@@ -1482,6 +1482,9 @@ def _save_v56_debug(debug_dir, z_idx, stages, debug_record):
         ("10_skeleton_bridged", stages.get("skel_bridged")),
         ("11_skeleton_pruned", stages.get("skel_pruned")),
         ("12_final_detections", stages.get("skel_labeled")),
+        ("13_unet_probability", stages.get("unet_probability")),
+        ("14_unet_candidate_mask", stages.get("unet_candidate_mask")),
+        ("15_unet_seed_mask", stages.get("unet_seed_mask")),
     ]
     for name, arr in names:
         path = os.path.join(debug_dir, f"z{int(z_idx or 0):02d}_{name}.png")
@@ -1495,7 +1498,88 @@ def _save_v56_debug(debug_dir, z_idx, stages, debug_record):
         json.dump(_json_scalar(debug_record), f, indent=2)
 
 
-def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, preprocess_context=None, exclusion_mask=None):
+def _make_unet_context_from_paths(files_by_z, z_idx):
+    """Build [z-1, z, z+1] context planes, clamping to the nearest available slice."""
+    if not files_by_z:
+        return None
+    z_keys = sorted(int(z) for z in files_by_z)
+    if not z_keys:
+        return None
+    z_min, z_max = z_keys[0], z_keys[-1]
+    planes = []
+    for zz in (int(z_idx) - 1, int(z_idx), int(z_idx) + 1):
+        zz = min(max(zz, z_min), z_max)
+        if zz not in files_by_z:
+            nearest = min(z_keys, key=lambda k: abs(k - zz))
+            zz = nearest
+        arr = robust_imread(files_by_z[zz])
+        planes.append(ensure_2d_image(arr, os.path.basename(files_by_z[zz])).astype(np.float32))
+    return np.stack(planes, axis=0)
+
+
+def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox, roi_mask_full, cfg, unet_context_stack, z_idx=None):
+    engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
+    model_path = str(cfg.get("UNET_MODEL_PATH", "")).strip()
+    empty = np.zeros(full_shape, dtype=np.float32)
+    if engine not in {"unet_assisted", "hybrid"} or not model_path or unet_context_stack is None:
+        return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
+            "unet_enabled": False,
+            "unet_reason": "disabled_or_missing_context",
+        }
+
+    try:
+        from utils.saturn_unet25d_bridge import predict_probability_tiled
+
+        unet_prob = predict_probability_tiled(
+            unet_context_stack,
+            model_path,
+            roi_mask=roi_mask_full,
+            cfg=cfg,
+        )
+        y0, y1, x0, x1 = bbox
+        prob_crop = unet_prob[y0:y1, x0:x1].astype(np.float32)
+        cand_thr = float(cfg.get("UNET_CANDIDATE_THRESHOLD", cfg.get("UNET_THRESHOLD", 0.05)))
+        seed_thr = float(cfg.get("UNET_SEED_THRESHOLD", max(cand_thr, 0.30)))
+        threshold_mode = str(cfg.get("UNET_THRESHOLD_MODE", "soft")).strip().lower()
+        candidate_crop = (prob_crop >= cand_thr) & valid_crop
+        seed_crop = (prob_crop >= seed_thr) & valid_crop
+        mask_action = "none"
+        if engine == "unet_assisted":
+            mask_hyst = candidate_crop.copy()
+            ridge = prob_crop.copy()
+            ridge[~valid_crop] = 0.0
+            mask_action = "replace_with_unet_candidate"
+        elif engine == "hybrid" and threshold_mode in {"hard", "candidate_union", "union"}:
+            mask_hyst = (mask_hyst | candidate_crop) & valid_crop
+            mask_action = "union_unet_candidate"
+
+        full_prob = unet_prob.astype(np.float32)
+        full_candidate = np.zeros(full_shape, dtype=bool)
+        full_seed = np.zeros(full_shape, dtype=bool)
+        full_candidate[y0:y1, x0:x1] = candidate_crop
+        full_seed[y0:y1, x0:x1] = seed_crop
+        return mask_hyst, ridge, full_prob, full_candidate, full_seed, {
+            "unet_enabled": True,
+            "unet_engine": engine,
+            "unet_threshold_mode": threshold_mode,
+            "unet_mask_action": mask_action,
+            "unet_candidate_threshold": cand_thr,
+            "unet_seed_threshold": seed_thr,
+            "unet_candidate_pixels": int(np.count_nonzero(full_candidate)),
+            "unet_seed_pixels": int(np.count_nonzero(full_seed)),
+            "unet_probability_mean_inside_roi": float(np.mean(full_prob[roi_mask_full])) if np.any(roi_mask_full) else 0.0,
+        }
+    except Exception as exc:
+        if bool(cfg.get("UNET_FAIL_HARD", False)):
+            raise
+        print(f"  WARNING: U-Net inference failed for z={z_idx}: {exc}")
+        return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
+            "unet_enabled": False,
+            "unet_reason": f"error: {exc}",
+        }
+
+
+def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, preprocess_context=None, exclusion_mask=None, unet_context_stack=None):
     """
     Executes advanced 2D multi-stage morphology segmentation to detect and isolate spermatid nuclei.
 
@@ -1598,6 +1682,17 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
     norm_record["threshold_lo"] = th_lo
     mask_hyst = apply_hysteresis_threshold(ridge, th_lo, th_hi)
     mask_hyst &= valid_crop
+    mask_hyst, ridge, unet_prob, unet_candidate, unet_seed, unet_record = _apply_unet_candidate_support(
+        mask_hyst,
+        ridge,
+        valid_crop,
+        full_shape,
+        bbox,
+        roi_mask_full,
+        cfg,
+        unet_context_stack,
+        z_idx=z_idx,
+    )
 
     if mask_hyst.ndim != 2:
         raise ValueError(f"mask_hyst must be 2D, got shape {mask_hyst.shape}")
@@ -1727,6 +1822,10 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
         "ridge":        full(ridge, np.float32),
         "roi_mask":     roi_mask_full,
         "exclusion_mask": exclusion_full,
+        "unet_probability": unet_prob,
+        "unet_candidate_mask": unet_candidate,
+        "unet_seed_mask": unet_seed,
+        "unet_debug": unet_record,
         "preprocess_context": preprocess_context,
         "preprocess_debug": norm_record,
         "bridge_stats": bridge_stats,
@@ -1757,6 +1856,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
             "foreground_occupancy_inside_roi": float(np.count_nonzero(out["mask_hyst"] & valid_full_after) / max(np.count_nonzero(valid_full_after), 1)),
             "foreground_occupancy_outside_roi": int(np.count_nonzero(out["mask_hyst"] & ~roi_mask_full)),
             "foreground_occupancy_inside_exclusion_mask": int(np.count_nonzero(out["mask_hyst"] & exclusion_full)),
+            "unet_debug": unet_record,
             "skeleton_pixels_before_bridging": bridge_stats["skeleton_pixels_before"],
             "skeleton_pixels_after_bridging": bridge_stats["skeleton_pixels_after"],
             "bridge_inflation_fraction": float((bridge_stats["skeleton_pixels_after"] - bridge_stats["skeleton_pixels_before"]) / max(bridge_stats["skeleton_pixels_before"], 1)),
@@ -1790,6 +1890,7 @@ def measure_spermatids(seg, cfg):
     skel     = seg["skel_pruned"]
     dist     = seg["dist_clean"]
     skel_lab = seg["skel_labeled"]
+    unet_prob = seg.get("unet_probability")
     H, W     = skel.shape
 
     # ------ Filter pass ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1843,6 +1944,10 @@ def measure_spermatids(seg, cfg):
             continue
 
         cy, cx = sp.centroid
+        unet_vals = None
+        if unet_prob is not None:
+            unet_vals = np.asarray(unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32)
+            unet_vals = unet_vals[np.isfinite(unet_vals)]
         accepted_labels.append(sp.label)
         area_est_px = float(gl * width)
         cache[sp.label] = {
@@ -1861,6 +1966,8 @@ def measure_spermatids(seg, cfg):
             "bbox_max_y": float(sp.bbox[2]),
             "bbox_max_x": float(sp.bbox[3]),
             "orientation": float(sp.orientation),
+            "unet_mean_probability": float(np.mean(unet_vals)) if unet_vals is not None and unet_vals.size else np.nan,
+            "unet_max_probability": float(np.max(unet_vals)) if unet_vals is not None and unet_vals.size else np.nan,
         }
 
     total_rejected = sum(reasons.values())
@@ -1901,6 +2008,8 @@ def measure_spermatids(seg, cfg):
             "bbox_max_y":          c["bbox_max_y"],
             "bbox_max_x":          c["bbox_max_x"],
             "orientation":         c["orientation"],
+            "unet_mean_probability": c.get("unet_mean_probability", np.nan),
+            "unet_max_probability": c.get("unet_max_probability", np.nan),
         })
 
     return {"skel_label": final_label, "results": final_results}
@@ -2290,6 +2399,8 @@ def rows_from_results(results, z_idx, um):
         "bbox_max_y":          r.get("bbox_max_y"),
         "bbox_max_x":          r.get("bbox_max_x"),
         "orientation":         round(r.get("orientation", 0.0), 3),
+        "unet_mean_probability": round(float(r.get("unet_mean_probability", np.nan)), 4) if np.isfinite(r.get("unet_mean_probability", np.nan)) else np.nan,
+        "unet_max_probability":  round(float(r.get("unet_max_probability", np.nan)), 4) if np.isfinite(r.get("unet_max_probability", np.nan)) else np.nan,
     } for i, r in enumerate(results, start=1)]
 
 
@@ -3918,11 +4029,13 @@ def process_one_image(image_path, cfg, output_dir):
     print(f"\nProcessing: {os.path.basename(image_path)}")
 
     t0      = time.time()
+    unet_context = np.stack([img_2d.astype(np.float32)] * 3, axis=0)
     seg     = segment_slice(img_2d, cfg, z_idx=z_idx,
                             debug_dir=debug_dir if cfg["SAVE_DEBUG_IMAGES"] else None,
                             roi_mask=roi_mask,
                             preprocess_context=preprocess_context,
-                            exclusion_mask=exclusion_mask)
+                            exclusion_mask=exclusion_mask,
+                            unet_context_stack=unet_context)
     meas    = measure_spermatids(seg, cfg)
     results = meas["results"]
     elapsed = time.time() - t0
@@ -3944,6 +4057,10 @@ def process_one_image(image_path, cfg, output_dir):
     if cfg["SAVE_MASK_TIFS"]:
         tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_mask.tif"),
                          seg["mask_clean"].astype(np.uint8) * 255)
+    if cfg.get("UNET_SAVE_PROBABILITY_MAPS", True):
+        if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
+            tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_unet_probability.tif"),
+                             seg["unet_probability"].astype(np.float32))
     if cfg["SAVE_LABEL_TIFS"]:
         tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_skel_labels.tif"),
                          meas["skel_label"].astype(np.uint16))
@@ -3979,6 +4096,7 @@ def process_batch(cfg):
         ensure_dir(debug_dir)
 
     files, z_indices = load_batch_files(cfg["INPUT_DIR"], cfg["FILE_PATTERN"])
+    files_by_z = {int(z): f for f, z in zip(files, z_indices)}
     um         = cfg["UM_PER_PX_XY"]
     roi_mask = None
     exclusion_mask = None
@@ -4011,11 +4129,13 @@ def process_batch(cfg):
         print(f"\n[{idx_i+1}/{len(files)}]  Z={z_idx:02d}  {os.path.basename(fpath)}")
         img_raw = robust_imread(fpath)
         img_2d  = ensure_2d_image(img_raw, os.path.basename(fpath))
+        unet_context = _make_unet_context_from_paths(files_by_z, z_idx)
         seg     = segment_slice(img_2d, cfg, z_idx=z_idx,
                                 debug_dir=debug_dir if cfg["SAVE_DEBUG_IMAGES"] else None,
                                 roi_mask=roi_mask,
                                 preprocess_context=preprocess_context,
-                                exclusion_mask=exclusion_mask)
+                                exclusion_mask=exclusion_mask,
+                                unet_context_stack=unet_context)
         meas    = measure_spermatids(seg, cfg)
         results = meas["results"]
         skel_label = meas["skel_label"]
@@ -4069,6 +4189,10 @@ def process_batch(cfg):
         if cfg["SAVE_MASK_TIFS"]:
             tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_mask.tif"),
                              (seg["mask_clean"] & roi_mask if roi_mask is not None else seg["mask_clean"]).astype(np.uint8) * 255)
+        if cfg.get("UNET_SAVE_PROBABILITY_MAPS", True):
+            if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
+                tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_unet_probability.tif"),
+                                 seg["unet_probability"].astype(np.float32))
         if cfg["SAVE_LABEL_TIFS"]:
             tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_skel_labels.tif"),
                              skel_label.astype(np.uint16))
@@ -7148,6 +7272,10 @@ class SpermGUI:
             first_img = ensure_2d_image(robust_imread(self.files[0]), os.path.basename(self.files[0]))
             if roi_mask is not None and roi_mask.shape != first_img.shape:
                 raise ValueError(f"ROI shape {roi_mask.shape} does not match image shape {first_img.shape}")
+            files_by_z = {
+                int(extract_z_index(fpath, sequence_idx=i)): fpath
+                for i, fpath in enumerate(self.files)
+            }
             preprocess_context = build_stack_preprocess_context(self.files, roi_mask, params, exclusion_mask=exclusion_mask)
             save_stack_preprocess_context(preprocess_context, out_dir)
             if roi_mask is not None:
@@ -7175,10 +7303,12 @@ class SpermGUI:
 
                 full_img = process_img
                 crop_oy, crop_ox = 0, 0
+                unet_context = _make_unet_context_from_paths(files_by_z, z_idx)
                 seg = segment_slice(process_img, params, z_idx=z_idx,
                                     roi_mask=roi_mask,
                                     preprocess_context=preprocess_context,
-                                    exclusion_mask=exclusion_mask)
+                                    exclusion_mask=exclusion_mask,
+                                    unet_context_stack=unet_context)
                 meas = measure_spermatids(seg, params)
                 res = meas['results']
                 sl_full = meas['skel_label']
@@ -7231,6 +7361,14 @@ class SpermGUI:
                         "image": full_img.copy(),
                         "skel_label": sl_full.copy().astype(np.int32),
                     }
+
+                if params["SAVE_MASK_TIFS"]:
+                    tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_mask.tif"),
+                                     (seg["mask_clean"] & roi_mask if roi_mask is not None else seg["mask_clean"]).astype(np.uint8) * 255)
+                if params.get("UNET_SAVE_PROBABILITY_MAPS", True):
+                    if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
+                        tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_unet_probability.tif"),
+                                         seg["unet_probability"].astype(np.float32))
 
                 # Update Progress Bar for each slice
                 self.lbl_batch_op.config(text=f"Batch Segmenting: {idx+1} / {len(self.files)} slices...", fg='blue')
