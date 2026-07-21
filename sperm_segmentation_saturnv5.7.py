@@ -226,8 +226,8 @@ CONFIG = {
     "UNET_SAVE_PROBABILITY_MAPS": True,
     "UNET_CANDIDATE_ACCOUNTING": True,
     "UNET_RESCUE_ENABLE": True,
-    "UNET_RESCUE_THRESHOLD": 0.50,
-    "UNET_RESCUE_EXCLUDE_DILATION_PX": 3,
+    "UNET_RESCUE_THRESHOLD": 0.60,
+    "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
     "UNET_RESCUE_MIN_COMPONENT_PX": 3,
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
     "UNET_TRACKING_SUPPORT": True,
@@ -2029,6 +2029,23 @@ def measure_spermatids(seg, cfg):
         })
 
     rescue_reasons = {"short": 0, "loop": 0, "long": 0, "wide": 0, "ratio": 0, "branches": 0, "tortuous": 0, "endpoints": 0}
+    rescue_reason_codes = {
+        "short": 1,
+        "loop": 2,
+        "long": 3,
+        "wide": 4,
+        "ratio": 5,
+        "branches": 6,
+        "tortuous": 7,
+        "endpoints": 8,
+    }
+    rescue_rejected_reason = np.zeros_like(skel_lab, dtype=np.uint8)
+    rescue_accepted_label = np.zeros_like(skel_lab, dtype=np.int32)
+
+    def reject_rescue(reason, coords):
+        rescue_reasons[reason] += 1
+        rescue_rejected_reason[coords[:, 0], coords[:, 1]] = rescue_reason_codes[reason]
+
     if (
         cfg.get("UNET_RESCUE_ENABLE", True)
         and unet_prob is not None
@@ -2057,12 +2074,12 @@ def measure_spermatids(seg, cfg):
         for sp in measure.regionprops(rescue_lab):
             coords = sp.coords
             if coords.shape[0] < cfg["MIN_SKEL_LEN_PX"]:
-                rescue_reasons["short"] += 1
+                reject_rescue("short", coords)
                 continue
 
             topo = measure_topology(coords, W, allow_loops=cfg.get("ALLOW_LOOPS", False))
             if topo is None:
-                rescue_reasons["loop"] += 1
+                reject_rescue("loop", coords)
                 continue
 
             gl = topo["geo_len"]
@@ -2071,26 +2088,26 @@ def measure_spermatids(seg, cfg):
             n_br = topo["n_branch_nodes"]
             if not (cfg["MIN_SKEL_LEN_PX"] <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
                 if gl < cfg["MIN_SKEL_LEN_PX"]:
-                    rescue_reasons["short"] += 1
+                    reject_rescue("short", coords)
                 else:
-                    rescue_reasons["long"] += 1
+                    reject_rescue("long", coords)
                 continue
 
             width = float(np.median(2.0 * rescue_dist[coords[:, 0], coords[:, 1]]))
             if width > cfg["MAX_WIDTH_PX"]:
-                rescue_reasons["wide"] += 1
+                reject_rescue("wide", coords)
                 continue
             if gl / (width + 1e-9) < cfg["MIN_LENGTH_WIDTH_RATIO"]:
-                rescue_reasons["ratio"] += 1
+                reject_rescue("ratio", coords)
                 continue
             if n_br > cfg["MAX_BRANCH_NODES"]:
-                rescue_reasons["branches"] += 1
+                reject_rescue("branches", coords)
                 continue
             if n_ep >= 2 and tort > cfg["MAX_TORTUOSITY"]:
-                rescue_reasons["tortuous"] += 1
+                reject_rescue("tortuous", coords)
                 continue
             if n_ep > cfg["MAX_ENDPOINT_COUNT"]:
-                rescue_reasons["endpoints"] += 1
+                reject_rescue("endpoints", coords)
                 continue
 
             unet_vals = np.asarray(unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32)
@@ -2129,6 +2146,7 @@ def measure_spermatids(seg, cfg):
         for item in rescue_candidates:
             coords = item["coords"]
             final_label[coords[:, 0], coords[:, 1]] = next_label
+            rescue_accepted_label[coords[:, 0], coords[:, 1]] = next_label
             item["result"]["label"] = next_label
             final_results.append(item["result"])
             next_label += 1
@@ -2142,7 +2160,13 @@ def measure_spermatids(seg, cfg):
                     if v > 0:
                         print(f"      {k}: {v}")
 
-    return {"skel_label": final_label, "results": final_results}
+    return {
+        "skel_label": final_label,
+        "results": final_results,
+        "unet_rescue_accepted_label": rescue_accepted_label,
+        "unet_rescue_rejected_reason": rescue_rejected_reason,
+        "unet_rescue_reason_codes": rescue_reason_codes,
+    }
 
 
 # =============================================================================
@@ -2188,6 +2212,50 @@ def make_overlay(img_raw, skel_label):
     rgb[m0, 0] = base[m0]
     rgb[m0, 1] = base[m0]
     rgb[m0, 2] = base[m0]
+    return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+
+
+def make_unet_rescue_review_overlay(img_raw, skel_label, results, rescue_rejected_reason=None):
+    """
+    Audit overlay for v5.7 U-Net rescue review.
+
+    Colors:
+    - green: accepted Saturn classical detections
+    - cyan: accepted U-Net rescued detections
+    - red: U-Net candidate rejected as long/branched/loop/tortuous
+    - orange: U-Net candidate rejected as wide/low ratio
+    - magenta: U-Net candidate rejected as short fragment
+    """
+    base = normalize_display(img_raw)
+    rgb = np.stack([base, base, base], axis=-1)
+
+    label_source = {}
+    for row in results or []:
+        try:
+            label_source[int(row.get("label", 0))] = row.get("detection_source", "saturn_classical")
+        except Exception:
+            continue
+
+    if rescue_rejected_reason is not None:
+        rejected = grey_dilation(np.asarray(rescue_rejected_reason, dtype=np.uint8), size=3)
+        short = rejected == 1
+        severe = np.isin(rejected, [2, 3, 6, 7, 8])
+        shape = np.isin(rejected, [4, 5])
+        rgb[short] = (1.0, 0.0, 0.9)
+        rgb[shape] = (1.0, 0.55, 0.0)
+        rgb[severe] = (1.0, 0.0, 0.0)
+
+    if skel_label is not None and int(np.max(skel_label)) > 0:
+        dilated = grey_dilation(skel_label.astype(np.int32), size=3)
+        for label in np.unique(dilated):
+            if label <= 0:
+                continue
+            source = label_source.get(int(label), "saturn_classical")
+            if source == "unet_rescued":
+                rgb[dilated == label] = (0.0, 0.9, 1.0)
+            else:
+                rgb[dilated == label] = (0.0, 1.0, 0.25)
+
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
@@ -4181,6 +4249,13 @@ def process_one_image(image_path, cfg, output_dir):
 
     if cfg["SAVE_OVERLAYS"]:
         _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_overlay.png"), overlay_rgb)
+        rescue_rgb = make_unet_rescue_review_overlay(
+            img_raw,
+            meas["skel_label"],
+            results,
+            meas.get("unet_rescue_rejected_reason"),
+        )
+        _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_unet_rescue_review.png"), rescue_rgb)
     if cfg["SAVE_DETAIL_FIGURE"]:
         save_detail_figure(img_raw, overlay_rgb, results,
                            os.path.join(overlay_dir, f"z{z_idx:02d}_detail.png"),
@@ -4300,6 +4375,13 @@ def process_batch(cfg):
 
             panel = np.hstack([orig_rgb, overlay_rgb])
             _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_panel.png"), panel)
+            rescue_rgb = make_unet_rescue_review_overlay(
+                img_2d,
+                skel_label,
+                results,
+                meas.get("unet_rescue_rejected_reason"),
+            )
+            _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_unet_rescue_review.png"), rescue_rgb)
 
             if max_proj_raw is None:
                 max_proj_raw = img_2d.copy().astype(np.float32)
@@ -7481,6 +7563,13 @@ class SpermGUI:
                         orig_rgb = np.stack([orig_rgb]*3, axis=-1)
                     panel = np.hstack([orig_rgb, ov])
                     _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_panel.png"), panel)
+                    rescue_rgb = make_unet_rescue_review_overlay(
+                        full_img,
+                        sl_full,
+                        res,
+                        meas.get("unet_rescue_rejected_reason"),
+                    )
+                    _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_unet_rescue_review.png"), rescue_rgb)
 
                     # ---- LIVE GUI UPDATE ----
                     # Show the side-by-side segmentation panel during batch execution
