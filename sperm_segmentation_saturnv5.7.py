@@ -2382,12 +2382,15 @@ def measure_spermatids(seg, cfg):
 # OVERLAY  (vectorized LUT)
 # =============================================================================
 
+_OVERLAY_DISPLAY_DILATION_SIZE = 3
+
+
 def make_overlay(img_raw, skel_label):
     """
     Generates a colour-coded skeleton overlay on the grayscale raw image.
 
     Each detected spermatid is assigned a unique hue from the ``gist_rainbow``
-    colourmap, dilated by 3 pixels for visibility, and composited onto the
+    colourmap, dilated only for display visibility, and composited onto the
     contrast-stretched raw image.  Background pixels (label == 0) retain the
     original grayscale intensity.
 
@@ -2413,7 +2416,7 @@ def make_overlay(img_raw, skel_label):
         return (np.stack([base]*3, -1) * 255).astype(np.uint8)
     # Assign one colour per label; prepend black for background (index 0)
     cols    = plt.cm.gist_rainbow(np.linspace(0, 1, n))[:, :3]
-    dilated = grey_dilation(skel_label.astype(np.int32), size=3)
+    dilated = grey_dilation(skel_label.astype(np.int32), size=_OVERLAY_DISPLAY_DILATION_SIZE)
     lut     = np.vstack([[0., 0., 0.], cols[:n]])
     rgb     = lut[dilated]
     # Restore original grayscale for background pixels
@@ -2434,6 +2437,9 @@ def make_unet_rescue_review_overlay(img_raw, skel_label, results, rescue_rejecte
     - red: U-Net candidate rejected as long/branched/loop/tortuous
     - orange: U-Net candidate rejected as wide/low ratio
     - magenta: U-Net candidate rejected as short fragment
+
+    The dilation below is display-only and is never used for object counting,
+    skeleton length, width, or 3D tracking calculations.
     """
     base = normalize_display(img_raw)
     rgb = np.stack([base, base, base], axis=-1)
@@ -2446,7 +2452,10 @@ def make_unet_rescue_review_overlay(img_raw, skel_label, results, rescue_rejecte
             continue
 
     if rescue_rejected_reason is not None:
-        rejected = grey_dilation(np.asarray(rescue_rejected_reason, dtype=np.uint8), size=3)
+        rejected = grey_dilation(
+            np.asarray(rescue_rejected_reason, dtype=np.uint8),
+            size=_OVERLAY_DISPLAY_DILATION_SIZE,
+        )
         short = rejected == 1
         severe = np.isin(rejected, [2, 3, 6, 7, 8])
         shape = np.isin(rejected, [4, 5])
@@ -2455,7 +2464,7 @@ def make_unet_rescue_review_overlay(img_raw, skel_label, results, rescue_rejecte
         rgb[severe] = (1.0, 0.0, 0.0)
 
     if skel_label is not None and int(np.max(skel_label)) > 0:
-        dilated = grey_dilation(skel_label.astype(np.int32), size=3)
+        dilated = grey_dilation(skel_label.astype(np.int32), size=_OVERLAY_DISPLAY_DILATION_SIZE)
         for label in np.unique(dilated):
             if label <= 0:
                 continue
@@ -2493,7 +2502,7 @@ def make_quality_overlay(img_raw, skel_label, slice_tracks, track_quality_map):
                 continue
             label_quality[label] = track_quality_map.get(track_id)
 
-    dilated = grey_dilation(skel_label.astype(np.int32), size=3)
+    dilated = grey_dilation(skel_label.astype(np.int32), size=_OVERLAY_DISPLAY_DILATION_SIZE)
     for label in np.unique(dilated):
         label = int(label)
         if label == 0:
