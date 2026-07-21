@@ -4724,6 +4724,74 @@ def write_error_log(out_dir, component, message):
         pass
 
 
+def summarize_unet_rescue_for_reports(df, out_dir=None):
+    """
+    Return report-ready v5.7 U-Net rescue accounting from raw 2D detections.
+
+    The summary is intentionally based on exported measurement columns, not
+    overlay pixels. Display dilation in PNG overlays is cosmetic only.
+    """
+    if df is None or df.empty or "detection_source" not in df.columns:
+        return None
+
+    source = df["detection_source"].fillna("saturn_classical").astype(str)
+    total = int(len(df))
+    classical = int((source == "saturn_classical").sum())
+    unet_direct = int((source == "unet_rescued").sum())
+    unet_split = int((source == "unet_rescued_split").sum())
+    unet_total = unet_direct + unet_split
+
+    def pct(n):
+        return 100.0 * float(n) / max(total, 1)
+
+    rows = [
+        {"Population": "All 2D detections", "Count": total, "Percent": 100.0, "Median U-Net probability": np.nan},
+        {"Population": "Saturn classical", "Count": classical, "Percent": pct(classical), "Median U-Net probability": np.nan},
+        {"Population": "U-Net rescued", "Count": unet_direct, "Percent": pct(unet_direct), "Median U-Net probability": np.nan},
+        {"Population": "U-Net rescued after split/centerline", "Count": unet_split, "Percent": pct(unet_split), "Median U-Net probability": np.nan},
+        {"Population": "All U-Net rescued", "Count": unet_total, "Percent": pct(unet_total), "Median U-Net probability": np.nan},
+    ]
+
+    if "unet_mean_probability" in df.columns:
+        probs = pd.to_numeric(df["unet_mean_probability"], errors="coerce")
+        for row in rows:
+            if row["Population"] == "Saturn classical":
+                mask = source == "saturn_classical"
+            elif row["Population"] == "U-Net rescued":
+                mask = source == "unet_rescued"
+            elif row["Population"] == "U-Net rescued after split/centerline":
+                mask = source == "unet_rescued_split"
+            elif row["Population"] == "All U-Net rescued":
+                mask = source.str.startswith("unet_rescued")
+            else:
+                mask = pd.Series([True] * len(df), index=df.index)
+            vals = probs[mask].dropna()
+            if not vals.empty:
+                row["Median U-Net probability"] = float(vals.median())
+
+    overlay_count = 0
+    probability_map_count = 0
+    if out_dir:
+        overlay_dir = os.path.join(out_dir, "overlays")
+        if os.path.isdir(overlay_dir):
+            overlay_count = len([p for p in os.listdir(overlay_dir) if p.endswith("_unet_rescue_review.png")])
+        if os.path.isdir(out_dir):
+            probability_map_count = len([p for p in os.listdir(out_dir) if p.endswith("_unet_probability.tif")])
+
+    return {
+        "enabled": unet_total > 0 or probability_map_count > 0,
+        "total_2d": total,
+        "saturn_classical": classical,
+        "unet_rescued": unet_direct,
+        "unet_rescued_split": unet_split,
+        "unet_total_rescued": unet_total,
+        "unet_rescue_fraction": float(unet_total / max(total, 1)),
+        "overlay_count": int(overlay_count),
+        "probability_map_count": int(probability_map_count),
+        "table": pd.DataFrame(rows),
+    }
+
+
 def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
     """
     Generates a multi-tab Excel workbook with formatted data, summary statistics,
@@ -4766,6 +4834,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
     try:
         with pd.ExcelWriter(excel_path, engine='xlsxwriter') as writer:
             workbook  = writer.book
+            unet_report = summarize_unet_rescue_for_reports(df, out_dir)
 
             def excel_col_letter(frame, column_name):
                 """Return the Excel column letter for a DataFrame column."""
@@ -4853,6 +4922,30 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             if not df_summary.empty:
                 df_summary.to_excel(writer, sheet_name='Slice_Summary', index=False)
 
+            # --- Sheet 4b: v5.7 U-Net Rescue Audit ---
+            if unet_report and unet_report["enabled"]:
+                ws_unet = workbook.add_worksheet('U-Net_Rescue_Audit')
+                ws_unet.write(0, 0, "Saturn v5.7 U-Net Rescue Audit", bold)
+                ws_unet.write(1, 0, "All counts below are measurement-table counts, not overlay-pixel counts.")
+                ws_unet.write(2, 0, "Overlay dilation is display-only and does not affect count, length, width, or 3D tracking.")
+                ws_unet.write(4, 0, "Probability maps saved")
+                ws_unet.write(4, 1, unet_report["probability_map_count"])
+                ws_unet.write(5, 0, "U-Net rescue review overlays saved")
+                ws_unet.write(5, 1, unet_report["overlay_count"])
+                ws_unet.write(6, 0, "U-Net rescued fraction of 2D detections")
+                ws_unet.write(6, 1, unet_report["unet_rescue_fraction"], num_fmt)
+                table_df = unet_report["table"]
+                for c_idx, col_name in enumerate(table_df.columns):
+                    ws_unet.write(8, c_idx, col_name, bold)
+                for r_idx, row_data in enumerate(table_df.itertuples(index=False), start=9):
+                    for c_idx, val in enumerate(row_data):
+                        if isinstance(val, (int, float, np.integer, np.floating)) and not pd.isna(val):
+                            ws_unet.write(r_idx, c_idx, float(val), num_fmt if c_idx >= 2 else None)
+                        else:
+                            ws_unet.write(r_idx, c_idx, "" if pd.isna(val) else val)
+                ws_unet.set_column('A:A', 36)
+                ws_unet.set_column('B:D', 18)
+
             ws_sum.set_column('B:D', 18)
 
             # Insert Histograms into Summary
@@ -4879,6 +4972,8 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 ["Nearest Neighbor (um)", "Nearest 3D centroid-to-centroid distance", "Simple local packing-density readout."],
                 ["Quality Audit", "Strict post-tracking flag based on length, tortuosity, thickness, taper, and minimum slice count", "Strict audit labels completed tracks after tracking. It does not change segmentation; it defines the no-warning subset used for conservative summaries."],
                 ["Biological Candidate", "Softer post-tracking tier that hard-fails long, tortuous, extreme-thick, extreme-taper, or shallow tracks while keeping thick/taper as warning-only", "Candidate tier is intended for visually plausible biological positives while retaining PSF-sensitive warnings for review."],
+                ["v5.7 U-Net Rescue", "U-Net probability maps add a rescue lane for detections missed by classical Saturn; accepted detections are labeled by detection_source.", "Use source counts to audit how much the AI lane contributed. The U-Net lane does not replace downstream biological QC."],
+                ["U-Net Rescue Overlay", "Green = Saturn classical; cyan = accepted U-Net rescue; magenta/orange/red = U-Net-positive candidates rejected by rescue gates.", "Overlay line thickness is display-only and never used for count, length, width, or tracking calculations."],
                 ["Parameter Tuning Guidance", "Candidate audit first -> Tracking second -> Segmentation last", "Change audit interpretation when summaries are too strict; change tracking when tracks are fragmented or over-merged; change segmentation only when the raw 2D detections themselves are wrong."],
                 ["Standard Deviation", "Std Dev", "Population spread around the mean."]
             ]
@@ -4937,6 +5032,7 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
 
     try:
         with PdfPages(pdf_path) as pdf:
+            unet_report = summarize_unet_rescue_for_reports(df, out_dir)
             # --- PAGE 1: GLOBAL SUMMARY ---
             fig_sum = plt.figure(figsize=(11, 8.5))
             fig_sum.suptitle(f"Spermatid Analysis Batch Summary - {_VERSION}\nLocation: {out_dir}", fontsize=14, fontweight='bold')
@@ -5126,6 +5222,68 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             pdf.savefig(fig_sum, dpi=300, bbox_inches='tight')
             plt.close(fig_sum)
 
+            # --- PAGE 1.6: v5.7 U-NET RESCUE AUDIT ---
+            if unet_report and unet_report["enabled"]:
+                fig_unet = plt.figure(figsize=(11, 8.5))
+                fig_unet.suptitle("Saturn v5.7 U-Net Rescue Audit", fontsize=15, fontweight='bold')
+                gs = fig_unet.add_gridspec(2, 2, height_ratios=[2.0, 1.2])
+                ax_bar = fig_unet.add_subplot(gs[0, 0])
+                table = unet_report["table"].copy()
+                plot_table = table[table["Population"].isin([
+                    "Saturn classical",
+                    "U-Net rescued",
+                    "U-Net rescued after split/centerline",
+                ])]
+                ax_bar.bar(
+                    plot_table["Population"],
+                    plot_table["Count"],
+                    color=["#2ca02c", "#17becf", "#00a6c8"],
+                    edgecolor="black",
+                )
+                ax_bar.set_title("2D Detection Source Accounting")
+                ax_bar.set_ylabel("Detection count")
+                ax_bar.tick_params(axis='x', labelrotation=20)
+                for idx, val in enumerate(plot_table["Count"]):
+                    ax_bar.text(idx, val + max(plot_table["Count"].max() * 0.02, 1), f"{int(val):,}", ha='center', fontsize=10, fontweight='bold')
+
+                ax_text = fig_unet.add_subplot(gs[0, 1])
+                ax_text.axis('off')
+                note = (
+                    f"Total 2D detections: {unet_report['total_2d']:,}\n"
+                    f"Saturn classical: {unet_report['saturn_classical']:,}\n"
+                    f"U-Net rescued total: {unet_report['unet_total_rescued']:,} "
+                    f"({unet_report['unet_rescue_fraction']*100:.1f}%)\n"
+                    f"Probability maps saved: {unet_report['probability_map_count']:,}\n"
+                    f"Rescue-review overlays saved: {unet_report['overlay_count']:,}\n\n"
+                    "Interpretation\n"
+                    "Cyan rescue detections are U-Net-supported objects accepted by the same measurement table used for CSV/Excel exports. "
+                    "Red/orange/magenta review-overlay marks show U-Net-positive candidates that were not accepted by the rescue gates.\n\n"
+                    "Overlay display note\n"
+                    "Overlay dilation is cosmetic only. It is not used for counts, skeleton length, width, or 3D tracking."
+                )
+                ax_text.text(0, 1, note, transform=ax_text.transAxes, va='top', fontsize=11, linespacing=1.35)
+
+                ax_table = fig_unet.add_subplot(gs[1, :])
+                ax_table.axis('off')
+                display_table = table.copy()
+                display_table["Percent"] = display_table["Percent"].map(lambda v: f"{v:.1f}%")
+                display_table["Median U-Net probability"] = display_table["Median U-Net probability"].map(
+                    lambda v: "" if pd.isna(v) else f"{v:.3f}"
+                )
+                tab = ax_table.table(
+                    cellText=display_table.values,
+                    colLabels=display_table.columns,
+                    loc='center',
+                    cellLoc='center',
+                )
+                tab.auto_set_font_size(False)
+                tab.set_fontsize(9)
+                tab.scale(1, 1.35)
+                fig_unet.tight_layout(rect=[0, 0.03, 1, 0.93])
+                fig_unet.savefig(os.path.join(plot_dir, "unet_rescue_audit.png"), dpi=300, bbox_inches='tight')
+                pdf.savefig(fig_unet, dpi=300, bbox_inches='tight')
+                plt.close(fig_unet)
+
             # --- PAGE 2: 3D MORPHOMETRICS SUMMARY (ALL TRACKS + BIOLOGICAL CANDIDATE OVERLAY) ---
             if df_tracks is not None and not df_tracks.empty:
                 fig_3d = plt.figure(figsize=(11, 8.5))
@@ -5308,7 +5466,11 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 "   Hard-fail rules: length > AUDIT_MAX_LENGTH_UM, tortuosity > AUDIT_MAX_TORTUOSITY, extreme thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, and n_slices < AUDIT_MIN_SLICES.\n"
                 "   Warning-only rules: thickness > AUDIT_MAX_THICKNESS_UM and taper > AUDIT_MAX_TAPER_RATIO. These PSF-sensitive flags are retained for review but no longer remove tracks from the main candidate population.\n"
                 "   Interpretation: Audit annotates completed tracks after tracking. Main reports use biological candidates while strict no-warning quality remains a diagnostic subset.\n"
-                "\n11. PSF-sensitive metrics note\n"
+                "\n11. v5.7 U-Net Rescue Lane\n"
+                "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues are labeled in detection_source as unet_rescued or unet_rescued_split.\n"
+                "   The rescue-review overlay uses green for Saturn classical detections, cyan for accepted U-Net rescues, and magenta/orange/red for U-Net-positive candidates rejected by rescue gates.\n"
+                "   Overlay dilation is display-only and is never used for count, length, width, or 3D tracking calculations.\n\n"
+                "12. PSF-sensitive metrics note\n"
                 "   Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling. Use them mainly for relative comparisons between matched WT and mutant datasets, not as literal physical dimensions.\n"
             )
             ax_g.text(0, 1, guide_full, transform=ax_g.transAxes, fontsize=10, family='monospace', verticalalignment='top', linespacing=1.3)
@@ -5513,6 +5675,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
         print("PPTX: Starting report generation...")
         # We need a fallback blank pptx
         prs = Presentation()
+        unet_report = summarize_unet_rescue_for_reports(df, out_dir)
 
         # Safe blank layout (often index 6 or 5)
         try:
@@ -5715,6 +5878,53 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             add_hyperlink(slide3, "3D_Morphometrics")
 
         # ---------------------------------------------------------------------
+        # SLIDE 3b: Saturn v5.7 U-Net Rescue Audit
+        # ---------------------------------------------------------------------
+        if unet_report and unet_report["enabled"]:
+            slide_unet = prs.slides.add_slide(blank_slide_layout)
+            txBox = slide_unet.shapes.add_textbox(Inches(0.5), Inches(0.1), Inches(9), Inches(0.5))
+            tf = txBox.text_frame
+            tf.text = "Saturn v5.7 U-Net Rescue Audit"
+            tf.paragraphs[0].font.size = Pt(22)
+            tf.paragraphs[0].font.bold = True
+
+            table_rows = [
+                ["Source", "Count", "Percent"],
+                ["Saturn classical", f"{unet_report['saturn_classical']:,}", f"{100.0 * unet_report['saturn_classical'] / max(unet_report['total_2d'], 1):.1f}%"],
+                ["U-Net rescued", f"{unet_report['unet_rescued']:,}", f"{100.0 * unet_report['unet_rescued'] / max(unet_report['total_2d'], 1):.1f}%"],
+                ["U-Net split/centerline", f"{unet_report['unet_rescued_split']:,}", f"{100.0 * unet_report['unet_rescued_split'] / max(unet_report['total_2d'], 1):.1f}%"],
+                ["All U-Net rescued", f"{unet_report['unet_total_rescued']:,}", f"{unet_report['unet_rescue_fraction'] * 100.0:.1f}%"],
+            ]
+            table_shape = slide_unet.shapes.add_table(len(table_rows), 3, Inches(0.5), Inches(1.0), Inches(4.4), Inches(2.4))
+            table = table_shape.table
+            for r, row_vals in enumerate(table_rows):
+                for c, val in enumerate(row_vals):
+                    cell = table.cell(r, c)
+                    cell.text_frame.text = val
+                    cell.text_frame.paragraphs[0].font.size = Pt(10)
+                    if r == 0:
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = RGBColor(68, 114, 196)
+                        cell.text_frame.paragraphs[0].font.color.rgb = RGBColor(255, 255, 255)
+                        cell.text_frame.paragraphs[0].font.bold = True
+
+            note_box = slide_unet.shapes.add_textbox(Inches(5.2), Inches(1.0), Inches(4.1), Inches(4.8))
+            tf_note = note_box.text_frame
+            tf_note.word_wrap = True
+            tf_note.text = (
+                f"Probability maps saved: {unet_report['probability_map_count']:,}\n"
+                f"Rescue-review overlays saved: {unet_report['overlay_count']:,}\n\n"
+                "Green overlay: Saturn classical\n"
+                "Cyan overlay: accepted U-Net rescue\n"
+                "Magenta/orange/red: U-Net-positive candidates rejected by rescue gates\n\n"
+                "Overlay dilation is display-only. Counts, lengths, widths, and 3D tracking use the measurement tables, not overlay pixels."
+            )
+            for p in tf_note.paragraphs:
+                p.font.size = Pt(11)
+
+            add_hyperlink(slide_unet, "U-Net_Rescue_Audit")
+
+        # ---------------------------------------------------------------------
         # SLIDE 4: Global Population Statistics Summary Table
         # ---------------------------------------------------------------------
         slide4 = prs.slides.add_slide(blank_slide_layout)
@@ -5848,7 +6058,12 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
                 ("Practical use: ", "Use biological candidates as the main analysis population. Use strict no-warning quality as a conservative diagnostic subset."),
                 ("Biology note: ", "At this acquisition z-step (~1.04 um), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
             ]),
-            ("12. PSF-sensitive metrics note", [
+            ("12. v5.7 U-Net rescue lane", [
+                ("Source labels: ", "Raw 2D detections are labeled as saturn_classical, unet_rescued, or unet_rescued_split in the measurement table."),
+                ("Overlay colors: ", "Green is Saturn classical; cyan is accepted U-Net rescue; magenta/orange/red are U-Net-positive candidates rejected by rescue gates."),
+                ("Display note: ", "Overlay dilation is cosmetic only and is never used for count, length, width, or 3D tracking calculations.")
+            ]),
+            ("13. PSF-sensitive metrics note", [
                 ("Important: ", "Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling."),
                 ("Use them for: ", "relative comparison between WT and mutant datasets acquired with matched settings."),
                 ("Do not use them as: ", "literal physical dimensions or absolute biophysical ground truth.")
