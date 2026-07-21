@@ -233,6 +233,8 @@ CONFIG = {
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
     "UNET_RESCUE_SPLIT_THRESHOLDS": [0.70, 0.80, 0.90],
+    "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": True,
+    "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": 0.85,
     "UNET_INSTANCE_SPLIT_ENABLE": True,
     "UNET_INSTANCE_SEED_THRESHOLD": 0.75,
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
@@ -393,6 +395,8 @@ _REQUIRED = {
     "UNET_RESCUE_MIN_SKEL_LEN_UM": (int, float),
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": int,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": bool, "UNET_RESCUE_SPLIT_THRESHOLDS": list,
+    "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": bool,
+    "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": (int, float),
     "UNET_INSTANCE_SPLIT_ENABLE": bool, "UNET_INSTANCE_SEED_THRESHOLD": (int, float),
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": int, "UNET_INSTANCE_WATERSHED_COMPACTNESS": (int, float),
     "UNET_TRACKING_SUPPORT": bool,
@@ -1089,6 +1093,54 @@ def _dijkstra(adj, src, n):
                 heapq.heappush(pq, (nd, v))
     far = int(np.argmax(d))
     return far, float(d[far])
+
+
+def _dijkstra_with_previous(adj, src, n):
+    d = np.full(n, np.inf)
+    prev = np.full(n, -1, dtype=np.int32)
+    d[src] = 0.0
+    pq = [(0.0, src)]
+    while pq:
+        cost, u = heapq.heappop(pq)
+        if cost > d[u]:
+            continue
+        for v, w in adj[u]:
+            nd = cost + w
+            if nd < d[v]:
+                d[v] = nd
+                prev[v] = u
+                heapq.heappush(pq, (nd, v))
+    far = int(np.argmax(d))
+    return far, float(d[far]), prev
+
+
+def extract_geodesic_centerline_coords(coords, W):
+    """
+    Return the longest simple shortest-path through a skeleton component.
+
+    This is used only for high-confidence U-Net rescue candidates that are
+    rejected for topology. It converts a branched/looped probability skeleton
+    into one measurable centerline without accepting all side branches.
+    """
+    coords = np.asarray(coords)
+    if coords.shape[0] < 2:
+        return coords
+    adj = _build_adj(coords, W)
+    start = 0
+    b, _ = _dijkstra(adj, start, len(coords))
+    c, _dist, prev = _dijkstra_with_previous(adj, b, len(coords))
+    path = []
+    cur = c
+    seen = set()
+    while cur >= 0 and cur not in seen:
+        seen.add(cur)
+        path.append(cur)
+        if cur == b:
+            break
+        cur = int(prev[cur])
+    if not path or path[-1] != b:
+        return coords
+    return coords[np.asarray(path, dtype=np.int32)]
 
 
 def measure_topology(coords, W, allow_loops=False):
@@ -2138,6 +2190,8 @@ def measure_spermatids(seg, cfg):
             float(v) for v in cfg.get("UNET_RESCUE_SPLIT_THRESHOLDS", [0.70, 0.80, 0.90])
             if float(v) > rescue_thr
         ]
+        centerline_salvage = bool(cfg.get("UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE", True))
+        centerline_min_prob = float(cfg.get("UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB", 0.85))
         instance_split = bool(cfg.get("UNET_INSTANCE_SPLIT_ENABLE", True))
         instance_seed_thr = float(cfg.get("UNET_INSTANCE_SEED_THRESHOLD", max(rescue_thr, 0.75)))
         peak_min_distance = max(1, int(cfg.get("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 6)))
@@ -2216,6 +2270,19 @@ def measure_spermatids(seg, cfg):
                 },
             }, None
 
+        def evaluate_centerline_salvage(coords, dist_map, sp, source):
+            if not centerline_salvage:
+                return None
+            unet_vals = np.asarray(unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32)
+            unet_vals = unet_vals[np.isfinite(unet_vals)]
+            if not unet_vals.size or float(np.mean(unet_vals)) < centerline_min_prob:
+                return None
+            centerline = extract_geodesic_centerline_coords(coords, W)
+            if centerline.shape[0] >= coords.shape[0]:
+                return None
+            candidate, _reason = evaluate_rescue_coords(centerline, dist_map, sp, source)
+            return candidate
+
         def split_and_retry_component(component_mask):
             split_hits = []
             for level in split_thresholds:
@@ -2257,6 +2324,13 @@ def measure_spermatids(seg, cfg):
                     rescue_candidates.append(candidate)
                     accepted_any = True
                     continue
+
+                if reason in {"loop", "long", "branches", "tortuous", "endpoints"}:
+                    candidate = evaluate_centerline_salvage(coords, instance_dist, skel_sp, "unet_rescued")
+                    if candidate is not None:
+                        rescue_candidates.append(candidate)
+                        accepted_any = True
+                        continue
 
                 if split_retry and reason in {"long", "branches", "loop", "tortuous", "endpoints"}:
                     component_mask = instance_skel_lab == skel_sp.label
@@ -5872,6 +5946,7 @@ PARAM_SECTIONS = {
         "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
         "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
         "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
+        "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE", "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB",
         "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
         "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
@@ -5955,6 +6030,8 @@ PARAM_TITLES = {
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Maximum rescued detections per slice",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "Retry splitting rejected U-Net candidates",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "U-Net split retry thresholds",
+    "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": "Salvage red U-Net centerlines",
+    "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": "Minimum salvage mean probability",
     "UNET_INSTANCE_SPLIT_ENABLE": "Split U-Net probability instances first",
     "UNET_INSTANCE_SEED_THRESHOLD": "U-Net instance seed threshold",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum seed peak spacing (px)",
@@ -6044,6 +6121,8 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "If enabled, U-Net rescue candidates rejected as long, branched, looped, tortuous, or endpoint-heavy are retried at stricter probability-core thresholds before final rejection.",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
+    "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": "If enabled, high-confidence red U-Net candidates rejected for topology are reduced to their longest simple centerline and measured once more.",
+    "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": "Minimum mean U-Net probability required before topology-rejected red candidates can be centerline-salvaged.",
     "UNET_INSTANCE_SPLIT_ENABLE": "If enabled, connected U-Net rescue probability regions are split into putative instances before skeletonization and measurement.",
     "UNET_INSTANCE_SEED_THRESHOLD": "Probability threshold for watershed/core seeds used to split connected U-Net rescue regions. Higher values create cleaner but fewer seeds.",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum distance between fallback U-Net probability peaks used as instance seeds. Lower values can split crowded regions more aggressively.",
