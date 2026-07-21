@@ -225,11 +225,21 @@ CONFIG = {
     "UNET_OUTSIDE_ROI_ZERO": True,
     "UNET_SAVE_PROBABILITY_MAPS": True,
     "UNET_CANDIDATE_ACCOUNTING": True,
+    "UNET_RESCUE_ENABLE": True,
+    "UNET_RESCUE_THRESHOLD": 0.50,
+    "UNET_RESCUE_EXCLUDE_DILATION_PX": 3,
+    "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+    "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
     "UNET_TRACKING_SUPPORT": True,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": 0.6,
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": 0.25,
     "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT": 0.4,
     "UNET_DETECTED_LABEL": "Detected by U-Net",
+    "UNET_RESCUED_LABEL": "U-Net rescued",
+    "UNET_COMPLETED_BY_BRIDGE_LABEL": "Completed by bridge",
+    "UNET_COMPLETED_BY_EXTENSION_LABEL": "Completed by extension",
+    "UNET_MERGED_CANDIDATE_LABEL": "Merged candidate",
+    "UNET_QC_BORDERLINE_LABEL": "QC borderline",
     "SATURN_RECOVERED_LABEL": "Recovered by Saturn",
     "FINAL_ACCEPTED_LABEL": "Final accepted",
     "EXCLUDED_FROM_MEASUREMENT_LABEL": "Excluded from measurement",
@@ -371,11 +381,15 @@ _REQUIRED = {
     "UNET_TILE_SIZE": int, "UNET_TILE_OVERLAP": int, "UNET_ROI_PADDING_PX": int,
     "UNET_STITCH_MODE": str, "UNET_OUTSIDE_ROI_ZERO": bool,
     "UNET_SAVE_PROBABILITY_MAPS": bool, "UNET_CANDIDATE_ACCOUNTING": bool,
+    "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
+    "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
+    "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": int,
     "UNET_TRACKING_SUPPORT": bool,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": (int, float),
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": (int, float),
     "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT": (int, float),
-    "UNET_DETECTED_LABEL": str, "UNET_COMPLETED_BY_BRIDGE_LABEL": str,
+    "UNET_DETECTED_LABEL": str, "UNET_RESCUED_LABEL": str,
+    "UNET_COMPLETED_BY_BRIDGE_LABEL": str,
     "UNET_COMPLETED_BY_EXTENSION_LABEL": str, "UNET_MERGED_CANDIDATE_LABEL": str,
     "UNET_QC_BORDERLINE_LABEL": str,
     "UM_PER_PX_XY": float, "UM_PER_SLICE_Z": float,
@@ -1968,6 +1982,7 @@ def measure_spermatids(seg, cfg):
             "orientation": float(sp.orientation),
             "unet_mean_probability": float(np.mean(unet_vals)) if unet_vals is not None and unet_vals.size else np.nan,
             "unet_max_probability": float(np.max(unet_vals)) if unet_vals is not None and unet_vals.size else np.nan,
+            "detection_source": "saturn_classical",
         }
 
     total_rejected = sum(reasons.values())
@@ -1976,12 +1991,12 @@ def measure_spermatids(seg, cfg):
         for k, v in reasons.items():
             if v > 0: print(f"      {k}: {v}")
 
-    if not accepted_labels:
-        return {"skel_label": np.zeros_like(skel_lab, dtype=np.int32),
-                "results": []}
-
-    clean_skel  = np.isin(skel_lab, accepted_labels)
-    final_label = measure.label(clean_skel).astype(np.int32)
+    if accepted_labels:
+        clean_skel = np.isin(skel_lab, accepted_labels)
+        final_label = measure.label(clean_skel).astype(np.int32)
+    else:
+        clean_skel = np.zeros_like(skel, dtype=bool)
+        final_label = np.zeros_like(skel_lab, dtype=np.int32)
 
     # ------ Re-index using cached values (no second Dijkstra pass) ---------------------------------------------
     final_results = []
@@ -2010,7 +2025,122 @@ def measure_spermatids(seg, cfg):
             "orientation":         c["orientation"],
             "unet_mean_probability": c.get("unet_mean_probability", np.nan),
             "unet_max_probability": c.get("unet_max_probability", np.nan),
+            "detection_source":    c.get("detection_source", "saturn_classical"),
         })
+
+    rescue_reasons = {"short": 0, "loop": 0, "long": 0, "wide": 0, "ratio": 0, "branches": 0, "tortuous": 0, "endpoints": 0}
+    if (
+        cfg.get("UNET_RESCUE_ENABLE", True)
+        and unet_prob is not None
+        and np.any(unet_prob > 0)
+        and str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower() in {"hybrid", "unet_assisted"}
+    ):
+        roi = seg.get("roi_mask", np.ones_like(skel, dtype=bool)).astype(bool)
+        exclusion = seg.get("exclusion_mask", np.zeros_like(skel, dtype=bool)).astype(bool)
+        valid = roi & ~exclusion
+        rescue_thr = float(cfg.get("UNET_RESCUE_THRESHOLD", cfg.get("UNET_SEED_THRESHOLD", 0.50)))
+        exclude_px = max(0, int(cfg.get("UNET_RESCUE_EXCLUDE_DILATION_PX", 3)))
+        min_component = max(1, int(cfg.get("UNET_RESCUE_MIN_COMPONENT_PX", cfg.get("MIN_OBJ_PX", 3))))
+        max_additions = max(0, int(cfg.get("UNET_RESCUE_MAX_ADDITIONS_PER_SLICE", 0)))
+
+        occupied = clean_skel.copy()
+        if exclude_px > 0 and np.any(occupied):
+            occupied = morphology.binary_dilation(occupied, morphology.disk(exclude_px))
+        rescue_mask = (unet_prob >= rescue_thr) & valid & ~occupied
+        rescue_mask = remove_objects_smaller_than(rescue_mask, min_component)
+        rescue_dist = distance_transform_edt(rescue_mask)
+        rescue_skel = skeletonize(rescue_mask)
+        rescue_skel &= valid & ~occupied
+        rescue_lab = measure.label(rescue_skel)
+        rescue_candidates = []
+
+        for sp in measure.regionprops(rescue_lab):
+            coords = sp.coords
+            if coords.shape[0] < cfg["MIN_SKEL_LEN_PX"]:
+                rescue_reasons["short"] += 1
+                continue
+
+            topo = measure_topology(coords, W, allow_loops=cfg.get("ALLOW_LOOPS", False))
+            if topo is None:
+                rescue_reasons["loop"] += 1
+                continue
+
+            gl = topo["geo_len"]
+            tort = topo["tortuosity"]
+            n_ep = topo["n_endpoints"]
+            n_br = topo["n_branch_nodes"]
+            if not (cfg["MIN_SKEL_LEN_PX"] <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
+                if gl < cfg["MIN_SKEL_LEN_PX"]:
+                    rescue_reasons["short"] += 1
+                else:
+                    rescue_reasons["long"] += 1
+                continue
+
+            width = float(np.median(2.0 * rescue_dist[coords[:, 0], coords[:, 1]]))
+            if width > cfg["MAX_WIDTH_PX"]:
+                rescue_reasons["wide"] += 1
+                continue
+            if gl / (width + 1e-9) < cfg["MIN_LENGTH_WIDTH_RATIO"]:
+                rescue_reasons["ratio"] += 1
+                continue
+            if n_br > cfg["MAX_BRANCH_NODES"]:
+                rescue_reasons["branches"] += 1
+                continue
+            if n_ep >= 2 and tort > cfg["MAX_TORTUOSITY"]:
+                rescue_reasons["tortuous"] += 1
+                continue
+            if n_ep > cfg["MAX_ENDPOINT_COUNT"]:
+                rescue_reasons["endpoints"] += 1
+                continue
+
+            unet_vals = np.asarray(unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32)
+            unet_vals = unet_vals[np.isfinite(unet_vals)]
+            cy, cx = sp.centroid
+            rescue_candidates.append({
+                "coords": coords,
+                "score": float(np.mean(unet_vals)) if unet_vals.size else 0.0,
+                "result": {
+                    "length_px_geodesic": gl,
+                    "length_px_count": float(coords.shape[0]),
+                    "width_px": width,
+                    "length_width_ratio": gl / (width + 1e-9),
+                    "tortuosity": tort,
+                    "n_endpoints": n_ep,
+                    "n_branch_nodes": n_br,
+                    "centroid_x": cx,
+                    "centroid_y": cy,
+                    "area_px": float(gl * width),
+                    "skeleton_area_px": float(sp.area),
+                    "bbox_min_y": float(sp.bbox[0]),
+                    "bbox_min_x": float(sp.bbox[1]),
+                    "bbox_max_y": float(sp.bbox[2]),
+                    "bbox_max_x": float(sp.bbox[3]),
+                    "orientation": float(sp.orientation),
+                    "unet_mean_probability": float(np.mean(unet_vals)) if unet_vals.size else np.nan,
+                    "unet_max_probability": float(np.max(unet_vals)) if unet_vals.size else np.nan,
+                    "detection_source": "unet_rescued",
+                },
+            })
+
+        rescue_candidates.sort(key=lambda item: item["score"], reverse=True)
+        if max_additions > 0:
+            rescue_candidates = rescue_candidates[:max_additions]
+        next_label = int(final_label.max()) + 1
+        for item in rescue_candidates:
+            coords = item["coords"]
+            final_label[coords[:, 0], coords[:, 1]] = next_label
+            item["result"]["label"] = next_label
+            final_results.append(item["result"])
+            next_label += 1
+
+        if rescue_candidates or sum(rescue_reasons.values()) > 0:
+            print(f"    U-Net rescue accepted {len(rescue_candidates)} blobs at probability >= {rescue_thr:.3f}")
+            rejected = sum(rescue_reasons.values())
+            if rejected:
+                print(f"    U-Net rescue rejected {rejected} blobs:")
+                for k, v in rescue_reasons.items():
+                    if v > 0:
+                        print(f"      {k}: {v}")
 
     return {"skel_label": final_label, "results": final_results}
 
@@ -2399,6 +2529,7 @@ def rows_from_results(results, z_idx, um):
         "bbox_max_y":          r.get("bbox_max_y"),
         "bbox_max_x":          r.get("bbox_max_x"),
         "orientation":         round(r.get("orientation", 0.0), 3),
+        "detection_source":    r.get("detection_source", "saturn_classical"),
         "unet_mean_probability": round(float(r.get("unet_mean_probability", np.nan)), 4) if np.isfinite(r.get("unet_mean_probability", np.nan)) else np.nan,
         "unet_max_probability":  round(float(r.get("unet_max_probability", np.nan)), 4) if np.isfinite(r.get("unet_max_probability", np.nan)) else np.nan,
     } for i, r in enumerate(results, start=1)]
@@ -5520,6 +5651,8 @@ PARAM_SECTIONS = {
         "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_THRESHOLD_MODE",
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP", "UNET_ROI_PADDING_PX",
+        "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
+        "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
         "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
     ],
@@ -5593,6 +5726,11 @@ PARAM_TITLES = {
     "UNET_TILE_SIZE": "U-Net tile size (px)",
     "UNET_TILE_OVERLAP": "U-Net tile overlap (px)",
     "UNET_ROI_PADDING_PX": "U-Net ROI padding (px)",
+    "UNET_RESCUE_ENABLE": "Enable U-Net rescue lane",
+    "UNET_RESCUE_THRESHOLD": "U-Net rescue probability threshold",
+    "UNET_RESCUE_EXCLUDE_DILATION_PX": "Rescue exclusion around Saturn hits (px)",
+    "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum rescue component size (px)",
+    "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Maximum rescued detections per slice",
     "UNET_TRACKING_SUPPORT": "Use U-Net evidence for 3D linking",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Assignment U-Net support penalty",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Assignment U-Net continuity penalty",
@@ -5670,6 +5808,11 @@ PARAM_DESCRIPTIONS = {
     "UNET_TILE_SIZE": "Tile width/height sent to the U-Net. Smaller tiles zoom into local detail less by themselves, but reduce memory and keep nuclei prominent in each crop.",
     "UNET_TILE_OVERLAP": "Overlap between tiles. More overlap reduces edge artifacts during stitched inference but costs more GPU time.",
     "UNET_ROI_PADDING_PX": "Extra context around the selected ROI when preparing U-Net tiles. Helps avoid boundary artifacts without letting off-ROI tissue influence output.",
+    "UNET_RESCUE_ENABLE": "If enabled, U-Net high-probability regions not already covered by accepted Saturn detections are skeletonized and measured as a separate rescue lane.",
+    "UNET_RESCUE_THRESHOLD": "Probability cutoff for the rescue lane. Higher values rescue fewer, more confident U-Net detections; lower values increase sensitivity but can add fragments.",
+    "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
+    "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum binary component size before U-Net rescue skeletonization. Increase to suppress tiny U-Net specks; decrease to recover very faint fragments.",
+    "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
     "UNET_TRACKING_SUPPORT": "If enabled in hybrid/U-Net mode, per-detection U-Net probabilities can reduce confidence in weak 3D links and favor links with consistent model support.",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Global-assignment penalty for linking detections with weak U-Net support. Set to 0 to ignore U-Net evidence during assignment.",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Global-assignment penalty for abrupt U-Net probability changes across adjacent slices.",
