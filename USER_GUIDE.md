@@ -59,6 +59,30 @@
 
 ---
 
+## Running a Multi-Sample Study in V5.7
+
+1. Save `analysis_roi_v5_7.npy` inside every sample's image folder.
+2. Open **Multi-Sample Study** in the sidebar and select **Open Study Manager**.
+3. Select **Discover Root** and choose the parent folder containing all specimens.
+4. Review the table. Double-click a sample ID, biological group, XY calibration, or Z spacing to edit it. Toggle **Include** for specimens that should not run.
+5. Select an output folder outside the source study folder, then select **Validate**.
+6. Resolve every invalid row before selecting **Run / Resume Study**.
+
+The manager reads each specimen's Leica metadata when available, validates its ROI against every source image, and runs specimens independently. Completed specimens resume without rerunning when the same parameters are used. Failed specimens remain isolated and do not stop the remaining samples.
+
+Study-level outputs include:
+
+- `study_manifest.csv`: exact specimen, group, ROI, calibration, and source settings.
+- `study_run_state.json`: per-specimen status and resume information.
+- `runtime_parameters.json`: the shared V5.7 parameters used for the study.
+- `specimen_summary.csv`: one raw summary row per biological specimen.
+- `study_track_records.csv`: pooled track records with globally unique `study_track_id` values.
+- `samples/<sample_id>/attempt_NNN/`: the complete standard V5.7 output for one specimen.
+
+ROI-area and ROI-volume normalized biological readouts are not yet added to the aggregate table. The current `specimen_summary.csv` intentionally reports raw counts and morphology so normalization can be introduced and audited separately.
+
+---
+
 ## Where Results Are Saved
 All outputs are saved inside the selected input image folder in an auto-created subfolder such as `batch_output`, `batch_output_1`, and so on.
 

@@ -1272,6 +1272,8 @@ def _json_scalar(v):
         return {str(k): _json_scalar(val) for k, val in v.items()}
     if isinstance(v, (list, tuple)):
         return [_json_scalar(x) for x in v]
+    if isinstance(v, pl.Path):
+        return str(v)
     return v
 
 
@@ -6847,6 +6849,582 @@ def generate_ai_html_report(out_dir, ai_text, stats_summary, species):
     with open(html_path, "w", encoding="utf-8") as f: f.write(html_content)
     return html_path
 
+
+# =============================================================================
+# MULTI-SAMPLE STUDY MANAGEMENT
+# =============================================================================
+
+STUDY_MANIFEST_COLUMNS = [
+    "include",
+    "sample_id",
+    "group",
+    "input_dir",
+    "roi_path",
+    "file_pattern",
+    "slice_count",
+    "z_min",
+    "z_max",
+    "xy_um_per_pixel",
+    "z_um_per_slice",
+    "acquisition_class",
+    "status",
+    "message",
+    "output_dir",
+]
+
+_STUDY_SOURCE_RE = re.compile(
+    r"^Project_Series(?P<series>\d+)_z(?P<z>\d+)_ch00\.tif{1,2}$",
+    re.IGNORECASE,
+)
+
+
+def _study_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "include"}
+
+
+def _study_series_bool(series):
+    if series.empty:
+        return pd.Series(dtype=bool)
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False)
+    return series.fillna(False).map(_study_bool)
+
+
+def _study_safe_id(value):
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip()).strip("._-")
+    return cleaned or "Sample"
+
+
+def _study_group_from_folder(folder, study_root):
+    try:
+        rel = pl.Path(folder).resolve().relative_to(pl.Path(study_root).resolve())
+        candidate = rel.parts[0] if len(rel.parts) > 1 else pl.Path(folder).parent.name
+    except Exception:
+        candidate = pl.Path(folder).parent.name
+    candidate = re.sub(r"\s+Test\s+SV$", "", candidate, flags=re.IGNORECASE).strip()
+    return candidate or "Unassigned"
+
+
+def _study_parse_leica_metadata(sample_dir, series_number, fallback_xy, fallback_z):
+    """Read the physical calibration and acquisition signature from Leica XML."""
+    import xml.etree.ElementTree as ET
+
+    xml_path = pl.Path(sample_dir) / "MetaData" / f"Project_Series{int(series_number):03d}.xml"
+    result = {
+        "xy_um_per_pixel": float(fallback_xy),
+        "z_um_per_slice": float(fallback_z),
+        "acquisition_class": "metadata unavailable",
+        "metadata_path": str(xml_path) if xml_path.exists() else "",
+    }
+    if not xml_path.exists():
+        return result
+
+    try:
+        root = ET.parse(xml_path).getroot()
+        dimensions = {}
+        settings = {}
+        detector = {}
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1]
+            if tag == "DimensionDescription" and "DimID" in elem.attrib:
+                dimensions[int(elem.attrib["DimID"])] = elem.attrib
+            elif tag == "ATLConfocalSettingDefinition":
+                settings = elem.attrib
+            elif tag == "Detector" and elem.attrib.get("IsActive") == "1":
+                detector = elem.attrib
+
+        dim_x = dimensions.get(1, {})
+        if dim_x.get("NumberOfElements") and dim_x.get("Length"):
+            result["xy_um_per_pixel"] = (
+                abs(float(dim_x["Length"])) * 1_000_000.0 / int(dim_x["NumberOfElements"])
+            )
+
+        dim_z = dimensions.get(3, {})
+        n_z = int(dim_z.get("NumberOfElements", 0) or 0)
+        begin = settings.get("Begin")
+        end = settings.get("End")
+        if n_z > 1 and begin is not None and end is not None:
+            result["z_um_per_slice"] = abs(float(end) - float(begin)) * 1_000_000.0 / (n_z - 1)
+        elif n_z > 0 and dim_z.get("Length"):
+            result["z_um_per_slice"] = abs(float(dim_z["Length"])) * 1_000_000.0 / n_z
+
+        objective = settings.get("ObjectiveName", "unknown").strip()
+        zoom = settings.get("Zoom", "unknown")
+        gain = detector.get("Gain", "unknown")
+        time_gate = detector.get("IsTimeGateActivated", "unknown")
+        result["acquisition_class"] = (
+            f"objective={objective}; zoom={zoom}; gain={gain}; time_gate={time_gate}"
+        )
+    except Exception as exc:
+        result["acquisition_class"] = f"metadata parse warning: {exc}"
+    return result
+
+
+def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy", base_cfg=None):
+    """Discover top-level source Z-stacks below a study root without reading outputs."""
+    study_root = pl.Path(study_root).resolve()
+    if not study_root.is_dir():
+        raise FileNotFoundError(f"Study root does not exist: {study_root}")
+    cfg = CONFIG if base_cfg is None else base_cfg
+    rows = []
+    used_ids = set()
+
+    candidate_dirs = [study_root]
+    candidate_dirs.extend(path for path in study_root.rglob("*") if path.is_dir())
+    for folder in candidate_dirs:
+        sources = []
+        for path in folder.iterdir():
+            if not path.is_file():
+                continue
+            match = _STUDY_SOURCE_RE.match(path.name)
+            if match:
+                sources.append((int(match.group("series")), int(match.group("z")), path))
+        if not sources:
+            continue
+
+        series_values = sorted({series for series, _z, _path in sources})
+        for series in series_values:
+            series_sources = sorted(
+                [(z, path) for src_series, z, path in sources if src_series == series],
+                key=lambda item: item[0],
+            )
+            z_values = [z for z, _path in series_sources]
+            base_id = _study_safe_id(folder.name)
+            if len(series_values) > 1:
+                base_id = f"{base_id}_Series{series}"
+            sample_id = base_id
+            suffix = 2
+            while sample_id.lower() in used_ids:
+                sample_id = f"{base_id}_{suffix}"
+                suffix += 1
+            used_ids.add(sample_id.lower())
+
+            metadata = _study_parse_leica_metadata(
+                folder,
+                series,
+                cfg.get("UM_PER_PX_XY", 1.0),
+                cfg.get("UM_PER_SLICE_Z", 1.0),
+            )
+            roi_path = folder / roi_filename
+            rows.append(
+                {
+                    "include": True,
+                    "sample_id": sample_id,
+                    "group": _study_group_from_folder(folder, study_root),
+                    "input_dir": str(folder),
+                    "roi_path": str(roi_path),
+                    "file_pattern": f"Project_Series{series:03d}_z*_ch00.tif",
+                    "slice_count": len(series_sources),
+                    "z_min": min(z_values),
+                    "z_max": max(z_values),
+                    "xy_um_per_pixel": float(metadata["xy_um_per_pixel"]),
+                    "z_um_per_slice": float(metadata["z_um_per_slice"]),
+                    "acquisition_class": metadata["acquisition_class"],
+                    "status": "pending",
+                    "message": "",
+                    "output_dir": "",
+                }
+            )
+    return rows
+
+
+def save_multisample_manifest(rows, path):
+    path = pl.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(rows)
+    for column in STUDY_MANIFEST_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = ""
+    frame[STUDY_MANIFEST_COLUMNS].to_csv(path, index=False)
+    return str(path)
+
+
+def load_multisample_manifest(path):
+    frame = pd.read_csv(path, keep_default_na=False)
+    rows = []
+    for record in frame.to_dict(orient="records"):
+        row = {column: record.get(column, "") for column in STUDY_MANIFEST_COLUMNS}
+        row["include"] = _study_bool(row["include"])
+        for key in ("slice_count", "z_min", "z_max"):
+            row[key] = int(float(row[key])) if str(row[key]).strip() else 0
+        for key in ("xy_um_per_pixel", "z_um_per_slice"):
+            row[key] = float(row[key]) if str(row[key]).strip() else 0.0
+        rows.append(row)
+    return rows
+
+
+def validate_multisample_manifest(rows):
+    """Validate study rows and return copied rows plus a flat error list."""
+    from PIL import Image
+
+    validated = []
+    errors = []
+    seen_ids = set()
+    for index, original in enumerate(rows):
+        row = dict(original)
+        row["include"] = _study_bool(row.get("include", True))
+        row_errors = []
+        row_warnings = []
+        sample_id = _study_safe_id(row.get("sample_id", ""))
+        row["sample_id"] = sample_id
+        if sample_id.lower() in seen_ids:
+            row_errors.append("duplicate sample ID")
+        seen_ids.add(sample_id.lower())
+        if not str(row.get("group", "")).strip():
+            row_errors.append("group is blank")
+
+        folder = pl.Path(str(row.get("input_dir", "")))
+        roi_path = pl.Path(str(row.get("roi_path", "")))
+        pattern = str(row.get("file_pattern", "")).strip()
+        source_files = []
+        z_values = []
+        if not folder.is_dir():
+            row_errors.append("input directory missing")
+        else:
+            for path in folder.glob(pattern):
+                match = _STUDY_SOURCE_RE.match(path.name)
+                if match:
+                    source_files.append(path)
+                    z_values.append(int(match.group("z")))
+            order = np.argsort(z_values) if z_values else []
+            source_files = [source_files[int(i)] for i in order]
+            z_values = [z_values[int(i)] for i in order]
+            if not source_files:
+                row_errors.append("no exact source TIFF files")
+            elif len(z_values) != len(set(z_values)):
+                row_errors.append("duplicate Z indices")
+            else:
+                expected = set(range(min(z_values), max(z_values) + 1))
+                missing = sorted(expected - set(z_values))
+                if missing:
+                    row_errors.append(f"missing Z indices: {missing}")
+
+        image_shape = None
+        if source_files:
+            shapes = set()
+            try:
+                for path in source_files:
+                    with Image.open(path) as image:
+                        shapes.add((int(image.height), int(image.width)))
+                if len(shapes) != 1:
+                    row_errors.append(f"inconsistent image dimensions: {sorted(shapes)}")
+                else:
+                    image_shape = next(iter(shapes))
+            except Exception as exc:
+                row_errors.append(f"could not inspect TIFF dimensions: {exc}")
+
+        if not roi_path.is_file():
+            row_errors.append("ROI file missing")
+        else:
+            try:
+                roi = np.load(roi_path, mmap_mode="r")
+                if image_shape is not None and tuple(roi.shape) != tuple(image_shape):
+                    row_errors.append(f"ROI shape {tuple(roi.shape)} != image shape {image_shape}")
+                if not np.any(roi):
+                    row_errors.append("ROI is empty")
+            except Exception as exc:
+                row_errors.append(f"ROI could not be read: {exc}")
+
+        try:
+            xy = float(row.get("xy_um_per_pixel", 0))
+            if xy <= 0:
+                row_errors.append("XY calibration must be positive")
+            row["xy_um_per_pixel"] = xy
+        except Exception:
+            row_errors.append("XY calibration is invalid")
+        try:
+            z_step = float(row.get("z_um_per_slice", 0))
+            if z_step <= 0:
+                row_errors.append("Z calibration must be positive")
+            if z_step > 1.5:
+                row_warnings.append(f"unusual Z spacing {z_step:.4f} um")
+            row["z_um_per_slice"] = z_step
+        except Exception:
+            row_errors.append("Z calibration is invalid")
+
+        row["slice_count"] = len(source_files)
+        row["z_min"] = min(z_values) if z_values else 0
+        row["z_max"] = max(z_values) if z_values else 0
+        if not row["include"]:
+            row["status"] = "excluded"
+        elif row_errors:
+            row["status"] = "invalid"
+        else:
+            row["status"] = "validated"
+        row["message"] = "; ".join(row_errors + row_warnings)
+        validated.append(row)
+        for message in row_errors:
+            errors.append(f"row {index + 1} ({sample_id}): {message}")
+    return validated, errors
+
+
+def _study_config_fingerprint(cfg):
+    import hashlib
+
+    excluded = {"INPUT_DIR", "OUTPUT_DIR", "ROI_MASK_PATH", "EXCLUSION_MASK_PATH", "FILE_PATTERN"}
+    serializable = {
+        str(key): _json_scalar(value)
+        for key, value in cfg.items()
+        if key not in excluded and not str(key).startswith("_")
+    }
+    payload = json.dumps(serializable, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _study_atomic_json(path, data):
+    path = pl.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(_json_scalar(data), handle, indent=2)
+    os.replace(temp_path, path)
+
+
+def _study_next_attempt_dir(sample_root):
+    sample_root = pl.Path(sample_root)
+    sample_root.mkdir(parents=True, exist_ok=True)
+    existing = []
+    for path in sample_root.glob("attempt_*"):
+        try:
+            existing.append(int(path.name.rsplit("_", 1)[-1]))
+        except ValueError:
+            continue
+    number = max(existing, default=0) + 1
+    return sample_root / f"attempt_{number:03d}"
+
+
+def _study_find_output_csv(output_dir, stem, exclude_tokens=()):
+    candidates = []
+    for path in pl.Path(output_dir).glob(f"{stem}*.csv"):
+        lower = path.name.lower()
+        if any(token.lower() in lower for token in exclude_tokens):
+            continue
+        candidates.append(path)
+    return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+
+
+def summarize_study_sample(row, output_dir):
+    """Create one specimen-level raw summary without ROI density normalization."""
+    output_dir = pl.Path(output_dir)
+    measurements_path = _study_find_output_csv(output_dir, "spermatid_measurements")
+    tracks_path = _study_find_output_csv(
+        output_dir,
+        "track_summary",
+        exclude_tokens=("quality", "biological", "candidate"),
+    )
+    detections = pd.read_csv(measurements_path) if measurements_path else pd.DataFrame()
+    tracks = pd.read_csv(tracks_path) if tracks_path else pd.DataFrame()
+    source = detections.get("detection_source", pd.Series(dtype=str)).fillna("saturn_classical").astype(str)
+
+    def median(frame, column):
+        if column not in frame.columns or frame.empty:
+            return np.nan
+        return float(pd.to_numeric(frame[column], errors="coerce").median())
+
+    roi_pixels = 0
+    qc_path = output_dir / "stack_preprocessing_qc.json"
+    if qc_path.exists():
+        try:
+            with qc_path.open("r", encoding="utf-8") as handle:
+                roi_pixels = int(json.load(handle).get("roi_pixel_count", 0))
+        except Exception:
+            roi_pixels = 0
+
+    biological = int(_study_series_bool(tracks["is_biological_candidate"]).sum()) if "is_biological_candidate" in tracks else int(len(tracks))
+    quality = int(_study_series_bool(tracks["is_quality_track"]).sum()) if "is_quality_track" in tracks else 0
+    rescued = int(source.str.startswith("unet_rescued").sum()) if not source.empty else 0
+    return {
+        "sample_id": row["sample_id"],
+        "group": row.get("group", ""),
+        "status": "complete",
+        "input_dir": row.get("input_dir", ""),
+        "output_dir": str(output_dir),
+        "slice_count": int(row.get("slice_count", 0)),
+        "xy_um_per_pixel": float(row.get("xy_um_per_pixel", 0)),
+        "z_um_per_slice": float(row.get("z_um_per_slice", 0)),
+        "roi_pixel_count": roi_pixels,
+        "raw_2d_detection_count": int(len(detections)),
+        "saturn_classical_count": int((source == "saturn_classical").sum()) if not source.empty else 0,
+        "unet_rescued_count": rescued,
+        "unet_rescue_fraction": float(rescued / max(len(detections), 1)),
+        "all_3d_track_count": int(len(tracks)),
+        "biological_candidate_track_count": biological,
+        "strict_quality_track_count": quality,
+        "median_2d_length_um": median(detections, "length_um_geodesic"),
+        "median_2d_width_um": median(detections, "width_um"),
+        "median_3d_length_um": median(tracks, "total_3d_length_um"),
+        "median_3d_tortuosity": median(tracks, "tortuosity_3d"),
+        "acquisition_class": row.get("acquisition_class", ""),
+    }
+
+
+def _write_study_aggregates(output_root, rows, state):
+    output_root = pl.Path(output_root)
+    summaries = []
+    track_frames = []
+    for row in rows:
+        record = state.get("samples", {}).get(row["sample_id"], {})
+        output_dir = record.get("output_dir", "")
+        if record.get("status") != "complete" or not output_dir:
+            summaries.append(
+                {
+                    "sample_id": row["sample_id"],
+                    "group": row.get("group", ""),
+                    "status": record.get("status", row.get("status", "pending")),
+                    "input_dir": row.get("input_dir", ""),
+                    "output_dir": output_dir,
+                    "message": record.get("message", ""),
+                }
+            )
+            continue
+        summary = summarize_study_sample(row, output_dir)
+        summary["message"] = record.get("message", "")
+        summaries.append(summary)
+
+        tracks_path = _study_find_output_csv(
+            output_dir,
+            "track_summary",
+            exclude_tokens=("quality", "biological", "candidate"),
+        )
+        if tracks_path:
+            tracks = pd.read_csv(tracks_path)
+            if not tracks.empty:
+                tracks.insert(0, "group", row.get("group", ""))
+                tracks.insert(0, "sample_id", row["sample_id"])
+                if "track_id" in tracks.columns:
+                    tracks.insert(
+                        2,
+                        "study_track_id",
+                        row["sample_id"] + ":" + tracks["track_id"].astype(str),
+                    )
+                track_frames.append(tracks)
+
+    pd.DataFrame(summaries).to_csv(output_root / "specimen_summary.csv", index=False)
+    if track_frames:
+        pd.concat(track_frames, ignore_index=True).to_csv(output_root / "study_track_records.csv", index=False)
+    return summaries
+
+
+def run_multisample_study(rows, output_root, base_cfg=None, progress_callback=None, resume=True, batch_runner=None):
+    """Run validated specimens sequentially and resume completed sample attempts."""
+    from datetime import datetime
+
+    validated, errors = validate_multisample_manifest(rows)
+    included_errors = []
+    for index, row in enumerate(validated, start=1):
+        if row["include"] and row["status"] == "invalid":
+            included_errors.append(f"row {index} ({row['sample_id']}): {row['message']}")
+    if included_errors:
+        raise ValueError("Study manifest validation failed:\n" + "\n".join(included_errors))
+
+    output_root = pl.Path(output_root).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    save_multisample_manifest(validated, output_root / "study_manifest.csv")
+    cfg_template = CONFIG.copy() if base_cfg is None else dict(base_cfg)
+    config_hash = _study_config_fingerprint(cfg_template)
+    state_path = output_root / "study_run_state.json"
+    state = {
+        "pipeline_version": _VERSION,
+        "config_hash": config_hash,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "samples": {},
+    }
+    if resume and state_path.exists():
+        try:
+            with state_path.open("r", encoding="utf-8") as handle:
+                prior = json.load(handle)
+            if prior.get("config_hash") == config_hash:
+                state = prior
+        except Exception:
+            pass
+    state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _study_atomic_json(output_root / "runtime_parameters.json", {
+        key: value for key, value in cfg_template.items() if not str(key).startswith("_")
+    })
+    _study_atomic_json(state_path, state)
+
+    runner = process_batch if batch_runner is None else batch_runner
+    included = [row for row in validated if row["include"]]
+    total = len(included)
+    for position, row in enumerate(included, start=1):
+        sample_id = row["sample_id"]
+        prior = state.get("samples", {}).get(sample_id, {})
+        marker = pl.Path(prior.get("output_dir", "")) / "sample_complete.json" if prior.get("output_dir") else None
+        if resume and prior.get("status") == "complete" and marker is not None and marker.exists():
+            if progress_callback:
+                progress_callback({"event": "skipped", "sample_id": sample_id, "position": position, "total": total, "message": "already complete"})
+            continue
+
+        attempt_dir = _study_next_attempt_dir(output_root / "samples" / sample_id)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        state.setdefault("samples", {})[sample_id] = {
+            "status": "running",
+            "group": row.get("group", ""),
+            "output_dir": str(attempt_dir),
+            "message": "",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _study_atomic_json(state_path, state)
+        if progress_callback:
+            progress_callback({"event": "started", "sample_id": sample_id, "position": position, "total": total, "message": "processing"})
+
+        sample_cfg = cfg_template.copy()
+        sample_cfg.update(
+            {
+                "RUN_MODE": "batch",
+                "INPUT_DIR": row["input_dir"],
+                "OUTPUT_DIR": str(attempt_dir),
+                "FILE_PATTERN": row["file_pattern"],
+                "ROI_MASK_PATH": row["roi_path"],
+                "UM_PER_PX_XY": float(row["xy_um_per_pixel"]),
+                "UM_PER_SLICE_Z": float(row["z_um_per_slice"]),
+                "SHOW_PREVIEW_WINDOW": False,
+                "DO_TRACKING": True,
+            }
+        )
+        try:
+            runner(sample_cfg)
+            summary = summarize_study_sample(row, attempt_dir)
+            marker_data = {
+                "sample_id": sample_id,
+                "group": row.get("group", ""),
+                "pipeline_version": _VERSION,
+                "config_hash": config_hash,
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+                "summary": summary,
+            }
+            _study_atomic_json(attempt_dir / "sample_complete.json", marker_data)
+            state["samples"][sample_id].update(
+                {
+                    "status": "complete",
+                    "message": "",
+                    "completed_at": marker_data["completed_at"],
+                }
+            )
+            event = "complete"
+            message = "complete"
+        except Exception as exc:
+            state["samples"][sample_id].update(
+                {
+                    "status": "failed",
+                    "message": f"{type(exc).__name__}: {exc}",
+                    "completed_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
+            event = "failed"
+            message = state["samples"][sample_id]["message"]
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _study_atomic_json(state_path, state)
+        _write_study_aggregates(output_root, validated, state)
+        if progress_callback:
+            progress_callback({"event": event, "sample_id": sample_id, "position": position, "total": total, "message": message})
+
+    summaries = _write_study_aggregates(output_root, validated, state)
+    return state, pd.DataFrame(summaries)
+
 # =============================================================================
 
 class SpermGUI:
@@ -7144,6 +7722,16 @@ class SpermGUI:
         self.current_img = None
         self.last_out_dir = ""
 
+        self.study_rows = []
+        self.study_root_dir = ""
+        self.study_output_dir = ""
+        self.study_window = None
+        self.study_tree = None
+        self.study_run_button = None
+        self.study_status_var = tk.StringVar(value="No study loaded")
+        self.study_output_var = tk.StringVar(value="Output: not selected")
+        self._study_running = False
+
         self.roi_points = []
         self.drawing = False
         self.roi_active = False
@@ -7219,6 +7807,24 @@ class SpermGUI:
         tk.Button(data_section, text='Load Directory', command=self.load_directory, height=2).pack(fill='x', padx=8, pady=(8, 4))
         self.lbl_status = tk.Label(data_section, text='No directory loaded', wraplength=260, justify='left', bg="#f7f7f7", fg="#374151")
         self.lbl_status.pack(fill='x', padx=8, pady=(0, 8))
+
+        study_section = self._make_sidebar_section(self.sidebar, "Multi-Sample Study", default_open=False, accent="#ccfbf1")
+        tk.Button(
+            study_section,
+            text="Open Study Manager",
+            command=self.open_multisample_study,
+            bg="#ccfbf1",
+            font=("Arial", 9, "bold"),
+        ).pack(fill="x", padx=8, pady=(8, 4))
+        tk.Label(
+            study_section,
+            textvariable=self.study_status_var,
+            wraplength=260,
+            justify="left",
+            bg="#f7f7f7",
+            fg="#374151",
+            font=("Arial", 8),
+        ).pack(fill="x", padx=8, pady=(0, 8))
 
         params_section = self._make_sidebar_section(self.sidebar, "Parameters", default_open=True, accent="#e2e3e5")
         tk.Button(params_section, text='Configure Parameters', command=self.open_parameter_editor, bg='#e2e3e5').pack(fill='x', padx=8, pady=(8, 4))
@@ -7339,6 +7945,399 @@ class SpermGUI:
 
         self.canvas.mpl_connect('button_press_event', self.on_click)
         self.canvas.mpl_connect('key_press_event', self.on_key)
+
+
+    def open_multisample_study(self):
+        """Open the manifest-backed study manager for independent specimens."""
+        if self.study_window is not None and self.study_window.winfo_exists():
+            self.study_window.deiconify()
+            self.study_window.lift()
+            self.study_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        self.study_window = window
+        window.title(f"Saturn {_VERSION} Multi-Sample Study Manager")
+        window.geometry("1220x700")
+        window.minsize(900, 520)
+        window.protocol("WM_DELETE_WINDOW", self._study_close_window)
+
+        toolbar = tk.Frame(window, bg="#e5e7eb", bd=1, relief="ridge")
+        toolbar.pack(fill="x")
+        for text, command in (
+            ("Discover Root", self._study_discover_root),
+            ("Load Manifest", self._study_load_manifest),
+            ("Save Manifest", self._study_save_manifest),
+            ("Select Output", self._study_select_output),
+            ("Validate", self._study_validate),
+        ):
+            tk.Button(toolbar, text=text, command=command).pack(side="left", padx=4, pady=6)
+        self.study_run_button = tk.Button(
+            toolbar,
+            text="Run / Resume Study",
+            command=self._study_run,
+            bg="#bbf7d0",
+            font=("Arial", 9, "bold"),
+        )
+        self.study_run_button.pack(side="right", padx=6, pady=6)
+
+        status = tk.Frame(window, bg="#f8fafc")
+        status.pack(fill="x", padx=8, pady=(6, 2))
+        tk.Label(status, textvariable=self.study_status_var, anchor="w", bg="#f8fafc").pack(fill="x")
+        tk.Label(status, textvariable=self.study_output_var, anchor="w", bg="#f8fafc", fg="#475569").pack(fill="x")
+
+        table_frame = tk.Frame(window)
+        table_frame.pack(fill="both", expand=True, padx=8, pady=6)
+        columns = (
+            "include", "sample_id", "group", "slices", "z_range", "roi",
+            "xy", "z_step", "status", "message",
+        )
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        self.study_tree = tree
+        headings = {
+            "include": "Include", "sample_id": "Sample ID", "group": "Group",
+            "slices": "Slices", "z_range": "Z range", "roi": "ROI",
+            "xy": "XY um/px", "z_step": "Z um/slice", "status": "Status",
+            "message": "Message",
+        }
+        widths = {
+            "include": 60, "sample_id": 150, "group": 120, "slices": 55,
+            "z_range": 70, "roi": 65, "xy": 80, "z_step": 85,
+            "status": 85, "message": 330,
+        }
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(column, width=widths[column], minwidth=45, stretch=(column == "message"))
+        yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        tree.bind("<Double-1>", self._study_edit_cell)
+        tree.bind("<space>", self._study_toggle_selected)
+
+        footer = tk.Label(
+            window,
+            text="Double-click Include, Sample ID, Group, XY, or Z spacing to edit. Space toggles Include.",
+            anchor="w",
+            fg="#475569",
+        )
+        footer.pack(fill="x", padx=10, pady=(0, 8))
+        self._study_refresh_tree()
+
+    def _study_close_window(self):
+        if self._study_running:
+            messagebox.showinfo("Study Running", "The study manager remains open while processing is active.")
+            return
+        if self.study_window is not None:
+            self.study_window.destroy()
+        self.study_window = None
+        self.study_tree = None
+        self.study_run_button = None
+
+    def _study_refresh_tree(self):
+        tree = self.study_tree
+        if tree is None or not tree.winfo_exists():
+            return
+        selected = tree.selection()
+        selected_id = selected[0] if selected else None
+        tree.delete(*tree.get_children())
+        for index, row in enumerate(self.study_rows):
+            iid = f"row_{index}"
+            roi_ok = pl.Path(str(row.get("roi_path", ""))).is_file()
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    "Yes" if _study_bool(row.get("include", True)) else "No",
+                    row.get("sample_id", ""),
+                    row.get("group", ""),
+                    row.get("slice_count", 0),
+                    f"{row.get('z_min', 0)}-{row.get('z_max', 0)}",
+                    "Ready" if roi_ok else "Missing",
+                    f"{float(row.get('xy_um_per_pixel', 0) or 0):.6g}",
+                    f"{float(row.get('z_um_per_slice', 0) or 0):.6g}",
+                    row.get("status", "pending"),
+                    row.get("message", ""),
+                ),
+            )
+        if selected_id and tree.exists(selected_id):
+            tree.selection_set(selected_id)
+            tree.see(selected_id)
+
+    def _study_selected_index(self):
+        if self.study_tree is None:
+            return None
+        selected = self.study_tree.selection()
+        if not selected:
+            return None
+        try:
+            return int(selected[0].rsplit("_", 1)[-1])
+        except (ValueError, IndexError):
+            return None
+
+    def _study_toggle_selected(self, event=None):
+        index = self._study_selected_index()
+        if index is None or self._study_running:
+            return "break"
+        self.study_rows[index]["include"] = not _study_bool(self.study_rows[index].get("include", True))
+        self.study_rows[index]["status"] = "pending" if self.study_rows[index]["include"] else "excluded"
+        self._study_refresh_tree()
+        return "break"
+
+    def _study_edit_cell(self, event):
+        if self._study_running or self.study_tree is None:
+            return
+        region = self.study_tree.identify_region(event.x, event.y)
+        item = self.study_tree.identify_row(event.y)
+        column_id = self.study_tree.identify_column(event.x)
+        if region != "cell" or not item or not column_id:
+            return
+        self.study_tree.selection_set(item)
+        index = self._study_selected_index()
+        if index is None:
+            return
+        column_index = int(column_id[1:]) - 1
+        keys = ("include", "sample_id", "group", "slice_count", "z_range", "roi", "xy_um_per_pixel", "z_um_per_slice", "status", "message")
+        key = keys[column_index]
+        if key == "include":
+            self._study_toggle_selected()
+            return
+        if key not in {"sample_id", "group", "xy_um_per_pixel", "z_um_per_slice"}:
+            return
+
+        from tkinter import simpledialog
+        current = self.study_rows[index].get(key, "")
+        label = {
+            "sample_id": "Sample ID",
+            "group": "Biological group",
+            "xy_um_per_pixel": "XY calibration (um/pixel)",
+            "z_um_per_slice": "Z calibration (um/slice)",
+        }[key]
+        value = simpledialog.askstring("Edit Study Row", label, initialvalue=str(current), parent=self.study_window)
+        if value is None:
+            return
+        if key in {"xy_um_per_pixel", "z_um_per_slice"}:
+            try:
+                value = float(value)
+            except ValueError:
+                messagebox.showerror("Invalid Calibration", f"{label} must be a number.", parent=self.study_window)
+                return
+        elif not value.strip():
+            messagebox.showerror("Invalid Value", f"{label} cannot be blank.", parent=self.study_window)
+            return
+        self.study_rows[index][key] = value
+        self.study_rows[index]["status"] = "pending"
+        self.study_rows[index]["message"] = ""
+        self._study_refresh_tree()
+
+    def _study_discover_root(self):
+        if self._study_running:
+            return
+        root_dir = filedialog.askdirectory(
+            title="Select the folder containing all biological samples",
+            initialdir=self.study_root_dir or CONFIG.get("INPUT_DIR", os.getcwd()),
+            parent=self.study_window,
+        )
+        if not root_dir:
+            return
+        try:
+            rows = discover_multisample_study(root_dir, base_cfg=CONFIG)
+            if not rows:
+                raise ValueError("No exact ch00 Z-stacks were found below the selected folder.")
+            self.study_root_dir = root_dir
+            self.study_rows = rows
+            self.study_status_var.set(f"Discovered {len(rows)} samples in {root_dir}")
+            self._study_refresh_tree()
+        except Exception as exc:
+            messagebox.showerror("Study Discovery Failed", str(exc), parent=self.study_window)
+
+    def _study_load_manifest(self):
+        if self._study_running:
+            return
+        path = filedialog.askopenfilename(
+            title="Load study manifest",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            parent=self.study_window,
+        )
+        if not path:
+            return
+        try:
+            self.study_rows = load_multisample_manifest(path)
+            input_dirs = [pl.Path(str(row["input_dir"])) for row in self.study_rows if row.get("input_dir")]
+            if input_dirs:
+                self.study_root_dir = str(pl.Path(os.path.commonpath([str(path) for path in input_dirs])))
+            self.study_status_var.set(f"Loaded {len(self.study_rows)} samples from {path}")
+            self._study_refresh_tree()
+        except Exception as exc:
+            messagebox.showerror("Manifest Load Failed", str(exc), parent=self.study_window)
+
+    def _study_save_manifest(self):
+        if not self.study_rows:
+            messagebox.showwarning("No Study", "Discover or load a study first.", parent=self.study_window)
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save study manifest",
+            defaultextension=".csv",
+            initialfile="study_manifest_v5_7.csv",
+            filetypes=[("CSV files", "*.csv")],
+            parent=self.study_window,
+        )
+        if not path:
+            return
+        try:
+            save_multisample_manifest(self.study_rows, path)
+            self.study_status_var.set(f"Saved manifest: {path}")
+        except Exception as exc:
+            messagebox.showerror("Manifest Save Failed", str(exc), parent=self.study_window)
+
+    def _study_select_output(self):
+        if self._study_running:
+            return
+        output_dir = filedialog.askdirectory(
+            title="Select or create a separate study output folder",
+            initialdir=self.study_output_dir or os.path.dirname(os.path.abspath(__file__)),
+            mustexist=False,
+            parent=self.study_window,
+        )
+        if output_dir:
+            self.study_output_dir = output_dir
+            self.study_output_var.set(f"Output: {output_dir}")
+
+    def _study_validate(self, show_dialog=True):
+        if not self.study_rows:
+            if show_dialog:
+                messagebox.showwarning("No Study", "Discover or load a study first.", parent=self.study_window)
+            return False
+        self.study_rows, errors = validate_multisample_manifest(self.study_rows)
+        included = [row for row in self.study_rows if row["include"]]
+        invalid = [row for row in included if row["status"] == "invalid"]
+        warning_count = sum("unusual Z spacing" in row.get("message", "") for row in included)
+        self._study_refresh_tree()
+        if invalid:
+            self.study_status_var.set(f"Validation failed: {len(invalid)} of {len(included)} included samples are invalid")
+            if show_dialog:
+                details = "\n".join(errors[:15])
+                if len(errors) > 15:
+                    details += f"\n... and {len(errors) - 15} more"
+                messagebox.showerror("Study Validation Failed", details, parent=self.study_window)
+            return False
+        self.study_status_var.set(f"Validated {len(included)} included samples; {warning_count} calibration warnings")
+        if show_dialog:
+            messagebox.showinfo(
+                "Study Validated",
+                f"{len(included)} included samples are ready.\nCalibration warnings: {warning_count}",
+                parent=self.study_window,
+            )
+        return bool(included)
+
+    def _study_output_is_separate(self):
+        if not self.study_output_dir:
+            return False, "Select a study output folder first."
+        output = pl.Path(self.study_output_dir).resolve()
+        if self.study_root_dir:
+            study_root = pl.Path(self.study_root_dir).resolve()
+            try:
+                output.relative_to(study_root)
+                return False, "The output folder must be outside the source study folder."
+            except ValueError:
+                pass
+        for row in self.study_rows:
+            sample_dir = pl.Path(str(row.get("input_dir", ""))).resolve()
+            if output == sample_dir:
+                return False, f"The output folder is the input folder for {row.get('sample_id', 'a sample')}."
+        return True, ""
+
+    def _study_run(self):
+        if self._study_running:
+            return
+        if not self._study_validate(show_dialog=False):
+            messagebox.showerror("Study Not Ready", "Correct the invalid study rows before running.", parent=self.study_window)
+            return
+        separate, reason = self._study_output_is_separate()
+        if not separate:
+            messagebox.showerror("Invalid Output Folder", reason, parent=self.study_window)
+            return
+        included = sum(_study_bool(row.get("include", True)) for row in self.study_rows)
+        proceed = messagebox.askyesno(
+            "Run Multi-Sample Study",
+            f"Run or resume {included} independent samples?\n\nOutput:\n{self.study_output_dir}",
+            parent=self.study_window,
+        )
+        if not proceed:
+            return
+
+        self._study_running = True
+        if self.study_run_button is not None:
+            self.study_run_button.config(state="disabled", text="Study Running...")
+        self.study_status_var.set(f"Starting {included}-sample study")
+        rows = [dict(row) for row in self.study_rows]
+        output_dir = self.study_output_dir
+        cfg = CONFIG.copy()
+
+        def progress(event):
+            self.root.after(0, lambda item=dict(event): self._study_progress_event(item))
+
+        def worker():
+            try:
+                state, summary = run_multisample_study(
+                    rows,
+                    output_dir,
+                    base_cfg=cfg,
+                    progress_callback=progress,
+                    resume=True,
+                )
+                self.root.after(0, lambda: self._study_run_finished(state, summary))
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                self.root.after(0, lambda: self._study_run_failed(detail))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _study_progress_event(self, event):
+        sample_id = event.get("sample_id", "")
+        status = event.get("event", "running")
+        message = event.get("message", "")
+        for row in self.study_rows:
+            if row.get("sample_id") == sample_id:
+                row["status"] = "complete" if status in {"complete", "skipped"} else status
+                row["message"] = message
+                break
+        self.study_status_var.set(
+            f"[{event.get('position', 0)}/{event.get('total', 0)}] {sample_id}: {message}"
+        )
+        self._study_refresh_tree()
+
+    def _study_run_finished(self, state, summary):
+        self._study_running = False
+        if self.study_run_button is not None and self.study_run_button.winfo_exists():
+            self.study_run_button.config(state="normal", text="Run / Resume Study")
+        completed = sum(record.get("status") == "complete" for record in state.get("samples", {}).values())
+        failed = sum(record.get("status") == "failed" for record in state.get("samples", {}).values())
+        for row in self.study_rows:
+            record = state.get("samples", {}).get(row.get("sample_id"), {})
+            if record:
+                row["status"] = record.get("status", row.get("status", "pending"))
+                row["message"] = record.get("message", "")
+                row["output_dir"] = record.get("output_dir", "")
+        self.study_status_var.set(f"Study finished: {completed} complete, {failed} failed")
+        self._study_refresh_tree()
+        messagebox.showinfo(
+            "Study Run Finished",
+            f"Complete: {completed}\nFailed: {failed}\n\nAggregate table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}",
+            parent=self.study_window,
+        )
+
+    def _study_run_failed(self, detail):
+        self._study_running = False
+        if self.study_run_button is not None and self.study_run_button.winfo_exists():
+            self.study_run_button.config(state="normal", text="Run / Resume Study")
+        self.study_status_var.set(f"Study stopped: {detail}")
+        messagebox.showerror("Study Run Failed", detail, parent=self.study_window)
 
 
     def set_ai_key(self):
