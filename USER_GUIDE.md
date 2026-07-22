@@ -76,10 +76,21 @@ Study-level outputs include:
 - `study_run_state.json`: per-specimen status and resume information.
 - `runtime_parameters.json`: the shared V5.7 parameters used for the study.
 - `specimen_summary.csv`: one raw summary row per biological specimen.
+- `normalization_qc.json`: study-level ROI exposure and Z-boundary warnings.
 - `study_track_records.csv`: pooled track records with globally unique `study_track_id` values.
 - `samples/<sample_id>/attempt_NNN/`: the complete standard V5.7 output for one specimen.
 
-ROI-area and ROI-volume normalized biological readouts are not yet added to the aggregate table. The current `specimen_summary.csv` intentionally reports raw counts and morphology so normalization can be introduced and audited separately.
+`specimen_summary.csv` retains raw counts and also reports exposure-normalized counts. The calculations do not alter segmentation, tracking, audit membership, or morphology:
+
+```text
+ROI area (um2) = ROI pixels x XY calibration x XY calibration
+Sampled depth (um) = included slices x Z spacing
+Sampled ROI volume (um3) = ROI area x sampled depth
+```
+
+The primary normalized fields report tracks per `1,000 um2` and per `100,000 um3`. The table also reports stack span, detection-positive Z range, and the fraction of tracks touching either acquisition Z boundary. A normalization warning is generated when exposure is invalid, detections reach a stack boundary, or more than 20% of tracks touch a Z boundary. Review these warnings before interpreting density differences.
+
+`group_summary.csv` summarizes the specimen rows by biological group. Specimens, not individual nuclei, are treated as replicates in this table.
 
 ---
 

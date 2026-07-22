@@ -7205,15 +7205,83 @@ def _study_find_output_csv(output_dir, stem, exclude_tokens=()):
     return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
 
 
+def _study_find_primary_track_summary(output_dir):
+    """Select the complete track table, never a filtered derivative."""
+    filtered_tokens = (
+        "_all", "_quality", "_biological", "_candidate", "_technical",
+        "_reference", "_morphology", "_failure",
+    )
+    candidates = []
+    for path in pl.Path(output_dir).glob("track_summary*.csv"):
+        lower = path.stem.lower()
+        if any(token in lower for token in filtered_tokens):
+            continue
+        candidates.append(path)
+    return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+
+
+def _study_scaled_rate(count, exposure, scale):
+    exposure = float(exposure)
+    if not np.isfinite(exposure) or exposure <= 0:
+        return np.nan
+    return float(count) * float(scale) / exposure
+
+
+def _study_exposure_metrics(row, roi_pixels_from_qc=0):
+    """Return geometric sampling exposure without changing image processing."""
+    roi_pixels = int(roi_pixels_from_qc or 0)
+    frame_pixels = 0
+    roi_path = pl.Path(str(row.get("roi_path", "")))
+    if roi_path.is_file():
+        try:
+            roi = np.asarray(np.load(roi_path, mmap_mode="r"), dtype=bool)
+            roi_pixels_file = int(np.count_nonzero(roi))
+            frame_pixels = int(roi.size)
+            if roi_pixels_file > 0:
+                roi_pixels = roi_pixels_file
+        except Exception:
+            pass
+
+    xy = float(row.get("xy_um_per_pixel", 0) or 0)
+    z_step = float(row.get("z_um_per_slice", 0) or 0)
+    slices = int(row.get("slice_count", 0) or 0)
+    area = float(roi_pixels) * xy * xy
+    sampled_depth = float(slices) * z_step
+    stack_span = float(max(slices - 1, 0)) * z_step
+    sampled_volume = area * sampled_depth
+    return {
+        "roi_pixel_count": roi_pixels,
+        "frame_pixel_count": frame_pixels,
+        "roi_fraction_of_frame": float(roi_pixels / frame_pixels) if frame_pixels > 0 else np.nan,
+        "roi_area_um2": area,
+        "included_slice_count": slices,
+        "z_spacing_um": z_step,
+        "sampled_depth_um": sampled_depth,
+        "stack_span_um": stack_span,
+        "sampled_roi_volume_um3": sampled_volume,
+    }
+
+
+def _study_track_source_sets(output_dir):
+    tracked_path = _study_find_output_csv(output_dir, "measurements_with_tracks")
+    if tracked_path is None:
+        return set(), set()
+    tracked = pd.read_csv(tracked_path)
+    if tracked.empty or "track_id" not in tracked.columns or "detection_source" not in tracked.columns:
+        return set(), set()
+    source = tracked["detection_source"].fillna("saturn_classical").astype(str)
+    tracked = tracked.assign(_is_unet=source.str.startswith("unet_rescued"))
+    unet_by_track = tracked.groupby("track_id")["_is_unet"].any()
+    unet_tracks = set(unet_by_track[unet_by_track].index.tolist())
+    classical_only_tracks = set(unet_by_track[~unet_by_track].index.tolist())
+    return classical_only_tracks, unet_tracks
+
+
 def summarize_study_sample(row, output_dir):
-    """Create one specimen-level raw summary without ROI density normalization."""
+    """Create one specimen-level summary with raw and exposure-normalized counts."""
     output_dir = pl.Path(output_dir)
     measurements_path = _study_find_output_csv(output_dir, "spermatid_measurements")
-    tracks_path = _study_find_output_csv(
-        output_dir,
-        "track_summary",
-        exclude_tokens=("quality", "biological", "candidate"),
-    )
+    tracks_path = _study_find_primary_track_summary(output_dir)
     detections = pd.read_csv(measurements_path) if measurements_path else pd.DataFrame()
     tracks = pd.read_csv(tracks_path) if tracks_path else pd.DataFrame()
     source = detections.get("detection_source", pd.Series(dtype=str)).fillna("saturn_classical").astype(str)
@@ -7235,28 +7303,183 @@ def summarize_study_sample(row, output_dir):
     biological = int(_study_series_bool(tracks["is_biological_candidate"]).sum()) if "is_biological_candidate" in tracks else int(len(tracks))
     quality = int(_study_series_bool(tracks["is_quality_track"]).sum()) if "is_quality_track" in tracks else 0
     rescued = int(source.str.startswith("unet_rescued").sum()) if not source.empty else 0
-    return {
+    exposure = _study_exposure_metrics(row, roi_pixels)
+    roi_area = exposure["roi_area_um2"]
+    roi_volume = exposure["sampled_roi_volume_um3"]
+    n_slices = exposure["included_slice_count"]
+
+    biological_mask = _study_series_bool(tracks["is_biological_candidate"]) if "is_biological_candidate" in tracks else pd.Series(True, index=tracks.index)
+    quality_mask = _study_series_bool(tracks["is_quality_track"]) if "is_quality_track" in tracks else pd.Series(False, index=tracks.index)
+    biological_ids = set(tracks.loc[biological_mask, "track_id"].tolist()) if "track_id" in tracks else set()
+    quality_ids = set(tracks.loc[quality_mask, "track_id"].tolist()) if "track_id" in tracks else set()
+    classical_track_ids, unet_track_ids = _study_track_source_sets(output_dir)
+
+    z_min = int(row.get("z_min", 0) or 0)
+    z_max = int(row.get("z_max", max(n_slices - 1, 0)) or 0)
+    lower_boundary = int((pd.to_numeric(tracks["z_start"], errors="coerce") <= z_min).sum()) if "z_start" in tracks else 0
+    upper_boundary = int((pd.to_numeric(tracks["z_end"], errors="coerce") >= z_max).sum()) if "z_end" in tracks else 0
+    if "z_start" in tracks and "z_end" in tracks:
+        boundary_mask = (
+            (pd.to_numeric(tracks["z_start"], errors="coerce") <= z_min)
+            | (pd.to_numeric(tracks["z_end"], errors="coerce") >= z_max)
+        )
+        boundary_count = int(boundary_mask.sum())
+    else:
+        boundary_count = 0
+
+    if "z_slice" in detections and not detections.empty:
+        detection_z = pd.to_numeric(detections["z_slice"], errors="coerce").dropna()
+        positive_slice_count = int(detection_z.nunique())
+        positive_z_min = int(detection_z.min()) if not detection_z.empty else np.nan
+        positive_z_max = int(detection_z.max()) if not detection_z.empty else np.nan
+    else:
+        positive_slice_count = 0
+        positive_z_min = np.nan
+        positive_z_max = np.nan
+
+    boundary_fraction = float(boundary_count / len(tracks)) if len(tracks) > 0 else 0.0
+    normalization_warnings = []
+    if roi_area <= 0 or roi_volume <= 0:
+        normalization_warnings.append("invalid ROI exposure")
+    if boundary_fraction > 0.20:
+        normalization_warnings.append(f"high Z-boundary track fraction ({boundary_fraction:.1%})")
+    if positive_slice_count > 0 and (positive_z_min <= z_min or positive_z_max >= z_max):
+        normalization_warnings.append("detections reach an acquisition Z boundary")
+
+    summary = {
         "sample_id": row["sample_id"],
         "group": row.get("group", ""),
         "status": "complete",
         "input_dir": row.get("input_dir", ""),
         "output_dir": str(output_dir),
-        "slice_count": int(row.get("slice_count", 0)),
+        "slice_count": n_slices,
         "xy_um_per_pixel": float(row.get("xy_um_per_pixel", 0)),
         "z_um_per_slice": float(row.get("z_um_per_slice", 0)),
-        "roi_pixel_count": roi_pixels,
+        **exposure,
+        "detection_positive_slice_count": positive_slice_count,
+        "detection_positive_z_min": positive_z_min,
+        "detection_positive_z_max": positive_z_max,
+        "detection_positive_slice_fraction": float(positive_slice_count / n_slices) if n_slices > 0 else np.nan,
         "raw_2d_detection_count": int(len(detections)),
+        "raw_2d_detections_per_1000_um2_per_slice": _study_scaled_rate(len(detections), roi_area * n_slices, 1_000.0),
         "saturn_classical_count": int((source == "saturn_classical").sum()) if not source.empty else 0,
         "unet_rescued_count": rescued,
         "unet_rescue_fraction": float(rescued / max(len(detections), 1)),
         "all_3d_track_count": int(len(tracks)),
+        "all_3d_tracks_per_1000_um2": _study_scaled_rate(len(tracks), roi_area, 1_000.0),
+        "all_3d_tracks_per_100000_um3": _study_scaled_rate(len(tracks), roi_volume, 100_000.0),
         "biological_candidate_track_count": biological,
+        "biological_tracks_per_1000_um2": _study_scaled_rate(biological, roi_area, 1_000.0),
+        "biological_tracks_per_100000_um3": _study_scaled_rate(biological, roi_volume, 100_000.0),
         "strict_quality_track_count": quality,
+        "quality_tracks_per_1000_um2": _study_scaled_rate(quality, roi_area, 1_000.0),
+        "quality_tracks_per_100000_um3": _study_scaled_rate(quality, roi_volume, 100_000.0),
+        "classical_only_3d_track_count": int(len(classical_track_ids)),
+        "unet_associated_3d_track_count": int(len(unet_track_ids)),
+        "biological_unet_associated_track_count": int(len(unet_track_ids & biological_ids)),
+        "quality_unet_associated_track_count": int(len(unet_track_ids & quality_ids)),
+        "lower_z_boundary_track_count": lower_boundary,
+        "upper_z_boundary_track_count": upper_boundary,
+        "z_boundary_track_count": boundary_count,
+        "z_boundary_track_fraction": boundary_fraction,
+        "z_coverage_censored": bool(boundary_count > 0),
+        "normalization_valid": bool(roi_area > 0 and roi_volume > 0),
+        "normalization_warning": "; ".join(normalization_warnings),
         "median_2d_length_um": median(detections, "length_um_geodesic"),
         "median_2d_width_um": median(detections, "width_um"),
         "median_3d_length_um": median(tracks, "total_3d_length_um"),
         "median_3d_tortuosity": median(tracks, "tortuosity_3d"),
         "acquisition_class": row.get("acquisition_class", ""),
+    }
+    return summary
+
+
+def _study_group_summary(specimen_frame):
+    """Summarize groups with specimens, rather than tracks, as replicates."""
+    if specimen_frame.empty or "group" not in specimen_frame.columns or "status" not in specimen_frame.columns:
+        return pd.DataFrame()
+    complete = specimen_frame[specimen_frame["status"] == "complete"].copy()
+    if complete.empty:
+        return pd.DataFrame()
+    metrics = [
+        "all_3d_track_count",
+        "all_3d_tracks_per_1000_um2",
+        "all_3d_tracks_per_100000_um3",
+        "biological_candidate_track_count",
+        "biological_tracks_per_1000_um2",
+        "biological_tracks_per_100000_um3",
+        "strict_quality_track_count",
+        "quality_tracks_per_1000_um2",
+        "quality_tracks_per_100000_um3",
+        "median_3d_length_um",
+        "median_3d_tortuosity",
+        "roi_area_um2",
+        "sampled_roi_volume_um3",
+        "z_boundary_track_fraction",
+    ]
+    records = []
+    for group, frame in complete.groupby("group", dropna=False):
+        record = {"group": group, "specimen_count": int(len(frame))}
+        for metric in metrics:
+            if metric not in frame.columns:
+                continue
+            values = pd.to_numeric(frame[metric], errors="coerce").dropna()
+            record[f"{metric}_mean"] = float(values.mean()) if not values.empty else np.nan
+            record[f"{metric}_median"] = float(values.median()) if not values.empty else np.nan
+            record[f"{metric}_std"] = float(values.std(ddof=1)) if len(values) > 1 else np.nan
+        records.append(record)
+    return pd.DataFrame(records)
+
+
+def _study_normalization_qc(specimen_frame):
+    """Audit whether specimen exposures are sufficiently comparable to interpret."""
+    complete = specimen_frame.copy()
+    if "status" in complete.columns:
+        complete = complete[complete["status"] == "complete"]
+    warnings = []
+
+    def exposure_range(column):
+        if column not in complete.columns:
+            return np.nan, np.nan, np.nan
+        values = pd.to_numeric(complete[column], errors="coerce")
+        values = values[np.isfinite(values) & (values > 0)]
+        if values.empty:
+            return np.nan, np.nan, np.nan
+        minimum = float(values.min())
+        maximum = float(values.max())
+        return minimum, maximum, float(maximum / minimum)
+
+    area_min, area_max, area_ratio = exposure_range("roi_area_um2")
+    volume_min, volume_max, volume_ratio = exposure_range("sampled_roi_volume_um3")
+    if np.isfinite(area_ratio) and area_ratio > 4.0:
+        warnings.append(f"ROI areas differ by {area_ratio:.2f}x across specimens")
+    if np.isfinite(volume_ratio) and volume_ratio > 4.0:
+        warnings.append(f"sampled ROI volumes differ by {volume_ratio:.2f}x across specimens")
+
+    invalid_count = 0
+    if "normalization_valid" in complete.columns:
+        invalid_count = int((~_study_series_bool(complete["normalization_valid"])).sum())
+        if invalid_count:
+            warnings.append(f"{invalid_count} specimens have invalid normalization exposure")
+    high_boundary_count = 0
+    if "z_boundary_track_fraction" in complete.columns:
+        boundary = pd.to_numeric(complete["z_boundary_track_fraction"], errors="coerce").fillna(0)
+        high_boundary_count = int((boundary > 0.20).sum())
+        if high_boundary_count:
+            warnings.append(f"{high_boundary_count} specimens exceed 20% Z-boundary tracks")
+
+    return {
+        "specimen_count": int(len(complete)),
+        "roi_area_um2_min": area_min,
+        "roi_area_um2_max": area_max,
+        "roi_area_max_min_ratio": area_ratio,
+        "sampled_roi_volume_um3_min": volume_min,
+        "sampled_roi_volume_um3_max": volume_max,
+        "sampled_roi_volume_max_min_ratio": volume_ratio,
+        "invalid_normalization_specimen_count": invalid_count,
+        "high_z_boundary_specimen_count": high_boundary_count,
+        "normalization_review_required": bool(warnings),
+        "warnings": warnings,
     }
 
 
@@ -7283,11 +7506,7 @@ def _write_study_aggregates(output_root, rows, state):
         summary["message"] = record.get("message", "")
         summaries.append(summary)
 
-        tracks_path = _study_find_output_csv(
-            output_dir,
-            "track_summary",
-            exclude_tokens=("quality", "biological", "candidate"),
-        )
+        tracks_path = _study_find_primary_track_summary(output_dir)
         if tracks_path:
             tracks = pd.read_csv(tracks_path)
             if not tracks.empty:
@@ -7301,7 +7520,10 @@ def _write_study_aggregates(output_root, rows, state):
                     )
                 track_frames.append(tracks)
 
-    pd.DataFrame(summaries).to_csv(output_root / "specimen_summary.csv", index=False)
+    specimen_frame = pd.DataFrame(summaries)
+    specimen_frame.to_csv(output_root / "specimen_summary.csv", index=False)
+    _study_group_summary(specimen_frame).to_csv(output_root / "group_summary.csv", index=False)
+    _study_atomic_json(output_root / "normalization_qc.json", _study_normalization_qc(specimen_frame))
     if track_frames:
         pd.concat(track_frames, ignore_index=True).to_csv(output_root / "study_track_records.csv", index=False)
     return summaries

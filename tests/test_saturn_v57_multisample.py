@@ -106,8 +106,16 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
                 "detection_source": ["saturn_classical", "unet_rescued_core"],
                 "length_um_geodesic": [9.0, 10.0],
                 "width_um": [1.8, 2.0],
+                "z_slice": [0, 2],
             }
         ).to_csv(output / "spermatid_measurements_v5.7.csv", index=False)
+        pd.DataFrame(
+            {
+                "track_id": [1, 2],
+                "detection_source": ["saturn_classical", "unet_rescued_core"],
+                "z_slice": [0, 2],
+            }
+        ).to_csv(output / "measurements_with_tracks_v5.7.csv", index=False)
         pd.DataFrame(
             {
                 "track_id": [1, 2],
@@ -115,8 +123,13 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
                 "is_quality_track": [True, False],
                 "total_3d_length_um": [9.4, 10.2],
                 "tortuosity_3d": [1.1, 1.2],
+                "z_start": [0, 2],
+                "z_end": [0, 2],
             }
         ).to_csv(output / "track_summary_v5.7.csv", index=False)
+        pd.DataFrame(columns=["track_id", "z_start", "z_end"]).to_csv(
+            output / "track_summary_technical_failures_v5.7.csv", index=False
+        )
         with (output / "stack_preprocessing_qc.json").open("w", encoding="utf-8") as handle:
             json.dump({"roi_pixel_count": 352}, handle)
 
@@ -131,8 +144,24 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert set(summary["status"]) == {"complete"}
     assert set(summary["raw_2d_detection_count"]) == {2}
     assert set(summary["biological_candidate_track_count"]) == {1}
+    assert set(summary["roi_area_um2"].round(6)) == {198.0}
+    assert set(summary["sampled_depth_um"].round(6)) == {3.12}
+    assert set(summary["stack_span_um"].round(6)) == {2.08}
+    assert set(summary["sampled_roi_volume_um3"].round(6)) == {617.76}
+    assert set(summary["all_3d_tracks_per_1000_um2"].round(6)) == {10.10101}
+    assert set(summary["all_3d_tracks_per_100000_um3"].round(6)) == {323.750324}
+    assert set(summary["unet_associated_3d_track_count"]) == {1}
+    assert set(summary["biological_unet_associated_track_count"]) == {0}
+    assert set(summary["z_boundary_track_count"]) == {2}
+    assert set(summary["z_boundary_track_fraction"]) == {1.0}
     assert (output_root / "study_manifest.csv").exists()
     assert (output_root / "specimen_summary.csv").exists()
+    assert (output_root / "group_summary.csv").exists()
+    with (output_root / "normalization_qc.json").open("r", encoding="utf-8") as handle:
+        normalization_qc = json.load(handle)
+    assert normalization_qc["roi_area_max_min_ratio"] == 1.0
+    assert normalization_qc["high_z_boundary_specimen_count"] == 2
+    assert normalization_qc["normalization_review_required"] is True
     tracks = pd.read_csv(output_root / "study_track_records.csv")
     assert tracks["study_track_id"].is_unique
     assert all(":" in value for value in tracks["study_track_id"])
