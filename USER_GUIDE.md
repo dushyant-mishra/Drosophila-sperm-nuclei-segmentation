@@ -1,153 +1,402 @@
-# Sperm Nuclei Segmentation macOS Tool
-## User Walkthrough and Parameter Notes
+# Saturn v5.7 User Guide
 
-### Validated Dataset
-- **Saturn image datasets**: [Open link](https://example.com) (Update with actual link)
+Saturn v5.7 analyzes Drosophila sperm nuclei in fluorescence Z-stacks. It
+combines ROI-aware classical segmentation, optional 2.5D U-Net probability
+support, cross-slice tracking, morphology measurement, quality-control
+populations, and multi-sample study management.
 
-### Tool Download
-- **Standalone macOS tool**: [Open link](https://example.com) (Update with actual link)
+The current application is a Python GUI. Historical packaged applications and
+older Saturn versions are preserved under `archive/` and are not the active
+workflow.
 
-### Tuned Parameters JSON
-- **Best parameters file**: [Open link](https://example.com) (Update with actual link)
+## 1. Install and Start
 
-> [!IMPORTANT]
-> **Recommended default**: Use the built-in Saturn V5 tuned parameters and leave settings unchanged unless clearly necessary.
-> This release was tested and optimized on the Saturn WT-style image set. For Saturn-like datasets, the safest workflow is to run the built-in tuned defaults before changing any settings.
+From PowerShell:
 
----
+```powershell
+Set-Location "C:\Users\dmishra\Desktop\sperm_project"
+.\.venv\Scripts\Activate.ps1
+python .\sperm_segmentation_saturnv5.7.py --gui
+```
 
-## What This App Does
-- **Detects** sperm nuclei in each z-slice.
-- **Links** detections across slices into 3D tracks.
-- **Applies** a post-tracking quality audit.
-- **Exports** CSV, Excel, PDF, and PowerPoint summaries.
+Launching without `--gui` also opens the application:
 
----
+```powershell
+python .\sperm_segmentation_saturnv5.7.py
+```
 
-## Important Interpretation Notes
-- **Single-slice nuclei** can still be biologically valid in this acquisition regime and should not be treated as automatically incorrect.
-- **Volume, effective thickness, taper ratio**, and other width/area-derived outputs are PSF- and voxel-sensitive. Use them mainly for relative comparison between matched datasets rather than as literal physical dimensions.
-- **Primary biological readouts** are typically geodesic length, tortuosity, Z-extent, pitch angle, and track continuity.
+To create the environment again:
 
----
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
 
-## Recommended Workflow
-1. Open the app.
-2. Select the image folder containing one z-stack series.
-3. Keep the built-in tuned parameters unchanged unless the results clearly show a problem.
-4. Optionally load a newer or experiment-specific tuned JSON if one has been provided.
-5. Draw or load the ROI.
-6. Run the batch analysis.
-7. Review the PDF report, Excel workbook, and overlay images.
+The optional U-Net workflow also requires a compatible PyTorch environment and
+a locally stored v5.7-compatible checkpoint. Model checkpoints and raw
+microscopy data are intentionally not stored in Git.
 
----
+## 2. Before Analyzing Data
 
-## How to Draw and Edit the ROI
+For each biological specimen, confirm:
 
-### Drawing a New ROI
-- **Left-click** to place points around the region you want analyzed.
-- Continue clicking to build the polygon outline.
-- **Press Enter** to finalize the ROI after placing at least three points.
+1. The folder contains one intended Z-stack series.
+2. Slice names sort into the correct Z order.
+3. XY pixel size and Z spacing match the microscope metadata.
+4. A specimen-specific ROI is available or can be drawn.
+5. The selected parameter JSON and U-Net checkpoint were validated for the
+   acquisition conditions.
+6. The output folder is separate from source images when running a
+   multi-sample study.
 
-### Erasing ROI Points
-- **Right-click** to remove the most recently placed point.
-- Use this whenever you mis-click while tracing the region.
+Do not tune parameters toward a desired genotype count, group difference, or
+morphology. Parameter selection should be based on blinded visual quality and
+technical performance.
 
-### Reusing an Old ROI
-- If the build supports ROI reuse, load a saved ROI and visually confirm the overlay before proceeding.
-- Reject the ROI and draw a new one if it does not match the current stack or tubule region.
+## 3. Analyze One Stack
 
----
+1. Select **Load Directory** and choose any image in the stack.
+2. Use the Z slider to inspect the full stack, especially the middle planes
+   where nuclei are most visible.
+3. Draw a new ROI or select **Load ROI**.
+4. Confirm that the red ROI outline follows the specimen on several Z planes.
+5. Select **Load Tuned Params** when using a reviewed v5.7 parameter JSON.
+6. In **Configure Parameters**, confirm calibration, segmentation engine, and
+   U-Net checkpoint settings.
+7. Use **Run Slice** for a representative visual check.
+8. Use **Run Batch (All Slices + 3D Track)** only after the slice check looks
+   reasonable.
+9. Review overlays and measurement tables before interpreting summary plots.
 
-## Running a Multi-Sample Study in V5.7
+Each batch is written to a new `batch_output`, `batch_output_1`, and so on.
+Existing batches are not overwritten.
 
-1. Save `analysis_roi_v5_7.npy` inside every sample's image folder.
-2. Open **Multi-Sample Study** in the sidebar and select **Open Study Manager**.
-3. Select **Discover Root** and choose the parent folder containing all specimens.
-4. Review the table. Double-click a sample ID, biological group, XY calibration, or Z spacing to edit it. Toggle **Include** for specimens that should not run.
-5. Select an output folder outside the source study folder, then select **Validate**.
-6. Resolve every invalid row before selecting **Run / Resume Study**.
+## 4. Draw, Save, and Reuse an ROI
 
-The manager reads each specimen's Leica metadata when available, validates its ROI against every source image, and runs specimens independently. Completed specimens resume without rerunning when the same parameters are used. Failed specimens remain isolated and do not stop the remaining samples.
+### Draw an ROI
 
-Study-level outputs include:
+- Select the ROI drawing view.
+- Left-click to place polygon points around the specimen.
+- Right-click to undo the most recent point.
+- Press **Enter** after placing at least three points.
+- Select **Save ROI** to save the binary mask as a NumPy `.npy` file.
 
-- `study_manifest.csv`: exact specimen, group, ROI, calibration, and source settings.
-- `study_run_state.json`: per-specimen status and resume information.
-- `runtime_parameters.json`: the shared V5.7 parameters used for the study.
-- `specimen_summary.csv`: one raw summary row per biological specimen.
-- `normalization_qc.json`: study-level ROI exposure and Z-boundary warnings.
-- `study_track_records.csv`: pooled track records with globally unique `study_track_id` values.
-- `samples/<sample_id>/attempt_NNN/`: the complete standard V5.7 output for one specimen.
+### Load an ROI
 
-`specimen_summary.csv` retains raw counts and also reports exposure-normalized counts. The calculations do not alter segmentation, tracking, audit membership, or morphology:
+1. Load an image stack first.
+2. Select **Load ROI** and choose the `.npy` mask.
+3. Confirm that the mask dimensions match the images.
+4. Inspect the red outline on top, middle, and bottom planes.
+
+Never reuse an ROI merely because two images have the same dimensions. Every
+ROI must match the specimen position and anatomy in its own stack.
+
+For multi-sample discovery, save the reviewed ROI in each specimen folder as:
 
 ```text
-ROI area (um2) = ROI pixels x XY calibration x XY calibration
+analysis_roi_v5_7.npy
+```
+
+## 5. ROI-Aware Normalization
+
+Saturn calculates preprocessing statistics from valid pixels inside the ROI.
+Bright tissue outside the specimen therefore does not set the ROI thresholds.
+The stack context samples representative Z planes and reuses one normalization
+context across candidate evaluations.
+
+This normalization improves technical comparability, but it does not transform
+counts from specimens with different sampled areas or depths into directly
+equivalent raw counts. The study manager separately reports exposure-normalized
+rates based on ROI area and sampled depth.
+
+Review the normalization warnings when:
+
+- ROI area or sampled volume is invalid.
+- Detections reach an acquisition Z boundary.
+- More than 20% of tracks touch a Z boundary.
+- A stack appears truncated relative to another specimen.
+
+## 6. Classical, U-Net, and Hybrid Segmentation
+
+`SEGMENTATION_ENGINE` controls the evidence used during segmentation:
+
+- `classical_saturn`: ROI-aware classical ridge segmentation only.
+- `hybrid`: classical detections plus a U-Net rescue lane.
+- `unet_assisted`: enables U-Net evidence within the v5.7 integration path.
+
+The 2.5D U-Net receives the previous, center, and next Z planes as three input
+channels. Tiled inference runs on ROI-aware crops and stitches probabilities
+back into full-frame coordinates. Stitching probabilities does not resize the
+source images or directly alter length and width measurements.
+
+The U-Net produces continuous probability evidence. Saturn then:
+
+1. Finds U-Net-supported regions not already represented by classical
+   detections.
+2. Splits connected regions into putative instances.
+3. Builds centerlines and measures the underlying geometry.
+4. Accepts plausible rescued nuclei and records their source.
+5. Retains rejected U-Net-positive candidates in review overlays.
+
+The U-Net does not use COCO files during inference. COCO annotations are
+training data only; runtime inference reads raw image planes and a model
+checkpoint.
+
+![Saturn v5.7 2.5D U-Net inputs, probability evidence, and integrated result](docs/readme_assets/saturn_v57_unet_integration.png)
+
+## 7. Overlay Color Cues
+
+In U-Net rescue review overlays:
+
+- **Green:** accepted Saturn classical detection.
+- **Cyan:** accepted U-Net rescue detection.
+- **Magenta:** U-Net-positive candidate rejected as a short fragment.
+- **Orange:** U-Net-positive candidate rejected for width or low
+  length-to-width ratio.
+- **Red:** U-Net-positive candidate rejected for long, branched, looped, or
+  tortuous topology.
+- **Red specimen outline:** the analysis ROI.
+
+Overlay line thickness is display-only. Counts, lengths, widths, and tracking
+use the underlying masks and centerlines, not the rendered colored strokes.
+
+Red, orange, or magenta detections are not automatically biological negatives.
+They are candidates that did not pass the configured rescue gates and should
+be inspected when tuning for a new acquisition type.
+
+## 8. Cross-Slice Tracking
+
+Tracking links compatible 2D detections across adjacent Z planes using
+calibrated distance, overlap, orientation, morphology continuity, and optional
+U-Net support. One 3D track can therefore contain several 2D observations of
+the same nucleus.
+
+Do not calculate single-plane nuclei as:
+
+```text
+2D detections minus 3D tracks
+```
+
+Those quantities count different things. Use the per-track `n_slices` field to
+identify tracks observed in exactly one plane.
+
+Tracking errors usually appear as:
+
+- **Fragmentation:** one nucleus becomes several short tracks.
+- **False fusion:** neighboring nuclei are joined into one track.
+- **Boundary truncation:** tracks begin or end at the first or last acquired
+  plane.
+
+Review track overlays and source tables before changing tracking thresholds.
+
+## 9. Analysis Populations
+
+Saturn exports several deliberately separate populations:
+
+- **Raw 2D detections:** all accepted per-slice measurements.
+- **All 3D tracks:** the result of cross-slice linking.
+- **Technical-valid tracks:** tracks that pass acquisition and tracking
+  integrity checks. This is the primary table for WT-versus-mutant
+  comparisons.
+- **Reference morphology subset:** technical-valid tracks also compatible with
+  reference morphology limits.
+- **Morphology warnings:** technically valid tracks outside the reference
+  shape limits. These should not be silently discarded from mutant studies.
+- **Quality subset:** a stricter reporting population retained for sensitivity
+  review, not necessarily the sole biological population.
+
+For genotype comparisons, treat biological specimens as replicates. Individual
+nuclei are measurements nested within specimens, not independent biological
+replicates.
+
+## 10. Run a Multi-Sample Study
+
+1. Place `analysis_roi_v5_7.npy` in every specimen folder.
+2. Open **Multi-Sample Study** and select **Open Study Manager**.
+3. Select **Discover Root** and choose the parent study folder.
+4. Review sample ID, group, slices, Z range, ROI, XY calibration, and Z spacing.
+5. Double-click editable fields to correct metadata.
+6. Toggle **Include** for specimens that should not run.
+7. Select an output folder outside the source study tree.
+8. Select **Validate** and resolve every invalid row.
+9. Select **Run / Resume Study**.
+
+The manager runs specimens independently. A failed specimen does not stop the
+remaining samples, and completed specimens can resume without rerunning when
+the same parameter fingerprint is used.
+
+### Study Outputs
+
+- `study_manifest.csv`: exact specimen, group, source, ROI, and calibration.
+- `study_run_state.json`: per-specimen state and resume information.
+- `runtime_parameters.json`: shared v5.7 parameters used for the study.
+- `specimen_summary.csv`: one raw and normalized summary row per specimen.
+- `group_summary.csv`: group summaries calculated from specimen rows.
+- `normalization_qc.json`: exposure and Z-boundary warnings.
+- `study_track_records.csv`: pooled tracks with unique `study_track_id`.
+- `samples/<sample_id>/attempt_NNN/`: complete output for one specimen.
+
+## 11. Count Normalization
+
+Normalization does not add, remove, or resize detections. It adds denominators
+that make sampling exposure explicit:
+
+```text
+ROI area (um2) = ROI pixels x XY pixel size x XY pixel size
 Sampled depth (um) = included slices x Z spacing
 Sampled ROI volume (um3) = ROI area x sampled depth
 ```
 
-The primary normalized fields report tracks per `1,000 um2` and per `100,000 um3`. The table also reports stack span, detection-positive Z range, and the fraction of tracks touching either acquisition Z boundary. A normalization warning is generated when exposure is invalid, detections reach a stack boundary, or more than 20% of tracks touch a Z boundary. Review these warnings before interpreting density differences.
+The study table reports, among other fields:
 
-`group_summary.csv` summarizes the specimen rows by biological group. Specimens, not individual nuclei, are treated as replicates in this table.
+- Raw 2D detections per `1,000 um2` per slice.
+- 3D tracks per `1,000 um2`.
+- 3D tracks per `100,000 um3`.
+- Biological and quality-track rates using the same denominators.
+- Stack span, positive Z range, and Z-boundary track fraction.
 
----
+Use raw counts for traceability and normalized rates for exposure-aware
+comparison. Neither corrects biological sampling bias, incomplete stacks, poor
+ROIs, or acquisition differences.
 
-## Where Results Are Saved
-All outputs are saved inside the selected input image folder in an auto-created subfolder such as `batch_output`, `batch_output_1`, and so on.
+## 12. Standard Batch Outputs
+
+A typical output directory contains:
 
 ```text
-MyExperiment/
-|-- z0.tif
-|-- z1.tif
-|-- z2.tif
-`-- batch_output/
-    |-- overlays/
-    |-- spermatid_measurements.csv
-    |-- track_summary.csv
-    |-- track_summary_quality.csv
-    |-- batch_analysis_results_v5.xlsx
-    |-- batch_report_v5.pdf
-    `-- batch_analysis_results_v11.pptx
+batch_output/
+|-- overlays/
+|-- quality_overlays/
+|-- plots/
+|-- spermatid_measurements.csv
+|-- track_summary.csv
+|-- track_summary_quality.csv
+|-- track_summary_biological_candidates.csv
+|-- track_summary_all_v5.7.csv
+|-- track_summary_technical_valid_v5.7.csv
+|-- track_summary_reference_morphology_v5.7.csv
+|-- track_summary_morphology_warning_v5.7.csv
+|-- track_summary_technical_failures_v5.7.csv
+|-- batch_analysis_results_v5.7.xlsx
+`-- batch_report_v5.7.pdf
 ```
 
----
+Exact optional files depend on configuration and whether U-Net inference,
+quality overlays, and presentation export are enabled.
 
-## Parameter Notes
-These notes are for interpretation. For this release, the built-in Saturn V5 tuned parameters should be considered the default for Saturn WT-style data.
+## 13. Measurement Nomenclature
 
-| Section | Parameter | What it controls | When to change it |
-| :--- | :--- | :--- | :--- |
-| **Calibration** | `UM_PER_PX_XY` / `UM_PER_SLICE_Z` | Convert pixels and slice spacing into physical units. They affect 3D length, Z-extent, pitch, and volume calculations. | Only if the microscope calibration or z-step differs from the Saturn acquisition. |
-| **Segmentation** | `CLAHE_CLIP`, `CLAHE_KERNEL`, `BG_SIGMA`, `RIDGE_SIGMAS` | Control contrast enhancement, background subtraction, and ridge detection in the raw 2D images. | Only if the raw detections themselves are visibly wrong. |
-| **Segmentation** | `THRESHOLD_HI` / `THRESHOLD_LO` | Upper and lower hysteresis thresholds used to convert the ridge image into a binary mask. | Only if the pipeline is clearly too permissive or too strict at the 2D detection stage. |
-| **Cleanup** | `MAX_BRIDGE_PX`, `MAX_BRANCH_LEN_PX`, `BREAK_JUNCTIONS` | Control how nearby skeleton fragments are reconnected or pruned after segmentation. | Change only if true nuclei are clearly being broken apart or dense webs are not being separated enough. |
-| **Morphology** | `MIN_SKEL_LEN_PX`, `MAX_GEODESIC_LEN_PX`, `MAX_WIDTH_PX`, `MIN_LENGTH_WIDTH_RATIO` | Reject short debris, implausibly long chains, broad objects, or non-elongated detections. | Adjust only if many obvious valid nuclei are filtered out or many obvious merged objects are surviving. |
-| **Tracking** | `TRACK_MAX_DIST_UM`, `TRACK_MAX_GAP_SLICES`, `TRACK_BBOX_PADDING_PX` | Control how detections are linked across adjacent z-slices. | Change only when tracks are obviously too fragmented or obviously fusing neighboring nuclei. |
-| **Tracking** | `OVERLAP_*` and `CONSERVATIVE_MAX_*` | Control overlap continuation and allowable slice-to-slice jumps in width, length, area, orientation, and centroid position. | These were optimized on Saturn WT data by another algorithm; do not change unless necessary. |
-| **Audit** | `AUDIT_MAX_LENGTH_UM`, `AUDIT_MAX_TORTUOSITY`, `AUDIT_MAX_THICKNESS_UM`, `AUDIT_MAX_TAPER_RATIO`, `AUDIT_MIN_SLICES` | Post-tracking rules that flag suspicious tracks in the quality subset. Audit does not change raw detection or linking. | Use audit changes first when the overlays look good but the summaries feel too strict or too lenient. |
-| **Output / Debug** | `SAVE_*` and `SHOW_*` options | Control overlays, masks, labels, preview windows, and debug images. | Change only if you need more visual QC or lighter output. |
+- **2D geodesic length:** centerline path length within one image plane.
+- **Width:** local mask width estimated from the unbridged clean distance map.
+- **Length-to-width ratio:** elongation measure based on length and width.
+- **3D length:** calibrated path length through linked observations.
+- **Z-span:** endpoint-to-endpoint Z displacement:
+  `(max_z - min_z) x Z spacing`.
+- **Z-covered:** sampled slab thickness:
+  `(max_z - min_z + 1) x Z spacing`.
+- **Z-extent:** number or range of planes represented by a track, depending on
+  the output field.
+- **Tortuosity:** path length divided by endpoint displacement; values near
+  one are straighter.
+- **Pitch angle:** orientation of the reconstructed path relative to the image
+  plane.
+- **Approximate volume:** voxel- and PSF-sensitive integrated area estimate.
+- **Reference morphology subset:** technical-valid tracks that also satisfy
+  the reference shape limits. It is not synonymous with all real nuclei.
 
----
+Volume, width, effective thickness, taper, and related measurements are
+especially sensitive to microscope PSF and voxel sampling. Use them mainly for
+relative comparison among specimens acquired and processed under matched
+conditions.
 
-## Plain-Language Parameter Guide
+## 14. Parameter Groups
 
-- **Audit parameters**: These are post-tracking only. They do not change raw segmentation or linking. They only determine which completed tracks are flagged as suspicious in the quality population.
-- **Tracking parameters**: These control how 2D detections are linked into 3D tracks. Change them only if nuclei are clearly too fragmented or neighboring nuclei are clearly being fused.
-- **Segmentation parameters**: These affect raw 2D detection. Change them only if the raw overlays themselves look wrong.
-- **PSF-sensitive outputs**: Volume, effective thickness, taper ratio, and other width/area-derived values are broadened by microscope PSF and voxel sampling. Use them mainly for relative comparison between matched datasets.
+| Group | Main controls | Change only when |
+| :--- | :--- | :--- |
+| Calibration | `UM_PER_PX_XY`, `UM_PER_SLICE_Z` | Microscope metadata differs. |
+| Preprocessing | `CLAHE_*`, `BG_SIGMA`, normalization settings | ROI images have systematically different contrast or background behavior. |
+| Classical segmentation | `RIDGE_SIGMAS`, `THRESHOLD_HI`, `THRESHOLD_LO` | Classical overlays are visibly too strict or permissive. |
+| Cleanup | `MAX_BRIDGE_PX`, branch and junction controls | True nuclei fragment or unrelated structures connect. |
+| Morphology | minimum length, maximum width, ratio, topology limits | Review overlays show consistent biological candidates being rejected. |
+| U-Net evidence | candidate, seed, rescue, split, and centerline thresholds | Probability maps are useful but rescue acceptance is too strict or permissive. |
+| Tracking | distance, gap, overlap, assignment, and continuity controls | Tracks fragment or falsely fuse. |
+| Audit/reporting | technical, reference-shape, and quality limits | Population labels need adjustment without changing detection or tracking. |
 
----
+Load a reviewed parameter JSON rather than editing many values manually. Save
+the exact runtime parameters with every study.
 
-## Common Mistakes to Avoid
-- Loading an experiment-specific JSON without confirming it matches the current dataset.
-- Changing parameters before running the built-in tuned defaults once.
-- Treating PSF-sensitive outputs as literal physical dimensions.
-- Accepting the wrong ROI without visually confirming it.
-- Changing segmentation settings when the real problem is tracking or audit.
+## 15. Adapting to New Image Conditions
 
----
+For a new microscope, magnification, fluorophore, genotype, or preparation:
 
-## Distribution Note
-**Saturn-V5-macOS-Tool** is a standalone macOS application for confocal z-stack analysis of Drosophila sperm nuclei. It detects nuclei in 2D, links them into 3D tracks, applies a biologically informed audit, and exports CSV, Excel, PDF, and PowerPoint summaries. This release was tested and optimized on the Saturn image datasets.
+1. Confirm calibration and bit depth.
+2. Draw specimen-specific ROIs.
+3. Inspect representative top, middle, and bottom planes.
+4. Run the tuner on informative planes, not empty early slices.
+5. Compare probability maps separately from accepted rescue detections.
+6. Review rejected U-Net candidates by reason.
+7. Validate tracking on consecutive planes.
+8. Run a small blinded smoke test before a complete study.
+9. Keep one shared parameter set for the comparative study unless a
+   predeclared technical reason requires otherwise.
+10. Document every parameter and model checkpoint used.
+
+Fine-tuning the U-Net on new data should use reviewed annotations, held-out
+specimens, partial-label-aware loss where annotations are incomplete, and
+probability-map review before Saturn rescue tuning.
+
+## 16. Common Problems
+
+### The GUI detects unrelated TIFF files
+
+Keep one intended source series per specimen folder. Move unrelated channels,
+exports, masks, and overlays outside the source folder before analysis.
+
+### The ROI does not align
+
+Confirm image dimensions and specimen identity. Draw a new ROI rather than
+resizing an old mask.
+
+### Many visible nuclei appear red, orange, or magenta
+
+Inspect the raw U-Net probability map. The model may have found the nuclei
+while Saturn's rescue gates rejected them. Tune rescue splitting and
+centerline recovery before loosening every biological limit.
+
+### Cyan overlays look thicker
+
+Rendered outlines can look different because they come from distinct masks.
+The standardized overlay linewidth is visual only; geometry is measured before
+rendering.
+
+### Counts differ greatly between specimens
+
+Check ROI area, sampled depth, Z-boundary warnings, calibration, raw image
+quality, and U-Net rescue fraction before interpreting a biological
+difference.
+
+### Inference is slow
+
+Use ROI-tiled inference, a compatible GPU, suitable tile batching, and cached
+probability maps during repeated tuning. Do not recompute U-Net probabilities
+for every threshold candidate.
+
+## 17. Privacy and Reproducibility
+
+The GitHub repository is private. Raw microscopy data, ROI masks, model
+checkpoints, active tuning outputs, generated reports, API keys, and local
+paths remain excluded from version control.
+
+For every reported experiment, retain:
+
+- Source-image manifest and microscope metadata.
+- ROI file and ROI QC.
+- Runtime parameter JSON.
+- Model checkpoint identity or checksum.
+- Software commit ID.
+- Per-specimen outputs and normalization warnings.
+- Manual-review notes and any exclusions.
+
+The figures in the repository README and this guide are illustrative
+development examples. They are not a genotype result or an accuracy benchmark.
