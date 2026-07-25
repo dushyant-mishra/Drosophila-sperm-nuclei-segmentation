@@ -1,0 +1,23 @@
+project_root: C:/Users/dmishra/Desktop/sperm_validation_private
+stack_image_dir: C:/Users/dmishra/Desktop/sperm_validation_private/images
+
+train_coco: C:/Users/dmishra/Desktop/sperm_validation_private/sam3_pilot/train/_annotations.coco.json
+valid_coco: C:/Users/dmishra/Desktop/sperm_validation_private/sam3_pilot/valid_technical_only/_annotations.coco.json
+
+output_dir: C:/Users/dmishra/Desktop/sperm_validation_private/unet25d/outputs
+
+z_regex: 'Project001_Series002_z(\d+)_ch00'
+image_pattern: 'Project001_Series002_z{z:02d}_ch00.tif'
+
+architecture: unet_small
+patch_size: 256
+patches_per_image: 64
+epochs: 40
+batch_size: 8
+base_channels: 24
+learning_rate: 0.0005
+weight_decay: 0.00001
+seed: 123
+threshold: 0.5
+
+infer_z_indices: [5, 6, 12, 35, 60, 87]

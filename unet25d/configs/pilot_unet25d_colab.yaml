@@ -1,0 +1,24 @@
+project_root: /content/unet25d_workspace/data
+stack_image_dir: /content/unet25d_workspace/data/images
+
+train_coco: /content/unet25d_workspace/data/sam3_pilot/train/_annotations.coco.json
+valid_coco: /content/unet25d_workspace/data/sam3_pilot/valid_technical_only/_annotations.coco.json
+
+output_dir: /content/unet25d_workspace/repo/unet25d/outputs
+checkpoint_mirror_dir: /content/drive/MyDrive/unet25d/checkpoints
+
+z_regex: 'Project001_Series002_z(\d+)_ch00'
+image_pattern: 'Project001_Series002_z{z:02d}_ch00.tif'
+
+architecture: unet_small
+patch_size: 256
+patches_per_image: 64
+epochs: 40
+batch_size: 8
+base_channels: 24
+learning_rate: 0.0005
+weight_decay: 0.00001
+seed: 123
+threshold: 0.5
+
+infer_z_indices: [5, 6, 12, 35, 60, 87]

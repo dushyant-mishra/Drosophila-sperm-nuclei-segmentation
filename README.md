@@ -1,82 +1,110 @@
-# Drosophila Sperm Nuclei Segmentation (Saturn V5)
+# Saturn v5.7 Sperm Nuclei Segmentation
 
-A professional-grade pipeline for automated 2D/3D segmentation and analysis of Drosophila sperm nuclei from confocal microscopy Z-stacks.
+Saturn v5.7 is the active Drosophila sperm-nucleus analysis pipeline. It
+combines ROI-aware classical segmentation, optional 2.5D U-Net probability
+support, cross-slice tracking, morphology measurements, quality-control
+populations, and multi-sample study management.
 
-## Standalone macOS Tool
-For the most stable experience on macOS, use the standalone application built in a clean environment.
+## Visual Workflow
 
-1. **Download**: Go to the [GitHub Actions](https://github.com/dushyant-mishra/Drosophila-sperm-nuclei-segmentation/actions) page.
-2. **Select Build**: Click the most recent successful "Build macOS Standalone App" run.
-3. **Artifacts**: Scroll down to the **Artifacts** section and download `Saturn-V5-macOS-Tool`.
-4. **Launch**: Unzip the file and right-click `SpermAnalysisTool.app` -> **Open**.
+Saturn first restricts analysis to the saved specimen ROI. Within that ROI it
+normalizes and denoises each slice, enhances elongated ridges, builds and
+cleans candidate masks, and reduces candidates to measurable centerlines.
 
----
+![Saturn v5.7 processing stages from ROI-aware normalization through U-Net candidate support](docs/readme_assets/saturn_v57_processing_stages.png)
 
-## Developer Setup (Python)
-If you prefer to run the tool from source:
+The optional 2.5D U-Net receives the previous, center, and next Z planes as
+three input channels. Its continuous probability map supplies candidate
+support and confident seeds; it does not directly replace Saturn's measurement
+or quality-control stages.
 
-1. **Requirements**: Ensure Python 3.10+ is installed.
-2. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **Run GUI**:
-   ```bash
-   python sperm_segmentation_saturnv5.1.py --gui
-   ```
+![Previous, center, and next Z planes, the resulting U-Net probability map, and integration into Saturn v5.7](docs/readme_assets/saturn_v57_unet_integration.png)
 
----
+### Overlay Cues
+
+- **Green:** accepted Saturn classical detection.
+- **Cyan:** accepted U-Net rescue detection.
+- **Magenta, orange, or red:** U-Net-positive candidate rejected by a rescue
+  gate, such as a short fragment or implausible topology.
+- **Red ROI outline:** analysis boundary; pixels outside it do not contribute
+  to preprocessing thresholds or detections.
+
+Overlay thickness is display-only. Counts, lengths, widths, and tracking use
+the underlying masks and centerlines rather than the rendered colored lines.
+
+![Four consecutive slices showing classical detections, accepted U-Net rescues, and rejected U-Net-positive candidates](docs/readme_assets/saturn_v57_hybrid_overlays.png)
+
+After 2D measurement, detections can be linked across adjacent Z planes using
+calibrated XY and Z distances. The resulting track table supports 3D length,
+Z-span, Z-covered thickness, tortuosity, and approximate volume summaries.
+
+![Exploded image-plane view and calibrated trajectories for detections joined across four Z planes](docs/readme_assets/saturn_v57_3d_tracking.png)
+
+These panels are illustrative outputs from one development stack. They explain
+the computation and visual cues; they are not a genotype comparison, accuracy
+benchmark, or substitute for validation on new acquisition conditions.
+
+## Run the GUI
+
+From PowerShell:
+
+```powershell
+Set-Location "C:\Users\dmishra\Desktop\sperm_project"
+.\.venv\Scripts\Activate.ps1
+python .\sperm_segmentation_saturnv5.7.py --gui
+```
+
+Launching without arguments also opens the GUI:
+
+```powershell
+python .\sperm_segmentation_saturnv5.7.py
+```
+
+## Active Components
+
+- `sperm_segmentation_saturnv5.7.py`: GUI, segmentation, tracking, reporting,
+  ROI normalization, and multi-sample study manager.
+- `utils/tune_parameters_Saturnv5_7.py`: v5.7 segmentation and U-Net rescue
+  tuner.
+- `utils/saturn_unet25d_bridge.py`: lazy checkpoint loading and tiled U-Net
+  probability inference.
+- `unet25d/`: dataset preparation, model training, inference, and threshold
+  review tools.
+- `parameter_tuning_results_v5_7/`: reviewed v5.7 tuning outputs.
+- `docs/v5_7_illustrated_workflow/`: illustrated workflow source assets.
+- `Saturn_V5.7_Illustrated_Analysis_Workflow_FINAL.docx`: readable workflow
+  report.
 
 ## Recommended Workflow
-1. **Open the App**: Launch the GUI using one of the methods above.
-2. **Select Folder**: Click **Load Directory** and select the folder containing your Z-stack images.
-3. **Confirm Parameters**: Saturn V5 tuned tracking parameters are built in by default. Use **Load Tuned Params** only if you need to apply a newer or experiment-specific JSON.
-   > [!IMPORTANT]
-   > For Saturn-like datasets, the safest workflow is to run the built-in tuned defaults before changing any settings.
-4. **Define ROI**: Select the **Draw ROI (Polygon)** tool and trace the region of interest.
-5. **Run Batch**: Click **Run Batch (All Slices + 3D Track)**.
-6. **Review Results**: Automated reports (PDF, Excel, PPTX) will open once complete.
 
----
+1. Load one image stack or open the multi-sample study manager.
+2. Draw or load a specimen-specific ROI and confirm its alignment.
+3. Confirm XY and Z calibration from microscope metadata.
+4. Load the reviewed v5.7 parameters and U-Net checkpoint when using hybrid
+   inference.
+5. Run segmentation and cross-slice tracking.
+6. Review equal-thickness overlays, QC populations, normalization warnings,
+   and specimen-level outputs before biological comparison.
 
-## ROI Management
-- **Drawing**: Left-click to place points. Press **Enter** to finalize the polygon.
-- **Erasing**: Right-click to remove the last point if you mis-click.
-- **Reusing**: Load a saved `.npy` mask via **Load ROI Mask** to apply the same region across different stacks.
+Do not tune parameters toward a desired genotype count or morphology. Tune and
+validate without using biological-group outcomes.
 
----
+## Development
 
-## Data Outputs & Interpretation
-All results are saved in an auto-created subfolder, such as `batch_output/`, within your input directory.
+Install the core environment with:
 
-| File | Description |
-| :--- | :--- |
-| `batch_report_v5.pdf` | High-resolution graphical report with 3D distributions and quality audits. |
-| `batch_results_v5.xlsx` | Multi-tab Excel audit with raw data and population summaries. |
-| `track_summary.csv` | Full table of every 3D track detected. |
-| `track_summary_quality.csv` | The clean population that passed the biologically informed audit. |
-| `overlays/` | Side-by-side PNG panels for every Z-slice for visual verification. |
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
 
-### Biological Notes
-- **Audit vs. Segmentation**: The quality audit flags suspicious tracks but does not change the raw segmentation. Use audit changes first if results feel too strict.
-- **PSF Sensitivity**: Volume, thickness, and area-derived metrics are sensitive to the microscope point spread function. Use these for relative comparison rather than absolute physical dimensions.
+Run the active tests with:
 
----
+```powershell
+python -m pytest -q
+```
 
-## Parameter Guide
-| Section | Parameter | When to change? |
-| :--- | :--- | :--- |
-| **Calibration** | `UM_PER_PX_XY` / `UM_PER_SLICE_Z` | Only if microscope calibration differs from Saturn defaults. |
-| **Segmentation** | `THRESHOLD_HI` / `THRESHOLD_LO` | If the pipeline is clearly too permissive or strict at the 2D stage. |
-| **Cleanup** | `MAX_BRIDGE_PX` | If true nuclei are being broken apart. |
-| **Morphology** | `MIN_SKEL_LEN_PX` | To filter out short debris or surviving merged objects. |
-| **Tracking** | `TRACK_MAX_DIST_UM` | If tracks are fragmented or fusing neighboring nuclei. |
-| **Audit** | `AUDIT_MAX_LENGTH_UM` | To refine the quality population subset. |
-
----
-
-## Common Mistakes to Avoid
-1. Changing parameters before running the built-in tuned defaults once.
-2. Changing segmentation settings when the real problem is tracking or audit-related.
-3. Treating PSF-sensitive outputs, such as volume, as literal physical dimensions.
-4. Accepting the wrong ROI without visually confirming it on the overlay.
+Historical Saturn versions, old tuning runs, build outputs, and experimental
+AI pilots are preserved under `archive/`. See `PROJECT_LAYOUT.md` and
+`archive/README.md`.

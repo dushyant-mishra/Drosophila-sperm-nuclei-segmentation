@@ -1,0 +1,3 @@
+dataset_path,roi_path,exclusion_mask_path,dataset_label,sample_id,acquisition_class,genotype,slice_override
+FAKE_PATH_TO_STACK_A,FAKE_PATH_TO_ROI_A.npy,,FAKE_PRIVATE_LABEL_A,FAKE_SAMPLE_A,FAKE_ACQ_CLASS_A,FAKE_GENOTYPE_A,
+FAKE_PATH_TO_STACK_B,FAKE_PATH_TO_ROI_B.npy,,FAKE_PRIVATE_LABEL_B,FAKE_SAMPLE_B,FAKE_ACQ_CLASS_B,FAKE_GENOTYPE_B,

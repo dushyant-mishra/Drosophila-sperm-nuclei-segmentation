@@ -27,7 +27,32 @@ batch_output/
 batch_output*/
 sperm_results_saturnv*/
 scratch/
+archive/project_history/
+archive/private_config/
+scratch/v5_6_unblinding_key/
+scratch/v5_6_blinded_inputs/
+scratch/v5_6_blinded_validation/
+*unblinding_key*.csv
+*unblinding_key*.json
+*source_manifest_v5_6.csv
+*completed_manual_review*.xlsx
+*completed_manual_review*.csv
 parameter_tuning_results/**/segmentation_review_panels/
 parameter_tuning_results/**/last_drawn_roi*.tif
 parameter_tuning_results/**/tuning_results*.json
 parameter_tuning_results/**/run_*/
+parameter_tuning_results_v5_7/
+archive/historical_source/saturn_v5_series/tuning_results/**/tuning_results*.json
+
+# Local illustrated reports and microscopy-derived report data
+Saturn_V5.7_Illustrated_Analysis_Workflow_FINAL.docx
+docs/v5_7_illustrated_workflow/*
+!docs/v5_7_illustrated_workflow/V5_7_UNET_INTEGRATION_PLAN.md
+!docs/readme_assets/
+!docs/readme_assets/*.png
+
+# U-Net pilot generated data
+unet25d/outputs/
+unet25d/**/*.pt
+unet25d/**/*.pth
+unet25d/**/*.npz

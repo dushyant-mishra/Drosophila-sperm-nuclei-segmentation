@@ -1,0 +1,37 @@
+{
+  "preset_name": "comparative_conservative_v5_6",
+  "based_on_candidate": "cand_049",
+  "role": "conservative sensitivity candidate; not ground truth and not final best",
+  "analysis_mode": "comparative",
+  "provenance": {
+    "source": "scratch/v5_6_visual_candidate_audit",
+    "seed": 560123,
+    "slices": ["z05", "z06", "z12", "z35", "z60", "z87"],
+    "roi": "C:/Users/dmishra/Desktop/sperm images/roi_z28.1.npy"
+  },
+  "parameters": {
+    "ANALYSIS_MODE": "comparative",
+    "SEGMENTATION_PARAMETER_SET": "comparative_conservative_v5_6",
+    "CLAHE_MODE": "low_signal",
+    "CLAHE_CLIP": 0.035,
+    "THRESHOLD_HI": 91.5859,
+    "THRESHOLD_LO": 77.9948,
+    "MIN_OBJ_PX": 10,
+    "MIN_SKEL_LEN_UM": 4.802,
+    "MAX_WIDTH_UM": 3.4166,
+    "MIN_LENGTH_WIDTH_RATIO": 2.1098,
+    "MAX_TORTUOSITY": 2.7847,
+    "MAX_BRIDGE_UM": 1.5,
+    "RIDGE_SIGMAS_UM": [0.6, 0.9, 1.2, 1.5],
+    "BG_SIGMA_UM": 6.0,
+    "UM_PER_PX_XY": 0.756836,
+    "UM_PER_SLICE_Z": 1.04046
+  },
+  "resolved_pixel_values": {
+    "MIN_SKEL_LEN_PX": 6.3449,
+    "MAX_WIDTH_PX": 4.5143,
+    "MAX_BRIDGE_PX": 2,
+    "BG_SIGMA": 7.9278,
+    "RIDGE_SIGMAS": [0.7928, 1.1892, 1.5855, 1.9819]
+  }
+}
