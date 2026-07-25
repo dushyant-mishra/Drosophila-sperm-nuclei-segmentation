@@ -3,7 +3,13 @@ import os
 import sys
 
 try:
-    log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sperm_error_log.txt")
+    log_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "scratch",
+        "runtime_logs",
+    )
+    os.makedirs(log_dir, exist_ok=True)
+    log_file_path = os.path.join(log_dir, "sperm_error_log.txt")
     f_log = open(log_file_path, 'a', encoding='utf-8')
 except (PermissionError, IOError):
     # Fallback to User Home if script directory is read-only (common in macOS .app bundles)
@@ -112,15 +118,15 @@ Usage
 -----
 Launch the interactive GUI (recommended)::
 
-    python sperm_segmentation_saturnv5.2.py
+    python sperm_segmentation_saturnv5.7.py
 
 Run a headless batch analysis::
 
-    python sperm_segmentation_saturnv5.2.py --batch
+    python sperm_segmentation_saturnv5.7.py --batch
 
 Analyze a single slice::
 
-    python sperm_segmentation_saturnv5.2.py --single --z 4
+    python sperm_segmentation_saturnv5.7.py --single --z 4
 
 Dependencies
 ------------

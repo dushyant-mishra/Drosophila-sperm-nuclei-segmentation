@@ -203,6 +203,9 @@ CONFIG = {
     "ROI_CROP_PADDING_PX": 16,
     "ROI_THRESHOLD_PERCENTILES_ONLY": True,
     "EXCLUSION_MASK_PATH": "",
+    "ROI_BOUNDARY_SAFE_RIDGE": True,
+    "ROI_THRESHOLD_EXCLUDE_BOUNDARY_PX": 4,
+    "AI_PREPROCESSING_MODE": "off",
 
     # ------ calibration ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     "UM_PER_PX_XY":   0.756836,
@@ -332,6 +335,8 @@ _REQUIRED = {
     "AUTO_CONTRAST_HIGH_THRESHOLD": (int, float), "AUTO_CONTRAST_LOW_THRESHOLD": (int, float),
     "ROI_CROP_PADDING_PX": int, "ROI_THRESHOLD_PERCENTILES_ONLY": bool,
     "EXCLUSION_MASK_PATH": str,
+    "ROI_BOUNDARY_SAFE_RIDGE": bool, "ROI_THRESHOLD_EXCLUDE_BOUNDARY_PX": int,
+    "AI_PREPROCESSING_MODE": str,
     "UM_PER_PX_XY": float, "UM_PER_SLICE_Z": float,
     "CLAHE_CLIP": float, "CLAHE_KERNEL": int, "BG_SIGMA": (int, float),
     "BG_SIGMA_UM": (int, float), "DENOISE_SIGMA_UM": (int, float),
@@ -448,6 +453,8 @@ def validate_config(cfg):
         errors.append("  RUN_MODE must be 'single' or 'batch'")
     if cfg.get("ANALYSIS_MODE", "") not in ("comparative", "reference_morphology", "legacy"):
         errors.append("  ANALYSIS_MODE must be comparative, reference_morphology, or legacy")
+    if cfg.get("AI_PREPROCESSING_MODE", "off") != "off":
+        errors.append("  AI_PREPROCESSING_MODE must be 'off' unless explicitly enabled by experimental code")
     if "REJECT_BRANCHES" in cfg:
         errors.append("  'REJECT_BRANCHES' was removed in v8. "
                       "Use MAX_BRANCH_NODES (int) instead:\n"
@@ -1495,26 +1502,49 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
     work[excl_crop] = fill_value
 
     img_norm, norm_record = _normalize_with_context(work, valid_crop, cfg, preprocess_context)
-    img_norm[~roi_crop | excl_crop] = 0
+    boundary_safe = bool(cfg.get("ROI_BOUNDARY_SAFE_RIDGE", True))
+    norm_fill = float(np.median(img_norm[valid_crop])) if np.any(valid_crop) else 0.0
+    if boundary_safe:
+        # Keep a continuous exterior through denoising/background/ridge filtering.
+        # The exact biological ROI is applied after ridge calculation.
+        img_norm[~roi_crop | excl_crop] = norm_fill
+    else:
+        img_norm[~roi_crop | excl_crop] = 0
 
     denoise_sigma = float(cfg.get("DENOISE_SIGMA", 0.0))
     img_denoised = gaussian(img_norm, sigma=denoise_sigma) if denoise_sigma > 0 else img_norm.copy()
-    img_denoised[~roi_crop | excl_crop] = 0
+    if not boundary_safe:
+        img_denoised[~roi_crop | excl_crop] = 0
     img_eq = _apply_clahe(img_denoised, norm_record["profile"], norm_record["clip"], cfg)
-    img_eq[~roi_crop | excl_crop] = 0
+    if boundary_safe:
+        eq_fill = float(np.median(img_eq[valid_crop])) if np.any(valid_crop) else 0.0
+        img_eq[~roi_crop | excl_crop] = eq_fill
+    else:
+        img_eq[~roi_crop | excl_crop] = 0
 
     bg  = gaussian(img_eq, sigma=float(cfg["BG_SIGMA"]))
     fg  = np.clip(img_eq - bg, 0, None)
-    fg[~roi_crop | excl_crop] = 0
     valid_fg = fg[valid_crop]
     hi_fg = float(np.percentile(valid_fg, 99.5)) if valid_fg.size else 1.0
     fgn = np.clip(fg / (hi_fg + 1e-9), 0, 1)
-    fgn[~roi_crop | excl_crop] = 0
+    if boundary_safe:
+        fgn_fill = float(np.median(fgn[valid_crop])) if np.any(valid_crop) else 0.0
+        fgn[~roi_crop | excl_crop] = fgn_fill
+    else:
+        fg[~roi_crop | excl_crop] = 0
+        fgn[~roi_crop | excl_crop] = 0
 
     ridge = meijering(fgn, sigmas=cfg["RIDGE_SIGMAS"], black_ridges=False)
     ridge[~roi_crop | excl_crop] = 0
 
-    ridge_valid = ridge[valid_crop]
+    threshold_crop = valid_crop
+    if boundary_safe:
+        boundary_exclude_px = max(0, int(cfg.get("ROI_THRESHOLD_EXCLUDE_BOUNDARY_PX", 4)))
+        if boundary_exclude_px > 0:
+            interior = distance_transform_edt(valid_crop) > boundary_exclude_px
+            if np.count_nonzero(interior) > 100:
+                threshold_crop = interior
+    ridge_valid = ridge[threshold_crop]
     ridge_valid = ridge_valid[np.isfinite(ridge_valid)]
     if ridge_valid.size == 0:
         th_hi, th_lo = 1.0, 0.5

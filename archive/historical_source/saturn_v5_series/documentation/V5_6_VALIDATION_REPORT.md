@@ -633,8 +633,333 @@ Added synthetic tests demonstrating that:
 - technical artifacts are still removed
 - existing v5.6 ROI/exclusion/invariance tests continue to pass
 
+## Phase 5 Blinded Representative-Image Validation Workflow
+
+Purpose: validate segmentation fairness and technical error rates without using genotype labels during segmentation, crop selection, preset comparison, report generation, or scoring.
+
+No v5.5 file was edited. No complete stacks, tracking tuning, genotype-specific tuning, unblinding analysis, commit, or push was run in this phase.
+
+Files created:
+
+- `scratch\run_v56_blinded_validation.py`
+- `scratch\run_v56_unblind_validation.py`
+- `tests\test_saturn_v56_blinded_validation.py`
+- `scratch\v5_6_blinded_validation\manifests\source_manifest_v5_6.csv`
+
+Files modified:
+
+- `V5_6_COMPARATIVE_ANALYSIS.md`
+- `V5_6_VALIDATION_REPORT.md`
+
+### Manifest And Blinding
+
+The blinded runner accepts a user-facing source manifest with columns:
+
+```text
+dataset_path, roi_path, exclusion_mask_path, dataset_label, sample_id, acquisition_class, genotype, slice_override
+```
+
+The runner writes:
+
+```text
+scratch\v5_6_blinded_validation\manifests\blinded_dataset_manifest_v5_6.csv
+scratch\v5_6_unblinding_key\unblinding_key_v5_6.csv
+```
+
+The unblinding key is outside the blinded-analysis output directory by design. No segmentation, scoring, crop selection, preset comparison, or blinded report function reads the unblinding key.
+
+The current local repository did not contain a filled source manifest. To avoid guessing genotype from folder names, only a template was generated:
+
+```text
+scratch\v5_6_blinded_validation\manifests\source_manifest_v5_6.csv
+```
+
+The real blinded image pass was not executed because genotype labels must be supplied explicitly by the user in the manifest.
+
+### Representative Slices
+
+For each manifest dataset, the runner selects six representative slices:
+
+- first usable slice
+- approximately 20%
+- approximately 40%
+- approximately 60%
+- approximately 80%
+- last usable slice
+
+Users can override with the `slice_override` column. Selected Z indices are recorded in `blinded_validation_provenance_v5_6.json` after a real run.
+
+### Shared Presets
+
+Primary preset:
+
+```text
+comparative_presets\comparative_selected_v5_6.json
+```
+
+Sensitivity presets:
+
+```text
+comparative_presets\comparative_conservative_v5_6.json
+comparative_presets\comparative_intermediate_v5_6.json
+comparative_presets\comparative_permissive_v5_6.json
+```
+
+All blinded datasets use the same preset logic and morphology rules. Stack-specific photometric normalization is permitted. Genotype-specific morphology thresholds and independent WT/mutant retuning are prohibited.
+
+### Planned Blinded Outputs
+
+After a filled manifest is provided, the runner saves under:
+
+```text
+scratch\v5_6_blinded_validation
+```
+
+Required blinded artifacts:
+
+- `manifests\blinded_dataset_manifest_v5_6.csv`
+- `blinded_validation_metrics_v5_6.csv`
+- `blinded_validation_slice_metrics_v5_6.csv`
+- `preset_object_matching_v5_6.csv`
+- `photometric_robustness\photometric_robustness_v5_6.csv`
+- `review_workbook\blinded_manual_review_v5_6.xlsx`
+- `reports\blinded_validation_report_v5_6.pdf`
+- `blinded_validation_provenance_v5_6.json`
+
+No genotype labels are written into blinded output filenames, report titles, crop files, or review workbook fields.
+
+### Photometric Robustness
+
+For the selected preset, each representative slice is rerun under:
+
+- original
+- intensity multiplied by 0.85
+- intensity multiplied by 1.15
+- moderate additive offset
+- moderate contrast reduction
+
+The runner records matched-object fraction, detection-count change, median-length change, technical-valid classification change, and morphology-warning classification change. This reports instability as technical QC; it does not force counts to remain equal.
+
+### Review Crops And Manual Gate
+
+The runner creates at least 12 crops per dataset when enough detections are available:
+
+- random crops
+- preset-disagreement crops
+- warning or technical-risk crops
+
+The manual review workbook contains blank columns for true detection, missed nucleus, split nucleus, merged nuclei, tissue-edge false positive, puncta/ring false positive, ROI-edge artifact, uncertain, and reviewer notes.
+
+The workflow stops before unblinding and prints:
+
+```text
+Blinded review outputs are complete. Complete the manual review workbook before running the unblinding analysis.
+```
+
+Unblinding is a separate explicit command:
+
+```powershell
+.\.venv\Scripts\python.exe .\scratch\run_v56_unblind_validation.py `
+  --review-workbook .\scratch\v5_6_blinded_validation\review_workbook\blinded_manual_review_v5_6.xlsx `
+  --unblinding-key .\scratch\v5_6_unblinding_key\unblinding_key_v5_6.csv
+```
+
+The unblinding utility refuses incomplete review workbooks.
+
+### Blinded Validation Tests
+
+Added tests verifying:
+
+- genotype labels are absent from the blinded manifest
+- genotype labels are not passed to segmentation manifests
+- genotype labels do not appear in standard output names
+- all presets share resolved morphology settings
+- stack-specific normalization may differ while morphology rules remain shared
+- conservative, selected, intermediate, and permissive presets are applied identically across blinded groups
+- the unblinding utility refuses incomplete review workbooks
+- the unblinding utility accepts a completed synthetic review workbook
+- longer synthetic nuclei remain longer after technical-valid filtering
+- wider, more tapered, and more tortuous synthetic objects remain technical valid
+- lower-count synthetic input remains lower count
+- technical artifacts are rejected
+- existing ROI, exclusion-mask, bit-depth, and brightness-invariance tests continue to pass
+
+## Phase 6 Blinded Workflow Privacy Hardening
+
+Purpose: harden the representative-image blinded validation workflow before any real WT/mutant source manifest, real microscopy stack, unblinding key, or genotype-bearing review output is generated.
+
+No v5.5 file was edited. No production v5.6 pipeline or tuner file was edited in this phase. No real source manifest was processed, no real microscopy images were staged, no tracking was run, no complete stack was processed, no unblinding analysis was run, and no commit or push was run.
+
+### Private Manifest Separation
+
+The source manifest template now lives at:
+
+```text
+templates\source_manifest_v5_6.template.csv
+```
+
+Filled manifests must stay outside the repository. Recommended private location:
+
+```text
+C:\Users\dmishra\Desktop\sperm_validation_private\source_manifest_v5_6.csv
+```
+
+The blinded runner refuses to process a source manifest without `--private-output-dir`. The private output directory must not equal, or be inside, the blinded validation output or review-workbook output directory.
+
+### Opaque Staging
+
+Before segmentation, the runner stages only selected representative slices under:
+
+```text
+scratch\v5_6_blinded_inputs\B001\images\B001_z000.tif
+scratch\v5_6_blinded_inputs\B001\roi\B001_roi.npy
+```
+
+The private Z-index and source-path mapping is written only to:
+
+```text
+<private-output-dir>\private_staged_input_mapping_v5_6.csv
+```
+
+The blinded manifest no longer carries original paths, sample IDs, dataset labels, or genotype labels. It carries only opaque handles and acquisition-class codes.
+
+### Validate-Only Gate
+
+Use this before any real validation run:
+
+```powershell
+.\.venv\Scripts\python.exe .\scratch\run_v56_blinded_validation.py `
+  --manifest C:\Users\dmishra\Desktop\sperm_validation_private\source_manifest_v5_6.csv `
+  --private-output-dir C:\Users\dmishra\Desktop\sperm_validation_private\v5_6_private_outputs `
+  --validate-manifest-only
+```
+
+This validates manifest columns, input paths, requested/selected slices, planned blinded IDs, and planned opaque staged filenames. It creates no blinded outputs, copies no images, runs no segmentation, and writes no unblinding key.
+
+### Leak Scanner
+
+The blinded runner scans reviewer-facing CSV, JSON, XLSX, PDF metadata/text, filenames, and directories for private source terms before completing the blinded package. The scanner records only leak category and file path, not the leaked private value.
+
+### Ignore Rules
+
+The repository now ignores private/generated blinded material:
+
+```text
+scratch/v5_6_unblinding_key/
+scratch/v5_6_blinded_inputs/
+scratch/v5_6_blinded_validation/
+*unblinding_key*.csv
+*unblinding_key*.json
+*source_manifest_v5_6.csv
+*completed_manual_review*.xlsx
+*completed_manual_review*.csv
+```
+
+The neutral template `templates\source_manifest_v5_6.template.csv` is intentionally not ignored.
+
+### Added Privacy Tests
+
+Synthetic-only tests now verify:
+
+- private source fields are absent from the blinded manifest
+- filled source manifests are not copied into blinded outputs
+- overlapping private/blinded output directories are refused
+- validate-manifest-only creates no blinded outputs or unblinding key
+- opaque staged filenames preserve the original Z-index mapping privately
+- only representative images are staged
+- the leak scanner detects genotype text without reporting the private value
+- `.gitignore` protects private outputs while leaving the template trackable
+
+### Hardening Validation Results
+
+Commands run:
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile .\scratch\run_v56_blinded_validation.py .\scratch\run_v56_unblind_validation.py
+.\.venv\Scripts\python.exe -m py_compile .\sperm_segmentation_saturnv5.6.py .\utils\tune_parameters_Saturnv5_6.py
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe .\utils\tune_parameters_Saturnv5_6.py --self-check
+git diff --check
+git status --short
+```
+
+Results:
+
+- runner py_compile passed
+- production v5.6 pipeline/tuner py_compile passed
+- pytest passed: `40 passed`
+- tuner self-check passed
+- `git diff --check` reported no whitespace errors, only CRLF normalization warnings
+- no v5.5 file has a diff
+
 ## Unresolved Assumptions
 
 - No exclusion mask was provided for this smoke test.
 - v5.5 comparison used default v5.5 segmentation followed by ROI filtering, matching the known v5.5 behavior rather than a tuned full-batch parameter combination.
 - Smoke-test visual observations are representative-slice checks only, not full-stack validation.
+
+## Phase 7 N2V2 Archive, ROI Boundary Fix, And Ilastik Pilot Prep
+
+The controlled N2V2 diagnostic trained a real CAREamics N2V2 model with changed weights and no fallback/mock model. Structure preservation failed: high-confidence raw nuclei lost ridge support, the ROI perimeter remained dominant, and the N2V2 branch did not produce usable interior candidates. N2V2 is therefore recorded as an unsuccessful experimental branch for the current sperm nucleus images.
+
+Production status:
+
+- `AI_PREPROCESSING_MODE` defaults to `off`
+- N2V2 is disabled for production
+- raw Saturn remains the active path
+- further N2V2 development is paused
+- no N2V2 training was run in this phase
+
+### ROI Boundary Ridge Correction
+
+The v5.6 ridge path now keeps the ROI exterior filled through denoising, CLAHE, background subtraction, foreground normalization, and ridge filtering. The exact biological ROI mask is applied after ridge calculation. Threshold estimation uses interior ROI pixels when possible, without silently discarding valid boundary detections.
+
+Validation output:
+
+```text
+scratch\v5_6_roi_boundary_fix
+```
+
+On z05, z35, and z87, the mean 8-pixel boundary/interior ridge ratio changed from `0.07937` to `0.04255`; outside-ROI leakage remained `0`.
+
+### Ilastik Pilot Preparation
+
+Created neutral ilastik Pixel Classification inputs under:
+
+```text
+scratch\v5_6_ilastik_pilot
+```
+
+Training slices:
+
+```text
+z18, z25, z43, z50, z70, z78
+```
+
+Held-out evaluation slices:
+
+```text
+z05, z06, z12, z35, z60, z87
+```
+
+Training slices are distinct from evaluation slices and their immediate neighbor buffer. Exported images are boundary-safe robust-normalized images with no Saturn detections burned in. Raw references, ROI masks, and metadata JSON files are exported separately.
+
+Class definition:
+
+```text
+scratch\v5_6_ilastik_pilot\metadata\ilastik_class_definition_v5_6.json
+```
+
+Guide:
+
+```text
+V5_6_ILASTIK_PIXEL_CLASSIFICATION_GUIDE.md
+```
+
+Prepared but not executed:
+
+- `scratch\generate_v56_ilastik_headless_command.py`
+- `scratch\validate_v56_ilastik_probability_maps.py`
+- `scratch\run_v56_ilastik_probability_pilot.py`
+
+No ilastik classifier, probability map, or ilastik-Saturn result was fabricated.

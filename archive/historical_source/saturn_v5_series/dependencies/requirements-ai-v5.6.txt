@@ -1,0 +1,13 @@
+numpy
+pandas
+tifffile
+matplotlib
+scikit-image
+scipy
+seaborn
+python-pptx
+requests
+opencv-python
+Pillow
+xlsxwriter
+careamics

@@ -89,7 +89,7 @@ Report how many objects are detected by all presets, only by permissive settings
 Prepare a manifest with one row per dataset or stack. Recommended columns:
 
 ```text
-dataset_path,roi_path,exclusion_mask_path,genotype,dataset_label
+dataset_path,roi_path,exclusion_mask_path,dataset_label,sample_id,acquisition_class,genotype,slice_override
 ```
 
 Before segmentation, create a blinded manifest:
@@ -113,6 +113,62 @@ The manual review workbook should hide genotype identity and include blank colum
 - uncertain
 
 Reveal genotype labels only after review is complete.
+
+Saturn v5.6 provides two scratch utilities for this workflow:
+
+```powershell
+.\.venv\Scripts\python.exe .\scratch\run_v56_blinded_validation.py --create-template
+
+.\.venv\Scripts\python.exe .\scratch\run_v56_blinded_validation.py `
+  --manifest C:\Users\dmishra\Desktop\sperm_validation_private\source_manifest_v5_6.csv `
+  --private-output-dir C:\Users\dmishra\Desktop\sperm_validation_private\v5_6_private_outputs `
+  --validate-manifest-only
+
+.\.venv\Scripts\python.exe .\scratch\run_v56_blinded_validation.py `
+  --manifest C:\Users\dmishra\Desktop\sperm_validation_private\source_manifest_v5_6.csv `
+  --private-output-dir C:\Users\dmishra\Desktop\sperm_validation_private\v5_6_private_outputs
+```
+
+The first command creates the neutral template at `templates\source_manifest_v5_6.template.csv`. Copy that template to a private location, fill it there, and keep the filled source manifest out of the repository. The recommended local private path is `C:\Users\dmishra\Desktop\sperm_validation_private\source_manifest_v5_6.csv`.
+
+The validate-only command checks manifest columns, input paths, representative slices, planned blinded IDs, and opaque staged filenames without copying images, running segmentation, creating blinded outputs, or writing an unblinding key.
+
+The final command runs representative-slice blinded validation only after the source manifest has been filled in by the user. The runner refuses to infer genotype from folder names and refuses to run without `--private-output-dir`.
+
+The runner writes:
+
+```text
+scratch/v5_6_blinded_validation/manifests/blinded_dataset_manifest_v5_6.csv
+scratch/v5_6_blinded_inputs/B001/images/B001_z000.tif
+C:\Users\dmishra\Desktop\sperm_validation_private\v5_6_private_outputs\unblinding_key_v5_6.csv
+C:\Users\dmishra\Desktop\sperm_validation_private\v5_6_private_outputs\private_staged_input_mapping_v5_6.csv
+```
+
+The blinded manifest contains only opaque handles such as `blinded_dataset_id`, `blinded_input_handle`, `blinded_roi_handle`, `acquisition_class_code`, `selected_z_indices`, and `blinded_sample_id`. Original source paths, sample IDs, dataset labels, and genotype labels stay in the private output directory. A leak scanner checks reviewer-facing CSV, JSON, XLSX, PDF metadata/text, filenames, and directories before the blinded package is considered ready.
+
+Representative slices are selected as six positions distributed through the stack: first usable image, approximately 20%, 40%, 60%, 80%, and last usable image. A user can override this with `slice_override`, for example:
+
+```text
+5,12,28,43,60,87
+```
+
+## Manual Review Gate
+
+The blinded runner stops before unblinding and prints:
+
+```text
+Blinded review outputs are complete. Complete the manual review workbook before running the unblinding analysis.
+```
+
+After the manual workbook is completed, run unblinding explicitly:
+
+```powershell
+.\.venv\Scripts\python.exe .\scratch\run_v56_unblind_validation.py `
+  --review-workbook .\scratch\v5_6_blinded_validation\review_workbook\blinded_manual_review_v5_6.xlsx `
+  --unblinding-key C:\Users\dmishra\Desktop\sperm_validation_private\v5_6_private_outputs\unblinding_key_v5_6.csv
+```
+
+The unblinding utility refuses to run if required manual-review fields are blank.
 
 ## Differential-Error Checks
 
