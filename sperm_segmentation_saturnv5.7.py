@@ -2988,6 +2988,61 @@ def check_extension_consistency(prev_state, candidate_detection, cfg, overlap_ex
 
     return True, "ok"
 
+def _record_rejected_extension(event_map, track_id, z_index, reason):
+    """Record one unique rejected candidate-extension event for a track."""
+    event = f"z={int(z_index)}, reason={reason}"
+    events = event_map.setdefault(int(track_id), [])
+    if event not in events:
+        events.append(event)
+
+
+def _normalize_rejected_extension_events(event_map):
+    """Normalize legacy string values and new event lists to lists of strings."""
+    normalized = {}
+    for track_id, raw_events in (event_map or {}).items():
+        if raw_events is None:
+            events = []
+        elif isinstance(raw_events, str):
+            events = [raw_events] if raw_events else []
+        else:
+            events = [str(value) for value in raw_events if str(value)]
+        normalized[int(track_id)] = events
+    return normalized
+
+
+def _attach_tracking_audit(df, track_summary, rejected_extensions):
+    """
+    Attach rejected-extension history without claiming that a track stopped.
+
+    A rejected candidate is only a near-miss considered by the tracker. The
+    same track may subsequently link to a different, consistent detection.
+    """
+    events_by_track = _normalize_rejected_extension_events(rejected_extensions)
+    counts = {track_id: len(events) for track_id, events in events_by_track.items()}
+    joined = {track_id: " | ".join(events) for track_id, events in events_by_track.items()}
+    first = {
+        track_id: (events[0] if events else "")
+        for track_id, events in events_by_track.items()
+    }
+
+    track_summary["rejected_extension_count"] = (
+        track_summary["track_id"].map(counts).fillna(0).astype(int)
+    )
+    track_summary["has_rejected_extension"] = track_summary["rejected_extension_count"] > 0
+    track_summary["rejected_extension_reasons"] = track_summary["track_id"].map(joined).fillna("")
+    track_summary["first_rejected_extension_reason"] = track_summary["track_id"].map(first).fillna("")
+
+    # Keep the old column for file compatibility, but do not populate it with
+    # unconfirmed stop claims.
+    track_summary["track_stop_reason"] = ""
+
+    df["track_rejected_extension_count"] = (
+        df["track_id"].map(counts).fillna(0).astype(int)
+    )
+    df["track_has_rejected_extension"] = df["track_rejected_extension_count"] > 0
+    return df, track_summary
+
+
 def track_across_slices_legacy(detections_df, cfg):
     """
     Conservative tracking natively: stop tracks when consistency breaks.
@@ -3008,7 +3063,7 @@ def track_across_slices_legacy(detections_df, cfg):
     link_methods = ["new"] * len(df)
     link_distances_um = [np.nan] * len(df)
     link_gap_slices = [0] * len(df)
-    stopped_tracks = {}  # Track stop reasons for debugging
+    rejected_extensions = {}
 
     rows_by_z = {z: df.index[df["z_slice"] == z].to_numpy()
                  for z in sorted(df["z_slice"].unique())}
@@ -3086,8 +3141,12 @@ def track_across_slices_legacy(detections_df, cfg):
                             gap_slices = int(z - trk_st["last_z"])
                             candidates.append((score, k, j, method, float(d_val), gap_slices))
                         else:
-                            if tid not in stopped_tracks:
-                                stopped_tracks[tid] = f"z={z}, reason={reason}"
+                            _record_rejected_extension(
+                                rejected_extensions,
+                                tid,
+                                z,
+                                reason,
+                            )
 
             # Sort by score and assign greedily
             candidates.sort(key=lambda x: x[0])
@@ -3143,7 +3202,10 @@ def track_across_slices_legacy(detections_df, cfg):
     df["track_link_gap_slices"] = link_gap_slices
 
     # Print tracking stats
-    print(f"  Conservative tracking: {len(stopped_tracks)} tracks stopped early for consistency")
+    print(
+        "  Conservative tracking: "
+        f"{len(rejected_extensions)} tracks encountered rejected candidate extensions"
+    )
 
     # Inject maximum 2D Euclidean distance of the physical shape prior to grouping
     if "tortuosity" in df.columns:
@@ -3232,9 +3294,7 @@ def track_across_slices_legacy(detections_df, cfg):
         "min_area_px", "max_area_px", "area_start", "area_end"
     ]
     ts = ts[cols_ordered]
-    ts["track_stop_reason"] = ts["track_id"].map(stopped_tracks).fillna("")
-
-    return df, ts
+    return _attach_tracking_audit(df, ts, rejected_extensions)
 
 
 def _angle_diff_deg(a, b):
@@ -3323,7 +3383,7 @@ def _unet_link_cost_terms(det_prob, prev_prob, cfg, repair=False):
     return support_term + continuity_term, support_term, continuity_term
 
 
-def _summarize_tracked_detections(df, stopped_tracks, cfg):
+def _summarize_tracked_detections(df, rejected_extensions, cfg):
     if df.empty:
         return df, pd.DataFrame()
 
@@ -3414,8 +3474,7 @@ def _summarize_tracked_detections(df, stopped_tracks, cfg):
         "min_area_px", "max_area_px", "area_start", "area_end"
     ] + unet_summary_cols
     ts = ts[cols_ordered]
-    ts["track_stop_reason"] = ts["track_id"].map(stopped_tracks).fillna("")
-    return df, ts
+    return _attach_tracking_audit(df, ts, rejected_extensions)
 
 
 def track_across_slices_global_assignment(detections_df, cfg):
@@ -3438,7 +3497,7 @@ def track_across_slices_global_assignment(detections_df, cfg):
     link_methods = ["new"] * len(df)
     link_distances_um = [np.nan] * len(df)
     link_gap_slices = [0] * len(df)
-    stopped_tracks = {}
+    rejected_extensions = {}
 
     um_xy = cfg["UM_PER_PX_XY"]
     max_dist_um = float(cfg.get("TRACK_MAX_DIST_UM", 7.0))
@@ -3548,8 +3607,13 @@ def track_across_slices_global_assignment(detections_df, cfg):
             for ti, tid in enumerate(cand_tids):
                 if tid not in assigned_tracks and np.isfinite(cost[ti]).any():
                     best = float(np.min(cost[ti]))
-                    if best <= max_cost * 1.5 and tid not in stopped_tracks:
-                        stopped_tracks[tid] = f"z={z}, assignment_unmatched_cost={best:.2f}"
+                    if best <= max_cost * 1.5:
+                        _record_rejected_extension(
+                            rejected_extensions,
+                            tid,
+                            z,
+                            f"assignment_unmatched_cost={best:.2f}",
+                        )
 
         for di, det in enumerate(dets):
             row_idx = det["row_idx"]
@@ -3577,8 +3641,11 @@ def track_across_slices_global_assignment(detections_df, cfg):
     df["track_link_method"] = link_methods
     df["track_link_distance_um"] = np.round(link_distances_um, 3)
     df["track_link_gap_slices"] = link_gap_slices
-    print(f"  Global-assignment tracking: {len(stopped_tracks)} near-miss tracks recorded")
-    return _summarize_tracked_detections(df, stopped_tracks, cfg)
+    print(
+        "  Global-assignment tracking: "
+        f"{len(rejected_extensions)} tracks encountered rejected assignment extensions"
+    )
+    return _summarize_tracked_detections(df, rejected_extensions, cfg)
 
 
 def _row_endpoint(row):
@@ -3746,9 +3813,33 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
     if repair_count:
         df["track_id"] = df["track_id"].map(lambda tid: find(int(tid)))
 
-    stopped_tracks = {}
+    rejected_extensions = {}
+    for _, row in ts.iterrows():
+        old_track_id = int(row["track_id"])
+        final_track_id = find(old_track_id)
+        raw_reasons = row.get("rejected_extension_reasons", "")
+        raw_reasons = "" if pd.isna(raw_reasons) else str(raw_reasons)
+        events = [value for value in raw_reasons.split(" | ") if value]
+        rejected_extensions.setdefault(final_track_id, []).extend(events)
+
     print(f"  Hybrid repair tracking: {repair_count} conservative fragment merges accepted")
-    return _summarize_tracked_detections(df, stopped_tracks, cfg)
+    final_df, final_ts = _summarize_tracked_detections(df, rejected_extensions, cfg)
+
+    members_per_final = {}
+    for old_track_id in tids:
+        final_track_id = find(old_track_id)
+        members_per_final[final_track_id] = members_per_final.get(final_track_id, 0) + 1
+    repair_merges = {
+        track_id: max(0, member_count - 1)
+        for track_id, member_count in members_per_final.items()
+    }
+    final_ts["hybrid_repair_merge_count"] = (
+        final_ts["track_id"].map(repair_merges).fillna(0).astype(int)
+    )
+    final_df["track_hybrid_repair_merge_count"] = (
+        final_df["track_id"].map(repair_merges).fillna(0).astype(int)
+    )
+    return final_df, final_ts
 
 
 def track_across_slices(detections_df, cfg):
@@ -3895,6 +3986,8 @@ def flag_quality_tracks(df_tracks, cfg):
         df_tracks["morphology_warning"] = pd.Series(dtype=bool)
         df_tracks["morphology_warning_reasons"] = pd.Series(dtype=str)
         df_tracks["reference_morphology_pass"] = pd.Series(dtype=bool)
+        df_tracks["is_reference_morphology_track"] = pd.Series(dtype=bool)
+        df_tracks["is_warning_free_track"] = pd.Series(dtype=bool)
         df_tracks["segmentation_parameter_set"] = pd.Series(dtype=str)
         df_tracks["preprocessing_profile"] = pd.Series(dtype=str)
         df_tracks["analysis_mode"] = pd.Series(dtype=str)
@@ -3916,6 +4009,10 @@ def flag_quality_tracks(df_tracks, cfg):
         df_tracks["morphology_warning"] = any_morphology & (~any_technical)
         df_tracks["morphology_warning_reasons"] = morphology_strs
         df_tracks["reference_morphology_pass"] = (~any_technical) & (~any_reference_fail)
+        df_tracks["is_reference_morphology_track"] = df_tracks["reference_morphology_pass"].astype(bool)
+        df_tracks["is_warning_free_track"] = (
+            df_tracks["technical_valid"] & (~df_tracks["morphology_warning"])
+        )
         df_tracks["analysis_mode"] = mode
         df_tracks["segmentation_parameter_set"] = cfg.get("SEGMENTATION_PARAMETER_SET", "unspecified")
         df_tracks["preprocessing_profile"] = cfg.get("CLAHE_MODE", cfg.get("PREPROCESS_MODE", "unspecified"))
@@ -3924,7 +4021,9 @@ def flag_quality_tracks(df_tracks, cfg):
             ",".join([x for x in [technical_strs[i], morphology_strs[i]] if x])
             for i in range(n)
         ]
-        df_tracks["is_quality_track"] = df_tracks["reference_morphology_pass"].astype(bool)
+        # Legacy compatibility alias. New reports use the explicit reference
+        # and warning-free columns above.
+        df_tracks["is_quality_track"] = df_tracks["is_reference_morphology_track"]
         df_tracks["hard_flags"] = technical_strs
         df_tracks["warning_flags"] = morphology_strs
         df_tracks["is_biological_candidate"] = df_tracks["technical_valid"].astype(bool)
@@ -3992,6 +4091,8 @@ def flag_quality_tracks(df_tracks, cfg):
     df_tracks["morphology_warning"] = any_flagged & ~any_hard
     df_tracks["morphology_warning_reasons"] = warning_strs
     df_tracks["reference_morphology_pass"] = ~any_flagged
+    df_tracks["is_reference_morphology_track"] = df_tracks["reference_morphology_pass"].astype(bool)
+    df_tracks["is_warning_free_track"] = (~any_flagged).astype(bool)
     df_tracks["segmentation_parameter_set"] = cfg.get("SEGMENTATION_PARAMETER_SET", "unspecified")
     df_tracks["preprocessing_profile"] = cfg.get("CLAHE_MODE", cfg.get("PREPROCESS_MODE", "unspecified"))
     df_tracks["analysis_mode"] = mode
@@ -4002,7 +4103,7 @@ def flag_quality_tracks(df_tracks, cfg):
     n_hard = int(any_hard.sum())
     n_warning_only = int((any_warning & ~any_hard).sum())
     print(
-        f"  Quality audit: {n_quality} strict quality, {n_candidates} biological candidates, "
+        f"  Audit: {n_quality} warning-free, {n_candidates} biological candidates, "
         f"{n_hard} hard fails, {n_warning_only} warning-only out of {n} total"
     )
 
@@ -4040,11 +4141,79 @@ def export_comparative_track_tables(out_dir, track_summary, version_label=None):
         "Morphology warnings are retained in the comparative population because "
         "they may represent genuine genotype-dependent phenotypes.\n"
         "Primary WT-versus-mutant table: track_summary_technical_valid*.csv\n"
+        "Warning-free and reference-morphology counts are technical QC diagnostics, not alternative biological populations.\n"
         "Reference-morphology tables are diagnostic only.\n"
     )
     with open(os.path.join(out_dir, f"comparative_population_note{suffix}.txt"), "w", encoding="utf-8") as f:
         f.write(note)
     return paths
+
+
+def export_biologist_results(out_dir, track_summary, version_label=None):
+    """Export one canonical analysis population with a compact metric set."""
+    if track_summary is None or track_summary.empty:
+        return {}
+
+    result_dir = os.path.join(out_dir, "biologist_results")
+    ensure_dir(result_dir)
+    suffix = f"_{version_label}" if version_label else ""
+    primary = (
+        track_summary[track_summary["technical_valid"].astype(bool)].copy()
+        if "technical_valid" in track_summary.columns
+        else track_summary.copy()
+    )
+
+    column_map = {
+        "track_id": "estimated_nucleus_id",
+        "total_3d_length_um": "length_3d_um",
+        "max_length_2d": "maximum_2d_length_um",
+        "thickness_um": "effective_thickness_um_psf_sensitive",
+        "tortuosity_3d": "tortuosity_3d",
+        "z_span_um": "z_span_um",
+        "n_slices": "slices_detected",
+        "morphology_warning": "morphology_warning_for_review",
+    }
+    available = [column for column in column_map if column in primary.columns]
+    nuclei = primary[available].rename(columns=column_map)
+    nuclei_path = os.path.join(result_dir, f"nuclei_for_analysis{suffix}.csv")
+    nuclei.to_csv(nuclei_path, index=False)
+
+    def median(column):
+        if column not in primary.columns or primary.empty:
+            return np.nan
+        return float(pd.to_numeric(primary[column], errors="coerce").median())
+
+    summary = pd.DataFrame([{
+        "analysis_population": "technical-valid 3D tracks",
+        "estimated_unique_nuclei": int(len(primary)),
+        "median_3d_length_um": median("total_3d_length_um"),
+        "median_maximum_2d_length_um": median("max_length_2d"),
+        "median_effective_thickness_um_psf_sensitive": median("thickness_um"),
+        "median_3d_tortuosity": median("tortuosity_3d"),
+        "median_z_span_um": median("z_span_um"),
+        "median_slices_detected": median("n_slices"),
+    }])
+    summary_path = os.path.join(result_dir, f"sample_summary{suffix}.csv")
+    summary.to_csv(summary_path, index=False)
+
+    readme_path = os.path.join(result_dir, "README.txt")
+    with open(readme_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "BIOLOGIST RESULTS\n"
+            "==================\n"
+            "Use sample_summary*.csv for sample-level comparisons.\n"
+            "Use nuclei_for_analysis*.csv for nucleus-level statistics.\n\n"
+            "Primary population: technical-valid 3D tracks (estimated unique nuclei).\n"
+            "Morphology-warning tracks remain included because they may represent real biology.\n"
+            "Effective thickness is PSF-sensitive and should be compared only between matched acquisitions.\n\n"
+            "Do not use raw 2D detections, U-Net contribution counts, warning-free counts,\n"
+            "reference-morphology counts, or rejected-extension counts as the biological nucleus count.\n"
+        )
+    return {
+        "summary": summary_path,
+        "nuclei": nuclei_path,
+        "readme": readme_path,
+    }
 
 
 def summarize_comparative_population(df):
@@ -4299,8 +4468,8 @@ def export_outlier_audit(out_dir, df_tracks, cfg):
     lines.append("=" * 60)
     lines.append(f"Tracks total: {len(df_tracks)}")
     if "is_quality_track" in df_tracks.columns:
-        lines.append(f"Quality tracks: {int(df_tracks['is_quality_track'].sum())}")
-        lines.append(f"Flagged tracks: {int((~df_tracks['is_quality_track']).sum())}")
+        lines.append(f"Reference-morphology diagnostic tracks: {int(df_tracks['is_quality_track'].sum())}")
+        lines.append(f"Outside reference-morphology diagnostic: {int((~df_tracks['is_quality_track']).sum())}")
     if "is_biological_candidate" in df_tracks.columns:
         lines.append(f"Biological candidate tracks: {int(df_tracks['is_biological_candidate'].sum())}")
         lines.append(f"Hard-fail tracks: {int((~df_tracks['is_biological_candidate']).sum())}")
@@ -4365,6 +4534,15 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                     lines.append(f"95th percentile link distance um: {float(linked_dist.quantile(0.95)):.3f}")
 
         if df_tracks is not None and not df_tracks.empty:
+            technical_valid_count = (
+                int(df_tracks["technical_valid"].sum())
+                if "technical_valid" in df_tracks.columns
+                else int(len(df_tracks))
+            )
+            lines.append(
+                f"\nPRIMARY BIOLOGICAL POPULATION (technical-valid 3D tracks): "
+                f"{technical_valid_count}"
+            )
             if "n_slices" in df_tracks.columns:
                 single_frac = float((df_tracks["n_slices"] <= 1).mean() * 100)
                 lines.append(f"\nSingle-slice tracks: {single_frac:.1f}%")
@@ -4398,13 +4576,24 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                 lines.append(f"  hard_fails: {int((~df_tracks['is_biological_candidate']).sum())}")
             if "has_warning_only" in df_tracks.columns:
                 lines.append(f"  warning_only: {int(df_tracks['has_warning_only'].sum())}")
-            if "track_stop_reason" in df_tracks.columns:
-                stopped = df_tracks["track_stop_reason"].fillna("").astype(str)
-                stopped = stopped[stopped != ""]
-                lines.append(f"\nTracks with recorded stop reason: {len(stopped)}")
-                if len(stopped):
-                    for reason, count in stopped.value_counts().head(10).items():
-                        lines.append(f"  {reason}: {int(count)}")
+            if "rejected_extension_count" in df_tracks.columns:
+                rejected_counts = pd.to_numeric(
+                    df_tracks["rejected_extension_count"],
+                    errors="coerce",
+                ).fillna(0).astype(int)
+                lines.append("\nTracking near-miss audit (QC only):")
+                lines.append(
+                    "  tracks_with_rejected_candidate_extensions: "
+                    f"{int((rejected_counts > 0).sum())}"
+                )
+                lines.append(
+                    "  total_rejected_candidate_extension_events: "
+                    f"{int(rejected_counts.sum())}"
+                )
+                lines.append(
+                    "  interpretation: a rejected candidate does not prove that "
+                    "the final track stopped; the track may link elsewhere"
+                )
 
         qc_path = os.path.join(out_dir, "post_detection_qc.txt")
         with open(qc_path, "w", encoding="utf-8") as f:
@@ -4728,16 +4917,12 @@ def process_batch(cfg):
             os.path.join(cfg["OUTPUT_DIR"], f"track_summary_{_VERSION}.csv"),
             index=False)
 
-        # Quality-only CSV
-        ts_quality = ts[ts["is_quality_track"]].copy()
-        ts_quality.to_csv(
-            os.path.join(cfg["OUTPUT_DIR"], f"track_summary_quality_{_VERSION}.csv"),
-            index=False)
-        ts_candidates = ts[ts["is_biological_candidate"]].copy() if "is_biological_candidate" in ts.columns else ts_quality
+        ts_candidates = ts[ts["is_biological_candidate"]].copy() if "is_biological_candidate" in ts.columns else ts
         ts_candidates.to_csv(
             os.path.join(cfg["OUTPUT_DIR"], f"track_summary_biological_candidates_{_VERSION}.csv"),
             index=False)
         export_comparative_track_tables(cfg["OUTPUT_DIR"], ts, _VERSION)
+        export_biologist_results(cfg["OUTPUT_DIR"], ts, _VERSION)
 
         # Quality-coded overlays: green = audit-passed, red = audit-flagged.
         if cfg["SAVE_OVERLAYS"]:
@@ -4902,7 +5087,42 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             bold = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
             num_fmt = workbook.add_format({'num_format': '0.00'})
 
-            # --- Sheet 1: Population Summary (DYNAMIC FORMULAS) --- [FIRST TAB]
+            # --- Sheet 1: one canonical biologist-facing result set ---
+            ws_bio = workbook.add_worksheet('Biologist_Results')
+            ws_bio.write(0, 0, "BIOLOGIST RESULTS - USE THIS SHEET", bold)
+            if df_tracks is not None and not df_tracks.empty:
+                primary = (
+                    df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                    if "technical_valid" in df_tracks.columns
+                    else df_tracks.copy()
+                )
+                biologist_metrics = [
+                    ("Analysis population", "Technical-valid 3D tracks"),
+                    ("Estimated unique nuclei", int(len(primary))),
+                    ("Median 3D length (um)", float(primary["total_3d_length_um"].median())),
+                    ("Median maximum 2D length (um)", float(primary["max_length_2d"].median())),
+                    ("Median effective thickness (um; PSF-sensitive)", float(primary["thickness_um"].median())),
+                    ("Median 3D tortuosity", float(primary["tortuosity_3d"].median())),
+                    ("Median Z-span (um)", float(primary["z_span_um"].median())),
+                    ("Median slices detected", float(primary["n_slices"].median())),
+                ]
+                for row_index, (label, value) in enumerate(biologist_metrics, start=2):
+                    ws_bio.write(row_index, 0, label)
+                    ws_bio.write(row_index, 1, value, num_fmt if isinstance(value, float) else None)
+                ws_bio.write(
+                    12,
+                    0,
+                    "Raw 2D, U-Net, warning-free, reference-morphology, and rejected-extension counts are technical QC only.",
+                )
+                ws_bio.write(
+                    13,
+                    0,
+                    "Use effective thickness only for samples acquired with matched microscope settings.",
+                )
+            ws_bio.set_column('A:A', 72)
+            ws_bio.set_column('B:B', 24)
+
+            # --- Technical sheet: population summary with dynamic formulas ---
             ws_sum = workbook.add_worksheet('Population_Summary')
             headers = ["Metric", "Average (Formula)", "Median (Formula)", "Std Dev (Formula)"]
             for col, h in enumerate(headers):
@@ -4943,7 +5163,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
 
             # --- Sheet 2: 3D Morphometrics (All Tracks) ---
             if df_tracks is not None and not df_tracks.empty:
-                has_qf = "is_quality_track" in df_tracks.columns
+                has_reference = "is_reference_morphology_track" in df_tracks.columns or "reference_morphology_pass" in df_tracks.columns
                 df_tracks.to_excel(writer, sheet_name='3D_Morphometrics', index=False)
                 ws_3d = writer.sheets['3D_Morphometrics']
                 ws_3d.set_column('A:Z', 15)
@@ -4952,12 +5172,18 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 if os.path.exists(p_3d):
                     ws_3d.insert_image('K2', p_3d, {'x_scale': 0.4, 'y_scale': 0.4})
 
-                # Add quality-only tracks as a separate sheet instead of silently replacing the main population
-                if has_qf:
-                    df_q = df_tracks[df_tracks["is_quality_track"]].copy()
-                    df_q.to_excel(writer, sheet_name='3D_Morphometrics_Quality', index=False)
-                    ws_q3d = writer.sheets['3D_Morphometrics_Quality']
-                    ws_q3d.set_column('A:Z', 15)
+                # Reference morphology is diagnostic and remains separate from
+                # warning-free and biological-candidate populations.
+                if has_reference:
+                    reference_col = (
+                        "is_reference_morphology_track"
+                        if "is_reference_morphology_track" in df_tracks.columns
+                        else "reference_morphology_pass"
+                    )
+                    df_reference = df_tracks[df_tracks[reference_col]].copy()
+                    df_reference.to_excel(writer, sheet_name='3D_Reference_Morphology', index=False)
+                    ws_reference = writer.sheets['3D_Reference_Morphology']
+                    ws_reference.set_column('A:Z', 15)
                 if "is_biological_candidate" in df_tracks.columns:
                     df_c = df_tracks[df_tracks["is_biological_candidate"]].copy()
                     df_c.to_excel(writer, sheet_name='3D_Biological_Candidates', index=False)
@@ -5087,11 +5313,22 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             unet_report = summarize_unet_rescue_for_reports(df, out_dir)
             # --- PAGE 1: GLOBAL SUMMARY ---
             fig_sum = plt.figure(figsize=(11, 8.5))
-            fig_sum.suptitle(f"Spermatid Analysis Batch Summary - {_VERSION}\nLocation: {out_dir}", fontsize=14, fontweight='bold')
+            fig_sum.suptitle(
+                f"Technical QC: Detection and Tracking Provenance - {_VERSION}\n"
+                f"Do not use these counts as the biological population | Location: {out_dir}",
+                fontsize=13,
+                fontweight='bold',
+            )
             has_candidate_tracks = df_tracks is not None and not df_tracks.empty and "is_biological_candidate" in df_tracks.columns
-            has_quality_tracks = df_tracks is not None and not df_tracks.empty and "is_quality_track" in df_tracks.columns
+            reference_col = next(
+                (
+                    col for col in ("is_reference_morphology_track", "reference_morphology_pass")
+                    if df_tracks is not None and not df_tracks.empty and col in df_tracks.columns
+                ),
+                None,
+            )
             df_candidate_tracks = df_tracks[df_tracks["is_biological_candidate"]].copy() if has_candidate_tracks else (
-                df_tracks[df_tracks["is_quality_track"]].copy() if has_quality_tracks else pd.DataFrame()
+                df_tracks[df_tracks[reference_col]].copy() if reference_col else pd.DataFrame()
             )
             has_candidate_data = not df_candidate_tracks.empty
 
@@ -5179,92 +5416,73 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             fig_l_slice.savefig(os.path.join(plot_dir, "length_by_slice.png"), dpi=300, bbox_inches='tight')
             plt.close(fig_l_slice)
 
-            # --- PAGE 1.5: POPULATION CONSOLIDATION ---
+            # --- PAGE 1.5: BIOLOGIST-FACING PRIMARY RESULTS ---
             if df_tracks is not None and not df_tracks.empty:
                 fig_dyn = plt.figure(figsize=(11, 8.5))
-                fig_dyn.suptitle("3D Population Tracking & Candidate Audit", fontsize=15, fontweight='bold')
-
-                total_2d = len(df)
-                total_3d = len(df_tracks)
-                has_quality = "is_quality_track" in df_tracks.columns
-                n_quality = int(df_tracks["is_quality_track"].sum()) if has_quality else total_3d
-                n_flagged = total_3d - n_quality
-                has_candidate = "is_biological_candidate" in df_tracks.columns
-                n_candidate = int(df_tracks["is_biological_candidate"].sum()) if has_candidate else n_quality
-                n_hard_fail = total_3d - n_candidate
-                n_warning_only = int(df_tracks["has_warning_only"].sum()) if "has_warning_only" in df_tracks.columns else 0
-
-                # A) Reduction Funnel
-                ax_bar = fig_dyn.add_subplot(1, 2, 1)
-                y_pos = [3, 2, 1, 0]
-                counts = [total_2d, total_3d, n_candidate, n_quality]
-                colors = ['coral', 'steelblue', '#2ca02c', '#145a32']
-                labels = [
-                    'Raw 2D Detections\n(All Fragments)',
-                    'All 3D Tracks\n(Consolidated)',
-                    'Biological Candidates\n(Hard-Fail Removed)',
-                    'Reference Morphology\n(Diagnostic Subset)'
-                ]
-
-                bars = ax_bar.barh(y_pos, counts, color=colors, edgecolor='black', height=0.55)
-                ax_bar.set_xlim(0, max(counts) * 1.35)
-
-                for i, v in enumerate(counts):
-                    ax_bar.text(v + (max(counts)*0.02), y_pos[i], f"{v:,}", va='center', fontweight='bold', fontsize=12)
-
-                ax_bar.set_yticks(y_pos)
-                ax_bar.set_yticklabels(labels, fontsize=10, fontweight='bold')
-                ax_bar.set_xlabel("Total Count", fontsize=12)
-                ax_bar.set_title("Tracking & Candidate Reduction", fontsize=13, fontweight='bold')
-                ax_bar.spines['top'].set_visible(False)
-                ax_bar.spines['right'].set_visible(False)
-
-                # B) Donut Chart: Candidate vs Warning vs Hard-Fail Breakdown
-                ax_pie = fig_dyn.add_subplot(1, 2, 2)
-
-                audit_counts = get_audit_flag_counts(df_tracks)
-                n_candidate_clean = max(n_candidate - n_warning_only, 0)
-                pie_sizes = [n_candidate_clean, n_warning_only, n_hard_fail]
-                pie_labels = [
-                    f"Candidate Clean\n({n_candidate_clean:,})",
-                    f"Warning Only\n({n_warning_only:,})",
-                    f"Hard Fail\n({n_hard_fail:,})"
-                ]
-                pie_colors = ['#2ca02c', '#ffbf00', '#d62728']
-
-                # Filter out zero segments
-                valid = [(s, l, c) for s, l, c in zip(pie_sizes, pie_labels, pie_colors) if s > 0]
-                if valid:
-                    pie_sizes, pie_labels, pie_colors = zip(*valid)
-
-                wedge_props = dict(width=0.45, edgecolor='white', linewidth=2)
-                wedges, texts, autotexts = ax_pie.pie(
-                    pie_sizes, labels=None, colors=pie_colors,
-                    autopct='%1.1f%%',
-                    startangle=90,
-                    pctdistance=0.75,
-                    wedgeprops=wedge_props,
-                    textprops={'fontsize': 12, 'fontweight': 'bold'}
+                fig_dyn.suptitle("Biologist Results: Primary 3D Population", fontsize=16, fontweight='bold')
+                primary = (
+                    df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                    if "technical_valid" in df_tracks.columns
+                    else df_tracks.copy()
                 )
 
-                for autotext in autotexts:
-                    autotext.set_color('white')
-                    autotext.set_fontsize(13)
-                    autotext.set_fontweight('bold')
-
-                ax_pie.legend(
-                    wedges, pie_labels,
-                    title="Track Candidate Status",
-                    loc="lower center",
-                    bbox_to_anchor=(0.5, -0.15),
-                    ncol=len(pie_sizes),
-                    fontsize=10,
-                    frameon=False
+                ax_metrics = fig_dyn.add_subplot(1, 2, 1)
+                ax_metrics.axis("off")
+                metric_lines = [
+                    ("Estimated unique nuclei", f"{len(primary):,}"),
+                    ("Median 3D length", f"{primary['total_3d_length_um'].median():.2f} um"),
+                    ("Median maximum 2D length", f"{primary['max_length_2d'].median():.2f} um"),
+                    ("Median effective thickness*", f"{primary['thickness_um'].median():.2f} um"),
+                    ("Median 3D tortuosity", f"{primary['tortuosity_3d'].median():.3f}"),
+                ]
+                y = 0.88
+                for label, value in metric_lines:
+                    ax_metrics.text(0.02, y, label, fontsize=11, color="#444444", va="top")
+                    ax_metrics.text(0.02, y - 0.06, value, fontsize=22, fontweight="bold", color="#145a32", va="top")
+                    y -= 0.17
+                ax_metrics.text(
+                    0.02,
+                    0.02,
+                    "*PSF-sensitive; compare only between samples acquired with matched microscope settings.",
+                    fontsize=8.5,
+                    color="#555555",
+                    wrap=True,
                 )
 
-                ax_pie.set_title(f"Candidate Breakdown of {total_3d:,} 3D Tracks", fontsize=13, fontweight='bold')
+                ax_length = fig_dyn.add_subplot(1, 2, 2)
+                ax_length.hist(
+                    primary["total_3d_length_um"].dropna(),
+                    bins=25,
+                    color="#2ca02c",
+                    edgecolor="black",
+                    alpha=0.8,
+                )
+                ax_length.axvline(
+                    primary["total_3d_length_um"].median(),
+                    color="black",
+                    linestyle="--",
+                    linewidth=1.5,
+                    label=f"Median {primary['total_3d_length_um'].median():.2f} um",
+                )
+                ax_length.set_title("Primary Population: 3D Length")
+                ax_length.set_xlabel("3D length (um)")
+                ax_length.set_ylabel("Estimated unique nuclei")
+                ax_length.legend(fontsize=9)
+                ax_length.grid(True, alpha=0.2)
 
-                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                fig_dyn.text(
+                    0.5,
+                    0.035,
+                    "Use this technical-valid 3D-track population for biological comparisons. "
+                    "Raw 2D detections, U-Net provenance, rejected extensions, warning-free counts, "
+                    "and reference-morphology subsets are technical QC only.",
+                    ha="center",
+                    fontsize=9.5,
+                    fontweight="bold",
+                    color="#333333",
+                    wrap=True,
+                )
+                plt.tight_layout(rect=[0, 0.08, 1, 0.94])
                 fig_dyn.savefig(os.path.join(plot_dir, "population_consolidation.png"), dpi=300, bbox_inches='tight')
                 pdf.savefig(fig_dyn, dpi=300, bbox_inches='tight')
                 plt.close(fig_dyn)
@@ -5819,25 +6037,45 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             chart.category_axis.tick_labels.font.size = Pt(8)
             chart.value_axis.tick_labels.font.size = Pt(8)
 
-        # --- Slide 1: Global Analytics Overview ---
+        # --- Slide 1: canonical biologist-facing results ---
         slide1 = prs.slides.add_slide(blank_slide_layout)
         txBox = slide1.shapes.add_textbox(Inches(0.5), Inches(0.1), Inches(9), Inches(0.5))
         tf = txBox.text_frame
-        tf.text = "Spermatid Population Overview"
+        tf.text = "Biologist Results: Primary 3D Population"
         tf.paragraphs[0].font.size = Pt(22)
         tf.paragraphs[0].font.bold = True
 
-        # Bottom Left: Detections per Slice (Line Chart) - Identical to PDF Page 1
-        if not df_summary.empty:
-            add_line_chart(slide1, df_summary['z_slice'], df_summary['n_spermatids'], Inches(0.2), Inches(4.0), Inches(4.5), Inches(3.0), "Detections per Z-Slice (Raw)")
-
-        # Top Center Left: 2D Length Dist
-        if not df.empty:
-            add_histogram(slide1, df['length_um_geodesic'], Inches(0.2), Inches(0.8), Inches(4.5), Inches(3.0), "Global 2D Geodesic Length Distribution")
-
-        # Top Center Right: 3D Length Dist
         if df_tracks is not None and not df_tracks.empty:
-            add_histogram(slide1, df_tracks['total_3d_length_um'], Inches(5.0), Inches(0.8), Inches(4.5), Inches(3.0), "Estimated 3D Track Length")
+            primary = (
+                df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                if "technical_valid" in df_tracks.columns
+                else df_tracks.copy()
+            )
+            metrics_box = slide1.shapes.add_textbox(Inches(0.5), Inches(1.0), Inches(4.0), Inches(5.8))
+            metrics_frame = metrics_box.text_frame
+            metrics_frame.text = (
+                f"Estimated unique nuclei\n{len(primary):,}\n\n"
+                f"Median 3D length\n{primary['total_3d_length_um'].median():.2f} um\n\n"
+                f"Median maximum 2D length\n{primary['max_length_2d'].median():.2f} um\n\n"
+                f"Median effective thickness*\n{primary['thickness_um'].median():.2f} um\n\n"
+                f"Median 3D tortuosity\n{primary['tortuosity_3d'].median():.3f}"
+            )
+            metrics_frame.paragraphs[0].font.size = Pt(16)
+            add_histogram(
+                slide1,
+                primary['total_3d_length_um'],
+                Inches(4.8),
+                Inches(1.0),
+                Inches(4.8),
+                Inches(5.2),
+                "Primary Population 3D Length",
+            )
+            note_box = slide1.shapes.add_textbox(Inches(0.5), Inches(6.7), Inches(9.0), Inches(0.5))
+            note_box.text_frame.text = (
+                "Primary population: technical-valid 3D tracks. "
+                "*Thickness is PSF-sensitive; compare only matched acquisitions."
+            )
+            note_box.text_frame.paragraphs[0].font.size = Pt(9)
 
         add_hyperlink(slide1)
 
@@ -5846,7 +6084,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             slide2 = prs.slides.add_slide(blank_slide_layout)
             txBox = slide2.shapes.add_textbox(Inches(0.5), Inches(0.1), Inches(9), Inches(0.5))
             tf = txBox.text_frame
-            tf.text = "3D Population Tracking & Candidate Audit"
+            tf.text = "Technical QC - Do Not Use as the Biological Population"
             tf.paragraphs[0].font.size = Pt(22)
             tf.paragraphs[0].font.bold = True
 
@@ -5854,23 +6092,26 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             total_2d = len(df)
             total_3d = len(df_tracks)
             has_candidates = "is_biological_candidate" in df_tracks.columns
-            has_qf = "is_quality_track" in df_tracks.columns
-            n_candidate = int(df_tracks["is_biological_candidate"].sum()) if has_candidates else (
-                int(df_tracks["is_quality_track"].sum()) if has_qf else total_3d
+            reference_col = next(
+                (col for col in ("is_reference_morphology_track", "reference_morphology_pass") if col in df_tracks.columns),
+                None,
             )
-            n_quality = int(df_tracks["is_quality_track"].sum()) if has_qf else n_candidate
+            n_candidate = int(df_tracks["is_biological_candidate"].sum()) if has_candidates else (
+                int(df_tracks[reference_col].sum()) if reference_col else total_3d
+            )
+            n_reference = int(df_tracks[reference_col].sum()) if reference_col else n_candidate
             n_warning_only = int(df_tracks["has_warning_only"].sum()) if "has_warning_only" in df_tracks.columns else 0
             n_hard_fail = total_3d - n_candidate
 
             add_horizontal_bar_chart(slide2,
                                      ['Reference Morphology', 'Biological Candidates', 'All 3D Tracks', 'Raw 2D Detections'],
-                                     [n_quality, n_candidate, total_3d, total_2d],
+                                     [n_reference, n_candidate, total_3d, total_2d],
                                      None, Inches(0.2), Inches(1.5), Inches(4.5), Inches(4.5), "Tracking & Candidate Reduction")
 
             # Right: Composition Pie Chart
             n_candidate_clean = max(n_candidate - n_warning_only, 0)
             pie_sizes = [n_candidate_clean, n_warning_only, n_hard_fail]
-            pie_labels = ['Candidate Clean', 'Warning Only', 'Hard Fail']
+            pie_labels = ['Warning Free', 'Morphology Warning', 'Technical Failure']
 
             # Filter zero values for pptx chart
             valid_idx = [i for i, v in enumerate(pie_sizes) if v > 0]
@@ -9391,15 +9632,13 @@ class SpermGUI:
 
                 ts = flag_quality_tracks(ts, params)
 
-                # Save annotated track summary (with strict quality and biological-candidate flags)
+                # Save annotated track summary with explicit population flags.
                 ts.to_csv(os.path.join(out_dir, "track_summary.csv"), index=False)
 
-                # Save strict no-warning and biological-candidate tracks for downstream use
-                ts_quality = ts[ts["is_quality_track"]].copy()
-                ts_quality.to_csv(os.path.join(out_dir, "track_summary_quality.csv"), index=False)
-                ts_candidates = ts[ts["is_biological_candidate"]].copy() if "is_biological_candidate" in ts.columns else ts_quality
+                ts_candidates = ts[ts["is_biological_candidate"]].copy() if "is_biological_candidate" in ts.columns else ts
                 ts_candidates.to_csv(os.path.join(out_dir, "track_summary_biological_candidates.csv"), index=False)
                 export_comparative_track_tables(out_dir, ts, None)
+                export_biologist_results(out_dir, ts, None)
 
                 # Generate candidate-coded overlays after audit.
                 if params['SAVE_OVERLAYS']:
@@ -9409,11 +9648,12 @@ class SpermGUI:
                 export_outlier_audit(out_dir, ts, params)
                 export_post_detection_qc(out_dir, df_trk, ts)
 
-                n_quality = len(ts_quality)
+                n_warning_free = int(ts["is_warning_free_track"].sum()) if "is_warning_free_track" in ts.columns else 0
                 n_candidates = len(ts_candidates)
                 n_hard_fail = len(ts) - n_candidates
                 self.lbl_batch_op.config(
-                    text=f'Candidates: {n_candidates} kept / {n_hard_fail} hard-fail / {n_quality} strict', fg='#27ae60')
+                    text=f'Candidates: {n_candidates} kept / {n_hard_fail} hard-fail / {n_warning_free} warning-free',
+                    fg='#27ae60')
                 self.root.update()
 
                 # Save Global Z-Projection

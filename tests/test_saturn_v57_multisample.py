@@ -53,6 +53,78 @@ def test_post_detection_qc_separates_warning_free_from_reference(tmp_path):
     assert "\n  quality:" not in report
 
 
+def test_tracking_audit_records_rejections_without_claiming_stops():
+    saturn = load_saturn_v57()
+    detections = pd.DataFrame({"track_id": [1, 1, 2]})
+    tracks = pd.DataFrame({"track_id": [1, 2]})
+    events = {
+        1: ["z=3, reason=width_jump=0.80", "z=4, reason=area_jump=0.75"],
+    }
+
+    detections, tracks = saturn._attach_tracking_audit(detections, tracks, events)
+
+    assert tracks.loc[tracks.track_id == 1, "rejected_extension_count"].item() == 2
+    assert tracks.loc[tracks.track_id == 1, "has_rejected_extension"].item()
+    assert tracks["track_stop_reason"].eq("").all()
+    assert detections.loc[detections.track_id == 1, "track_rejected_extension_count"].eq(2).all()
+
+
+def test_hybrid_tracking_preserves_rejected_extension_history():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg["TRACKING_BACKEND"] = "hybrid_repair"
+    detections = pd.DataFrame(
+        {
+            "z_slice": [0, 1],
+            "sperm_id": [1, 1],
+            "centroid_x": [20.0, 20.5],
+            "centroid_y": [20.0, 20.5],
+            "width_um": [2.0, 2.0],
+            "length_um_geodesic": [8.0, 18.0],
+            "area_px": [20.0, 45.0],
+            "orientation": [0.0, 0.0],
+            "bbox_min_y": [18.0, 18.0],
+            "bbox_min_x": [18.0, 18.0],
+            "bbox_max_y": [23.0, 23.0],
+            "bbox_max_x": [23.0, 23.0],
+            "tortuosity": [1.0, 1.0],
+        }
+    )
+
+    tracked, tracks = saturn.track_across_slices(detections, cfg)
+
+    assert "rejected_extension_count" in tracks.columns
+    assert tracks["rejected_extension_count"].sum() >= 1
+    assert tracks["track_stop_reason"].eq("").all()
+    assert "track_rejected_extension_count" in tracked.columns
+
+
+def test_biologist_results_uses_only_technical_valid_tracks(tmp_path):
+    saturn = load_saturn_v57()
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2, 3],
+            "technical_valid": [True, True, False],
+            "total_3d_length_um": [10.0, 14.0, 30.0],
+            "max_length_2d": [9.0, 13.0, 29.0],
+            "thickness_um": [2.0, 2.4, 8.0],
+            "tortuosity_3d": [1.0, 1.2, 4.0],
+            "z_span_um": [2.0, 3.0, 10.0],
+            "n_slices": [3, 4, 1],
+            "morphology_warning": [False, True, False],
+        }
+    )
+
+    paths = saturn.export_biologist_results(tmp_path, tracks, "test")
+    summary = pd.read_csv(paths["summary"])
+    nuclei = pd.read_csv(paths["nuclei"])
+
+    assert summary.loc[0, "estimated_unique_nuclei"] == 2
+    assert summary.loc[0, "median_3d_length_um"] == 12.0
+    assert len(nuclei) == 2
+    assert set(nuclei["estimated_nucleus_id"]) == {1, 2}
+
+
 def make_sample(root, group, sample_id, roi=True):
     folder = root / group / sample_id
     folder.mkdir(parents=True)
