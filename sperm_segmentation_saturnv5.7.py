@@ -2548,8 +2548,8 @@ def make_quality_overlay(img_raw, skel_label, slice_tracks, track_quality_map):
     Draw an audit-coded overlay for a single Z slice.
 
     Colors:
-    - green: biological candidate without warnings
-    - yellow/orange: biological candidate with warning-only PSF-sensitive flags
+    - green: accepted estimated nucleus without warnings
+    - yellow/orange: accepted estimated nucleus with PSF-sensitive warnings
     - red: hard-failed track
     - gray: detection has no track/audit mapping
     """
@@ -4103,8 +4103,8 @@ def flag_quality_tracks(df_tracks, cfg):
     n_hard = int(any_hard.sum())
     n_warning_only = int((any_warning & ~any_hard).sum())
     print(
-        f"  Audit: {n_quality} warning-free, {n_candidates} biological candidates, "
-        f"{n_hard} hard fails, {n_warning_only} warning-only out of {n} total"
+        f"  Audit: {n_candidates} estimated nuclei, {n_hard} technical failures, "
+        f"{n_warning_only} morphology warnings, {n_quality} warning-free out of {n} reconstructed tracks"
     )
 
     return df_tracks
@@ -4112,37 +4112,33 @@ def flag_quality_tracks(df_tracks, cfg):
 
 def export_comparative_track_tables(out_dir, track_summary, version_label=None):
     """
-    Save comparative-mode output populations.
+    Save exceptional comparative-mode audit populations.
 
-    Primary comparative analysis should use ``track_summary_technical_valid``.
-    Reference morphology is diagnostic only and must not be treated as ground
-    truth for WT-versus-mutant morphology.
+    The canonical biological population is already written by
+    :func:`export_biologist_results`. The master track summary contains all
+    flags, so this function only creates a separate table when technical
+    failures actually exist.
     """
     if track_summary is None or track_summary.empty:
         return {}
     ensure_dir(out_dir)
     suffix = f"_{version_label}" if version_label else ""
     technical_valid = track_summary["technical_valid"].astype(bool) if "technical_valid" in track_summary.columns else pd.Series(True, index=track_summary.index)
-    reference_pass = track_summary["reference_morphology_pass"].astype(bool) if "reference_morphology_pass" in track_summary.columns else technical_valid
-    morphology_warning = track_summary["morphology_warning"].astype(bool) if "morphology_warning" in track_summary.columns else pd.Series(False, index=track_summary.index)
-    tables = {
-        f"track_summary_all{suffix}.csv": track_summary,
-        f"track_summary_technical_valid{suffix}.csv": track_summary[technical_valid].copy(),
-        f"track_summary_reference_morphology{suffix}.csv": track_summary[reference_pass].copy(),
-        f"track_summary_morphology_warning{suffix}.csv": track_summary[morphology_warning].copy(),
-        f"track_summary_technical_failures{suffix}.csv": track_summary[~technical_valid].copy(),
-    }
     paths = {}
-    for name, df in tables.items():
+    technical_failures = track_summary[~technical_valid].copy()
+    if not technical_failures.empty:
+        name = f"track_summary_technical_failures{suffix}.csv"
         path = os.path.join(out_dir, name)
-        df.to_csv(path, index=False)
+        technical_failures.to_csv(path, index=False)
         paths[name] = path
     note = (
-        "Morphology warnings are retained in the comparative population because "
-        "they may represent genuine genotype-dependent phenotypes.\n"
-        "Primary WT-versus-mutant table: track_summary_technical_valid*.csv\n"
-        "Warning-free and reference-morphology counts are technical QC diagnostics, not alternative biological populations.\n"
-        "Reference-morphology tables are diagnostic only.\n"
+        "Primary sample-level table: biologist_results/sample_summary*.csv\n"
+        "Primary nucleus-level table: biologist_results/nuclei_for_analysis*.csv\n"
+        "Master audit table: track_summary*.csv\n"
+        "Morphology warnings remain in the primary population because they may "
+        "represent genuine genotype-dependent phenotypes.\n"
+        "The legacy is_biological_candidate flag is identical to technical_valid "
+        "and does not define a separate population.\n"
     )
     with open(os.path.join(out_dir, f"comparative_population_note{suffix}.txt"), "w", encoding="utf-8") as f:
         f.write(note)
@@ -4429,26 +4425,14 @@ def export_outlier_audit(out_dir, df_tracks, cfg):
         single_df.to_csv(os.path.join(audit_dir, "outliers_single_slice.csv"), index=False)
         outlier_sets["single_slice"] = len(single_df)
 
-    if "is_biological_candidate" in df_tracks.columns:
-        candidate_df = df_tracks[df_tracks["is_biological_candidate"]].copy()
-        hard_fail_df = df_tracks[~df_tracks["is_biological_candidate"]].copy()
-        warning_df = df_tracks[df_tracks.get("has_warning_only", False)].copy()
-        candidate_df.to_csv(os.path.join(audit_dir, "biological_candidates.csv"), index=False)
-        hard_fail_df.to_csv(os.path.join(audit_dir, "hard_fails.csv"), index=False)
-        warning_df.to_csv(os.path.join(audit_dir, "warning_only.csv"), index=False)
-        outlier_sets["biological_candidates"] = len(candidate_df)
-        outlier_sets["hard_fails"] = len(hard_fail_df)
-        outlier_sets["warning_only"] = len(warning_df)
     if "technical_valid" in df_tracks.columns:
-        tech_valid_df = df_tracks[df_tracks["technical_valid"]].copy()
         tech_fail_df = df_tracks[~df_tracks["technical_valid"]].copy()
         morph_warn_df = df_tracks[df_tracks["morphology_warning"]].copy() if "morphology_warning" in df_tracks.columns else pd.DataFrame()
         ref_df = df_tracks[df_tracks["reference_morphology_pass"]].copy() if "reference_morphology_pass" in df_tracks.columns else pd.DataFrame()
-        tech_valid_df.to_csv(os.path.join(audit_dir, "technical_valid.csv"), index=False)
-        tech_fail_df.to_csv(os.path.join(audit_dir, "technical_failures.csv"), index=False)
+        if not tech_fail_df.empty:
+            tech_fail_df.to_csv(os.path.join(audit_dir, "technical_failures.csv"), index=False)
         morph_warn_df.to_csv(os.path.join(audit_dir, "morphology_warnings.csv"), index=False)
         ref_df.to_csv(os.path.join(audit_dir, "reference_morphology.csv"), index=False)
-        outlier_sets["technical_valid"] = len(tech_valid_df)
         outlier_sets["technical_failures"] = len(tech_fail_df)
         outlier_sets["morphology_warnings"] = len(morph_warn_df)
         outlier_sets["reference_morphology"] = len(ref_df)
@@ -4470,13 +4454,10 @@ def export_outlier_audit(out_dir, df_tracks, cfg):
     if "is_quality_track" in df_tracks.columns:
         lines.append(f"Reference-morphology diagnostic tracks: {int(df_tracks['is_quality_track'].sum())}")
         lines.append(f"Outside reference-morphology diagnostic: {int((~df_tracks['is_quality_track']).sum())}")
-    if "is_biological_candidate" in df_tracks.columns:
-        lines.append(f"Biological candidate tracks: {int(df_tracks['is_biological_candidate'].sum())}")
-        lines.append(f"Hard-fail tracks: {int((~df_tracks['is_biological_candidate']).sum())}")
     if "has_warning_only" in df_tracks.columns:
         lines.append(f"Warning-only tracks: {int(df_tracks['has_warning_only'].sum())}")
     if "technical_valid" in df_tracks.columns:
-        lines.append(f"Technical-valid tracks: {int(df_tracks['technical_valid'].sum())}")
+        lines.append(f"Primary estimated nuclei: {int(df_tracks['technical_valid'].sum())}")
         lines.append(f"Technical-failure tracks: {int((~df_tracks['technical_valid']).sum())}")
     if "morphology_warning" in df_tracks.columns:
         lines.append(f"Morphology-warning tracks retained in comparative population: {int(df_tracks['morphology_warning'].sum())}")
@@ -4570,10 +4551,10 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                     "  reference_morphology_pass: "
                     f"{int(df_tracks['reference_morphology_pass'].sum())}"
                 )
-            if "is_biological_candidate" in df_tracks.columns:
-                lines.append("\nBiological candidate tier:")
-                lines.append(f"  biological_candidates: {int(df_tracks['is_biological_candidate'].sum())}")
-                lines.append(f"  hard_fails: {int((~df_tracks['is_biological_candidate']).sum())}")
+            if "technical_valid" in df_tracks.columns:
+                lines.append("\nPrimary analysis population:")
+                lines.append(f"  estimated_unique_nuclei: {int(df_tracks['technical_valid'].sum())}")
+                lines.append(f"  technical_failures: {int((~df_tracks['technical_valid']).sum())}")
             if "has_warning_only" in df_tracks.columns:
                 lines.append(f"  warning_only: {int(df_tracks['has_warning_only'].sum())}")
             if "rejected_extension_count" in df_tracks.columns:
@@ -4608,7 +4589,7 @@ def get_audit_flag_counts(df_tracks, cfg=None):
     counts = {
         "long": 0, "tortuous": 0, "thick": 0, "taper": 0, "single_slice": 0,
         "all_flagged": 0, "quality": 0, "shape_outliers": 0,
-        "biological_candidates": 0, "hard_fails": 0, "warning_only": 0,
+        "estimated_nuclei": 0, "technical_failures": 0, "warning_only": 0,
     }
     if df_tracks is None or df_tracks.empty:
         return counts
@@ -4638,12 +4619,12 @@ def get_audit_flag_counts(df_tracks, cfg=None):
         counts["all_flagged"] = 0
 
     counts["shape_outliers"] = max(counts["all_flagged"] - counts["single_slice"], 0)
-    if "is_biological_candidate" in df_tracks.columns:
-        counts["biological_candidates"] = int(df_tracks["is_biological_candidate"].sum())
-        counts["hard_fails"] = int((~df_tracks["is_biological_candidate"]).sum())
+    if "technical_valid" in df_tracks.columns:
+        counts["estimated_nuclei"] = int(df_tracks["technical_valid"].sum())
+        counts["technical_failures"] = int((~df_tracks["technical_valid"]).sum())
     else:
-        counts["biological_candidates"] = counts["quality"]
-        counts["hard_fails"] = counts["all_flagged"]
+        counts["estimated_nuclei"] = len(df_tracks)
+        counts["technical_failures"] = 0
     if "has_warning_only" in df_tracks.columns:
         counts["warning_only"] = int(df_tracks["has_warning_only"].sum())
     return counts
@@ -4917,10 +4898,6 @@ def process_batch(cfg):
             os.path.join(cfg["OUTPUT_DIR"], f"track_summary_{_VERSION}.csv"),
             index=False)
 
-        ts_candidates = ts[ts["is_biological_candidate"]].copy() if "is_biological_candidate" in ts.columns else ts
-        ts_candidates.to_csv(
-            os.path.join(cfg["OUTPUT_DIR"], f"track_summary_biological_candidates_{_VERSION}.csv"),
-            index=False)
         export_comparative_track_tables(cfg["OUTPUT_DIR"], ts, _VERSION)
         export_biologist_results(cfg["OUTPUT_DIR"], ts, _VERSION)
 
@@ -5039,7 +5016,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
     - **Batch_Summary** - one row per Z-slice with detection counts, mean/median
       length, and total area.  Includes an embedded histogram image and conditional
       formatting for high/low detection slices.
-    - **3D_Morphometrics** - track-level 3D metrics exported from
+    - **3D_Track_Audit** - complete track-level provenance and 3D metrics from
       :func:`track_across_slices`, with an embedded 3D length distribution plot.
     - **Raw_2D_Detections** - full per-spermatid measurement table matching the CSV
       export, with number formatting and frozen header pane.
@@ -5139,7 +5116,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 ws_sum.write_formula(row, 3, f"=STDEV.P('Raw_2D_Detections'!{length_col}2:{length_col}{n_2d})", num_fmt)
                 row += 1
 
-            # 3D Metrics (all tracks as the primary report population)
+            # 3D metrics in the master track-audit table.
             if df_tracks is not None and not df_tracks.empty:
                 n_3d = len(df_tracks) + 1 if not df_tracks.empty else 2  # Default to 2 to avoid #DIV/0! bounds
                 metrics_3d = [
@@ -5154,20 +5131,20 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                         continue
                     col_letter = excel_col_letter(df_tracks, col_name)
                     ws_sum.write(row, 0, m_name)
-                    ws_sum.write_formula(row, 1, f"=AVERAGE('3D_Morphometrics'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
-                    ws_sum.write_formula(row, 2, f"=MEDIAN('3D_Morphometrics'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
-                    ws_sum.write_formula(row, 3, f"=STDEV.P('3D_Morphometrics'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
+                    ws_sum.write_formula(row, 1, f"=AVERAGE('3D_Track_Audit'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
+                    ws_sum.write_formula(row, 2, f"=MEDIAN('3D_Track_Audit'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
+                    ws_sum.write_formula(row, 3, f"=STDEV.P('3D_Track_Audit'!{col_letter}2:{col_letter}{n_3d})", num_fmt)
                     row += 1
 
             ws_sum.set_column('A:A', 30)
 
-            # --- Sheet 2: 3D Morphometrics (All Tracks) ---
+            # --- Sheet 2: complete 3D track audit ---
             if df_tracks is not None and not df_tracks.empty:
                 has_reference = "is_reference_morphology_track" in df_tracks.columns or "reference_morphology_pass" in df_tracks.columns
-                df_tracks.to_excel(writer, sheet_name='3D_Morphometrics', index=False)
-                ws_3d = writer.sheets['3D_Morphometrics']
+                df_tracks.to_excel(writer, sheet_name='3D_Track_Audit', index=False)
+                ws_3d = writer.sheets['3D_Track_Audit']
                 ws_3d.set_column('A:Z', 15)
-                # Insert 3D Distribution Graph (all tracks)
+                # Insert the primary estimated-nuclei 3D distribution graph.
                 p_3d = os.path.join(plot_dir, "3d_length_distribution.png")
                 if os.path.exists(p_3d):
                     ws_3d.insert_image('K2', p_3d, {'x_scale': 0.4, 'y_scale': 0.4})
@@ -5184,12 +5161,6 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                     df_reference.to_excel(writer, sheet_name='3D_Reference_Morphology', index=False)
                     ws_reference = writer.sheets['3D_Reference_Morphology']
                     ws_reference.set_column('A:Z', 15)
-                if "is_biological_candidate" in df_tracks.columns:
-                    df_c = df_tracks[df_tracks["is_biological_candidate"]].copy()
-                    df_c.to_excel(writer, sheet_name='3D_Biological_Candidates', index=False)
-                    ws_c3d = writer.sheets['3D_Biological_Candidates']
-                    ws_c3d.set_column('A:Z', 15)
-
             # --- Sheet 3: Raw 2D Detections ---
             if not df.empty:
                 df.to_excel(writer, sheet_name='Raw_2D_Detections', index=False)
@@ -5249,7 +5220,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 ["Taper Ratio *", "max(area_est across track) / min(area_est across track)", "PSF-sensitive area-derived metric. Useful for relative comparison and instability screening, not as a literal anatomical ratio."],
                 ["Nearest Neighbor (um)", "Nearest 3D centroid-to-centroid distance", "Simple local packing-density readout."],
                 ["Quality Audit", "Strict post-tracking flag based on length, tortuosity, thickness, taper, and minimum slice count", "Strict audit labels completed tracks after tracking. It does not change segmentation; it defines the no-warning subset used for conservative summaries."],
-                ["Biological Candidate", "Softer post-tracking tier that hard-fails long, tortuous, extreme-thick, extreme-taper, or shallow tracks while keeping thick/taper as warning-only", "Candidate tier is intended for visually plausible biological positives while retaining PSF-sensitive warnings for review."],
+                ["Estimated Unique Nucleus", "A technical-valid 3D track; morphology warnings remain included", "This is the one nucleus population used for biological analysis."],
                 ["v5.7 U-Net Rescue", "U-Net probability maps add a rescue lane for detections missed by classical Saturn; accepted detections are labeled by detection_source.", "Use source counts to audit how much the AI lane contributed. The U-Net lane does not replace downstream biological QC."],
                 ["U-Net Rescue Overlay", "Green = Saturn classical; cyan = accepted U-Net rescue; magenta/orange/red = U-Net-positive candidates rejected by rescue gates.", "Overlay line thickness is display-only and never used for count, length, width, or tracking calculations."],
                 ["Parameter Tuning Guidance", "Candidate audit first -> Tracking second -> Segmentation last", "Change audit interpretation when summaries are too strict; change tracking when tracks are fragmented or over-merged; change segmentation only when the raw 2D detections themselves are wrong."],
@@ -5319,16 +5290,10 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 fontsize=13,
                 fontweight='bold',
             )
-            has_candidate_tracks = df_tracks is not None and not df_tracks.empty and "is_biological_candidate" in df_tracks.columns
-            reference_col = next(
-                (
-                    col for col in ("is_reference_morphology_track", "reference_morphology_pass")
-                    if df_tracks is not None and not df_tracks.empty and col in df_tracks.columns
-                ),
-                None,
-            )
-            df_candidate_tracks = df_tracks[df_tracks["is_biological_candidate"]].copy() if has_candidate_tracks else (
-                df_tracks[df_tracks[reference_col]].copy() if reference_col else pd.DataFrame()
+            df_candidate_tracks = (
+                df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                if df_tracks is not None and not df_tracks.empty and "technical_valid" in df_tracks.columns
+                else (df_tracks.copy() if df_tracks is not None else pd.DataFrame())
             )
             has_candidate_data = not df_candidate_tracks.empty
 
@@ -5340,7 +5305,7 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 ax_z = fig_sum.add_axes([0.15, 0.62, 0.7, 0.28]) # [left, bottom, width, height]
                 ax_z.imshow(plt.imread(z_proj_path))
                 if z_proj_path == quality_z_proj_path:
-                    ax_z.set_title("Candidate Audit Z-Projection (green=candidate, yellow=warning, red=hard fail)", fontsize=10)
+                    ax_z.set_title("Track Audit Z-Projection (green=accepted, yellow=warning, red=technical fail)", fontsize=10)
                 else:
                     ax_z.set_title("Global Z-Projection (Composite [Original | Overlay])", fontsize=10)
                 ax_z.axis('off')
@@ -5364,8 +5329,8 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                     .reindex(df_summary["z_slice"].astype(int), fill_value=0)
                     .sort_index()
                 )
-                ax1.plot(q_counts.index, q_counts.values, 'go-', markersize=4, linewidth=1.5, label='Biological candidates by start Z')
-                ax1.set_title("Biological Candidates by Z-Start")
+                ax1.plot(q_counts.index, q_counts.values, 'go-', markersize=4, linewidth=1.5, label='Estimated nuclei by start Z')
+                ax1.set_title("Estimated Unique Nuclei by Z-Start")
             else:
                 ax1.set_title("Raw 2D Detections per Z-Slice")
             ax1.set_xlabel("Z-Index")
@@ -5373,19 +5338,16 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
             ax1.grid(True, alpha=0.3)
             ax1.legend(fontsize=7)
 
-            # Plot 2: Length Distribution (biological-candidate population when available)
+            # Plot 2: primary estimated-nuclei length distribution.
             ax2 = fig_sum.add_subplot(2, 2, 4)
             if has_candidate_data and "total_3d_length_um" in df_candidate_tracks.columns:
                 vals = df_candidate_tracks['total_3d_length_um'].dropna()
-                if df_tracks is not None and "total_3d_length_um" in df_tracks.columns:
-                    vals_all = df_tracks['total_3d_length_um'].dropna()
-                    ax2.hist(vals_all, bins=25, color='lightgray', edgecolor='gray', alpha=0.45, label='All 3D tracks')
-                ax2.hist(vals, bins=25, color='darkorange', edgecolor='black', alpha=0.75, label='Biological candidates')
+                ax2.hist(vals, bins=25, color='darkorange', edgecolor='black', alpha=0.75, label='Estimated nuclei')
                 m_med = vals.median()
                 m_avg = vals.mean()
                 ax2.axvline(m_med, color='red', linestyle='-', label=f"Median: {m_med:.1f}")
                 ax2.axvline(m_avg, color='black', linestyle='--', label=f"Mean: {m_avg:.1f}")
-                ax2.set_title("Biological Candidate 3D Length Distribution")
+                ax2.set_title("Estimated-Nuclei 3D Length Distribution")
                 ax2.set_xlabel("Total 3D Length (um)")
                 ax2.set_ylabel("Frequency")
                 ax2.legend(fontsize=8)
@@ -5554,26 +5516,26 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 pdf.savefig(fig_unet, dpi=300, bbox_inches='tight')
                 plt.close(fig_unet)
 
-            # --- PAGE 2: 3D MORPHOMETRICS SUMMARY (ALL TRACKS + BIOLOGICAL CANDIDATE OVERLAY) ---
+            # --- PAGE 2: PRIMARY 3D MORPHOMETRICS SUMMARY ---
             if df_tracks is not None and not df_tracks.empty:
                 fig_3d = plt.figure(figsize=(11, 8.5))
 
-                has_candidate = "is_biological_candidate" in df_tracks.columns
-                df_q = df_tracks[df_tracks["is_biological_candidate"]] if has_candidate else (
-                    df_tracks[df_tracks["is_quality_track"]] if "is_quality_track" in df_tracks.columns else df_tracks
+                df_q = (
+                    df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                    if "technical_valid" in df_tracks.columns
+                    else df_tracks.copy()
                 )
-                has_q_data = not df_q.empty
-                q_label = f" (Biological Candidates: {len(df_q):,} / {len(df_tracks):,})" if has_candidate else ""
-                fig_3d.suptitle(f"3D Population Statistics{q_label}", fontsize=14, fontweight='bold')
+                fig_3d.suptitle(
+                    f"3D Statistics: {len(df_q):,} Estimated Unique Nuclei",
+                    fontsize=14,
+                    fontweight='bold',
+                )
 
                 # 3D Length
                 ax3d_1 = fig_3d.add_subplot(2, 2, 1)
-                vals_all = df_tracks['total_3d_length_um']
                 vals_q = df_q['total_3d_length_um']
-                ax3d_1.hist(vals_all, bins=20, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                if has_q_data:
-                    ax3d_1.hist(vals_q, bins=20, color='darkorange', edgecolor='black', alpha=0.7, label='Biological Candidates')
-                stats_len = vals_q if has_q_data else vals_all
+                ax3d_1.hist(vals_q, bins=20, color='darkorange', edgecolor='black', alpha=0.7, label='Estimated nuclei')
+                stats_len = vals_q
                 m_med = stats_len.median()
                 m_avg = stats_len.mean()
                 ax3d_1.axvline(m_med, color='red', linestyle='-', label=f"Median: {m_med:.1f}")
@@ -5583,26 +5545,20 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 ax3d_1.set_ylabel("Frequency")
                 ax3d_1.legend(fontsize=7)
 
-                # Save 3d_length_distribution.png for Excel embedding (all tracks plus candidate overlay)
+                # Save the primary-population distribution for Excel embedding.
                 fig_3d_len = plt.figure(figsize=(6, 4))
                 ax_3dl = fig_3d_len.add_subplot(1, 1, 1)
-                ax_3dl.hist(vals_all, bins=20, color='steelblue', edgecolor='black', alpha=0.75)
-                if has_candidate and not vals_q.empty:
-                    ax_3dl.hist(vals_q, bins=20, color='darkorange', edgecolor='black', alpha=0.45)
-                ax_3dl.set_title("3D Length Distribution (All Tracks)")
+                ax_3dl.hist(vals_q, bins=20, color='steelblue', edgecolor='black', alpha=0.75)
+                ax_3dl.set_title("3D Length Distribution (Estimated Nuclei)")
                 fig_3d_len.savefig(os.path.join(plot_dir, "3d_length_distribution.png"), dpi=300, bbox_inches='tight')
                 plt.close(fig_3d_len)
 
                 # 3D Tortuosity
                 ax3d_2 = fig_3d.add_subplot(2, 2, 2)
-                vt_all = df_tracks['tortuosity_3d']
                 vt_q = df_q['tortuosity_3d']
-                vt_all_viz = vt_all[(vt_all >= 0.95) & (vt_all <= 3.0)]
                 vt_q_viz = vt_q[(vt_q >= 0.95) & (vt_q <= 3.0)]
-                ax3d_2.hist(vt_all_viz, bins=25, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                if has_q_data:
-                    ax3d_2.hist(vt_q_viz, bins=25, color='purple', edgecolor='black', alpha=0.6, label='Biological Candidates')
-                stats_tort = vt_q if has_q_data else vt_all
+                ax3d_2.hist(vt_q_viz, bins=25, color='purple', edgecolor='black', alpha=0.6, label='Estimated nuclei')
+                stats_tort = vt_q
                 ax3d_2.axvline(stats_tort.median(), color='red', linestyle='-', label=f"Median: {stats_tort.median():.2f}")
                 ax3d_2.axvline(stats_tort.mean(), color='black', linestyle='--', label=f"Mean: {stats_tort.mean():.2f}")
                 ax3d_2.set_xlim(0.95, 3.0)
@@ -5614,12 +5570,9 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 # Vertical Extent
                 ax3d_3 = fig_3d.add_subplot(2, 2, 3)
                 z_col = "z_span_um" if "z_span_um" in df_tracks.columns else "z_extent_um"
-                ve_all = df_tracks[z_col]
                 ve_q = df_q[z_col]
-                ax3d_3.hist(ve_all, bins=15, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                if has_q_data:
-                    ax3d_3.hist(ve_q, bins=15, color='teal', edgecolor='black', alpha=0.7, label='Biological Candidates')
-                stats_z = ve_q if has_q_data else ve_all
+                ax3d_3.hist(ve_q, bins=15, color='teal', edgecolor='black', alpha=0.7, label='Estimated nuclei')
+                stats_z = ve_q
                 ax3d_3.axvline(stats_z.median(), color='red', linestyle='-', label=f"Median: {stats_z.median():.1f}")
                 ax3d_3.axvline(stats_z.mean(), color='black', linestyle='--', label=f"Mean: {stats_z.mean():.1f}")
                 ax3d_3.set_title("Z-Span (Vertical Span)")
@@ -5629,12 +5582,9 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
 
                 # Volume
                 ax3d_4 = fig_3d.add_subplot(2, 2, 4)
-                vv_all = df_tracks['volume_um3']
                 vv_q = df_q['volume_um3']
-                ax3d_4.hist(vv_all, bins=20, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
-                if has_q_data:
-                    ax3d_4.hist(vv_q, bins=20, color='gray', edgecolor='black', alpha=0.7, label='Biological Candidates')
-                stats_vol = vv_q if has_q_data else vv_all
+                ax3d_4.hist(vv_q, bins=20, color='gray', edgecolor='black', alpha=0.7, label='Estimated nuclei')
+                stats_vol = vv_q
                 ax3d_4.axvline(stats_vol.median(), color='red', linestyle='-', label=f"Median: {stats_vol.median():.0f}")
                 ax3d_4.axvline(stats_vol.mean(), color='black', linestyle='--', label=f"Mean: {stats_vol.mean():.0f}")
                 ax3d_4.set_title("Approximated 3D Volume")
@@ -5649,13 +5599,20 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
 
             # Methods Guide securely moved down past the Advanced Biometrics block.
 
-            # --- PAGE 4: ADVANCED 3D BIOMETRICS (BIOLOGICAL CANDIDATES OVERLAID ON ALL TRACKS) ---
+            # --- PAGE 4: ADVANCED 3D BIOMETRICS FOR ESTIMATED NUCLEI ---
             if df_tracks is not None and not df_tracks.empty:
                 fig_adv = plt.figure(figsize=(11, 8.5))
-                has_qf = "is_biological_candidate" in df_tracks.columns
-                df_q = df_tracks[df_tracks["is_biological_candidate"]] if has_qf else df_tracks
-                q_label = f" (Biological Candidates: {len(df_q):,} / {len(df_tracks):,})" if has_qf else ""
-                fig_adv.suptitle(f"Advanced 3D Biometrics Dashboard{q_label}", fontsize=16, fontweight='bold', y=0.96)
+                df_q = (
+                    df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                    if "technical_valid" in df_tracks.columns
+                    else df_tracks.copy()
+                )
+                fig_adv.suptitle(
+                    f"Advanced 3D Biometrics: {len(df_q):,} Estimated Unique Nuclei",
+                    fontsize=16,
+                    fontweight='bold',
+                    y=0.96,
+                )
 
                 # Helper for Mean/Median
                 def add_stats_lines(ax, data_series):
@@ -5667,12 +5624,9 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                     ax.legend(fontsize=8)
 
                 def dual_hist(ax, col, title, xlabel, color_q, bins=30):
-                    vals_all = df_tracks[col].dropna() if col in df_tracks.columns else pd.Series(dtype=float)
                     vals_q = df_q[col].dropna() if col in df_q.columns else pd.Series(dtype=float)
-                    if not vals_all.empty:
-                        sns.histplot(vals_all, bins=bins, ax=ax, color='lightgray', edgecolor='gray', alpha=0.5, label='All Tracks')
                     if not vals_q.empty:
-                        sns.histplot(vals_q, bins=bins, ax=ax, color=color_q, edgecolor='black', alpha=0.7, label='Biological Candidates')
+                        sns.histplot(vals_q, bins=bins, ax=ax, color=color_q, edgecolor='black', alpha=0.7, label='Estimated nuclei')
                         add_stats_lines(ax, vals_q)
                     ax.set_title(title)
                     ax.set_xlabel(xlabel)
@@ -5732,10 +5686,10 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 "9. Spatial Packing Density (Nearest Neighbor Dist, um)\n"
                 "   Formula: nearest 3D centroid-to-centroid distance\n"
                 "   Meaning: Simple local packing-density readout.\n\n"
-                "10. Biological Candidate Audit (post-tracking)\n"
+                "10. Technical Track Audit (post-tracking)\n"
                 "   Hard-fail rules: length > AUDIT_MAX_LENGTH_UM, tortuosity > AUDIT_MAX_TORTUOSITY, extreme thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, and n_slices < AUDIT_MIN_SLICES.\n"
-                "   Warning-only rules: thickness > AUDIT_MAX_THICKNESS_UM and taper > AUDIT_MAX_TAPER_RATIO. These PSF-sensitive flags are retained for review but no longer remove tracks from the main candidate population.\n"
-                "   Interpretation: Audit annotates completed tracks after tracking. Main reports use biological candidates; reference-morphology pass is a separate diagnostic subset. Warning-free tracks are counted independently.\n"
+                "   Warning-only rules: thickness > AUDIT_MAX_THICKNESS_UM and taper > AUDIT_MAX_TAPER_RATIO. These PSF-sensitive flags remain in the estimated-nuclei population for review.\n"
+                "   Interpretation: Technical-valid tracks define the one estimated-nuclei population. Reference morphology and warning-free flags are QC annotations, not separate biological populations.\n"
                 "\n11. v5.7 U-Net Rescue Lane\n"
                 "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues are labeled in detection_source as unet_rescued or unet_rescued_split.\n"
                 "   The rescue-review overlay uses green for Saturn classical detections, cyan for accepted U-Net rescues, and magenta/orange/red for U-Net-positive candidates rejected by rescue gates.\n"
@@ -5760,44 +5714,30 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 stats_rows.append(["2D Fragment Geodesic Length (um)", f"{l2d.mean():.2f}", f"{l2d.median():.2f}", f"{l2d.std():.2f}"])
 
             if df_tracks is not None and not df_tracks.empty:
-                # Biological-candidate subset
-                has_qf = "is_biological_candidate" in df_tracks.columns
-                df_q = df_tracks[df_tracks["is_biological_candidate"]] if has_qf else df_tracks
-
-                # -- All Tracks Section --
-                stats_rows.append(["--- ALL TRACKS ---", f"N={len(df_tracks)}", "", ""])
-                l3d = df_tracks['total_3d_length_um']
-                z_col = "z_span_um" if "z_span_um" in df_tracks.columns else "z_extent_um"
-                ze  = df_tracks[z_col]
-                vo  = df_tracks['volume_um3']
-                to  = df_tracks['tortuosity_3d']
-                th  = df_tracks['thickness_um']
+                primary = (
+                    df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                    if "technical_valid" in df_tracks.columns
+                    else df_tracks.copy()
+                )
+                stats_rows.append(["--- ESTIMATED UNIQUE NUCLEI ---", f"N={len(primary)}", "", ""])
+                l3d = primary['total_3d_length_um']
+                z_col = "z_span_um" if "z_span_um" in primary.columns else "z_extent_um"
+                ze = primary[z_col]
+                vo = primary['volume_um3']
+                to = primary['tortuosity_3d']
+                th = primary['thickness_um']
                 stats_rows.append(["3D Length (um)", f"{l3d.mean():.2f}", f"{l3d.median():.2f}", f"{l3d.std():.2f}"])
                 stats_rows.append(["3D Z-Span (um)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
                 stats_rows.append(["3D Volume (um3)*", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append(["3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
                 stats_rows.append(["3D Thickness (um)*", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
-
-                # -- Biological Candidate Population Section --
-                if has_qf and len(df_q) > 0:
-                    stats_rows.append(["--- BIOLOGICAL CANDIDATES ---", f"N={len(df_q)}", "", ""])
-                    l3q = df_q['total_3d_length_um']
-                    zeq = df_q[z_col]
-                    voq = df_q['volume_um3']
-                    toq = df_q['tortuosity_3d']
-                    thq = df_q['thickness_um']
-                    piq = df_q['pitch_deg']
-                    taq = df_q['taper_ratio']
-                    nnq = df_q['nearest_neighbor_um'].dropna()
-                    stats_rows.append(["3D Length (um)", f"{l3q.mean():.2f}", f"{l3q.median():.2f}", f"{l3q.std():.2f}"])
-                    stats_rows.append(["3D Z-Span (um)", f"{zeq.mean():.2f}", f"{zeq.median():.2f}", f"{zeq.std():.2f}"])
-                    stats_rows.append(["3D Volume (um3)*", f"{voq.mean():.1f}", f"{voq.median():.1f}", f"{voq.std():.1f}"])
-                    stats_rows.append(["3D Tortuosity", f"{toq.mean():.3f}", f"{toq.median():.3f}", f"{toq.std():.3f}"])
-                    stats_rows.append(["3D Thickness (um)*", f"{thq.mean():.2f}", f"{thq.median():.2f}", f"{thq.std():.2f}"])
-                    stats_rows.append(["3D Pitch (degrees)", f"{piq.mean():.1f}", f"{piq.median():.1f}", f"{piq.std():.1f}"])
-                    stats_rows.append(["3D Taper Ratio*", f"{taq.mean():.2f}", f"{taq.median():.2f}", f"{taq.std():.2f}"])
-                    if not nnq.empty:
-                        stats_rows.append(["Nearest Neighbor (um)", f"{nnq.mean():.1f}", f"{nnq.median():.1f}", f"{nnq.std():.1f}"])
+                pitch = primary['pitch_deg']
+                taper = primary['taper_ratio']
+                neighbor = primary['nearest_neighbor_um'].dropna()
+                stats_rows.append(["3D Pitch (degrees)", f"{pitch.mean():.1f}", f"{pitch.median():.1f}", f"{pitch.std():.1f}"])
+                stats_rows.append(["3D Taper Ratio*", f"{taper.mean():.2f}", f"{taper.median():.2f}", f"{taper.std():.2f}"])
+                if not neighbor.empty:
+                    stats_rows.append(["Nearest Neighbor (um)", f"{neighbor.mean():.1f}", f"{neighbor.median():.1f}", f"{neighbor.std():.1f}"])
 
             if stats_rows:
                 table = ax_t.table(
@@ -6091,22 +6031,18 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             # Left: Reduction Bar Chart (PDF Parity)
             total_2d = len(df)
             total_3d = len(df_tracks)
-            has_candidates = "is_biological_candidate" in df_tracks.columns
-            reference_col = next(
-                (col for col in ("is_reference_morphology_track", "reference_morphology_pass") if col in df_tracks.columns),
-                None,
+            n_candidate = (
+                int(df_tracks["technical_valid"].astype(bool).sum())
+                if "technical_valid" in df_tracks.columns
+                else total_3d
             )
-            n_candidate = int(df_tracks["is_biological_candidate"].sum()) if has_candidates else (
-                int(df_tracks[reference_col].sum()) if reference_col else total_3d
-            )
-            n_reference = int(df_tracks[reference_col].sum()) if reference_col else n_candidate
             n_warning_only = int(df_tracks["has_warning_only"].sum()) if "has_warning_only" in df_tracks.columns else 0
             n_hard_fail = total_3d - n_candidate
 
             add_horizontal_bar_chart(slide2,
-                                     ['Reference Morphology', 'Biological Candidates', 'All 3D Tracks', 'Raw 2D Detections'],
-                                     [n_reference, n_candidate, total_3d, total_2d],
-                                     None, Inches(0.2), Inches(1.5), Inches(4.5), Inches(4.5), "Tracking & Candidate Reduction")
+                                     ['Estimated Unique Nuclei', 'Raw 2D Detections'],
+                                     [n_candidate, total_2d],
+                                     None, Inches(0.2), Inches(1.5), Inches(4.5), Inches(4.5), "Primary Count and 2D Provenance")
 
             # Right: Composition Pie Chart
             n_candidate_clean = max(n_candidate - n_warning_only, 0)
@@ -6128,7 +6064,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             chart2.has_legend = True
             chart2.legend.position = XL_LEGEND_POSITION.CORNER
             chart2.legend.font.size = Pt(8)
-            chart2.chart_title.text_frame.text = f"Candidate Breakdown of {total_3d:,} 3D Tracks"
+            chart2.chart_title.text_frame.text = f"Technical Audit of {total_3d:,} Reconstructed Tracks"
             chart2.chart_title.text_frame.paragraphs[0].font.size = Pt(12)
 
             plot = chart2.plots[0]
@@ -6145,30 +6081,27 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             add_hyperlink(slide2)
 
         # ---------------------------------------------------------------------
-        # SLIDE 3: Advanced 3D Biometrics (Biological Candidate Population)
+        # SLIDE 3: Advanced 3D biometrics for estimated nuclei
         # ---------------------------------------------------------------------
         if df_tracks is not None and not df_tracks.empty:
             slide3 = prs.slides.add_slide(blank_slide_layout)
             txBox = slide3.shapes.add_textbox(Inches(0.5), Inches(0.1), Inches(9), Inches(0.5))
             tf = txBox.text_frame
-            has_qf = "is_biological_candidate" in df_tracks.columns
-            df_q = df_tracks[df_tracks["is_biological_candidate"]] if has_qf else df_tracks
-            plot_df = df_q if not df_q.empty else df_tracks
-            q_label = f" (Biological Candidates: {len(df_q):,} / {len(df_tracks):,})" if has_qf else ""
-            if has_qf and df_q.empty:
-                q_label += " - all tracks shown"
-            tf.text = f"Advanced 3D Biometrics Dashboard{q_label}"
+            plot_df = (
+                df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                if "technical_valid" in df_tracks.columns
+                else df_tracks.copy()
+            )
+            tf.text = f"Advanced 3D Biometrics: {len(plot_df):,} Estimated Unique Nuclei"
             tf.paragraphs[0].font.size = Pt(22)
             tf.paragraphs[0].font.bold = True
 
-            # Slide 3 shows biological candidates when available, falling back to all tracks
-            # if the audit-passed subset is empty.
             add_histogram(slide3, plot_df['pitch_deg'], Inches(0.2), Inches(0.8), Inches(4.5), Inches(2.9), "Pitch Angle (Degrees)", bins=20)
             add_histogram(slide3, plot_df['thickness_um'], Inches(5.0), Inches(0.8), Inches(4.5), Inches(2.9), "Effective Diameter Proxy (\u00b5m)", bins=20)
             add_histogram(slide3, plot_df['taper_ratio'], Inches(0.2), Inches(3.8), Inches(4.5), Inches(2.9), "Morphological Taper Ratio", bins=20)
             add_histogram(slide3, plot_df['nearest_neighbor_um'].dropna(), Inches(5.0), Inches(3.8), Inches(4.5), Inches(2.9), "Nearest-Neighbor Distance (\u00b5m)", bins=20)
 
-            add_hyperlink(slide3, "3D_Morphometrics")
+            add_hyperlink(slide3, "3D_Track_Audit")
 
         # ---------------------------------------------------------------------
         # SLIDE 3b: Saturn v5.7 U-Net Rescue Audit
@@ -6227,18 +6160,19 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
         tf.paragraphs[0].font.size = Pt(22)
         tf.paragraphs[0].font.bold = True
 
-        # Prepare stats matching PDF (All vs Biological Candidates)
+        # Prepare statistics for the one primary estimated-nuclei population.
         stats_rows = [["Metric", "Mean", "Median", "Std Dev"]]
         if not df.empty:
             l2d = df['length_um_geodesic']
             stats_rows.append(["2D Fragment Length (\u00b5m)", f"{l2d.mean():.2f}", f"{l2d.median():.2f}", f"{l2d.std():.2f}"])
 
         if df_tracks is not None and not df_tracks.empty:
-            has_qf = "is_biological_candidate" in df_tracks.columns
-            df_q = df_tracks[df_tracks["is_biological_candidate"]] if has_qf else df_tracks
-
-            # Section Header for All Tracks
-            stats_rows.append(["--- ALL TRACKS ---", f"N={len(df_tracks)}", "", ""])
+            df_q = (
+                df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
+                if "technical_valid" in df_tracks.columns
+                else df_tracks.copy()
+            )
+            stats_rows.append(["--- ESTIMATED UNIQUE NUCLEI ---", f"N={len(df_q)}", "", ""])
 
             def add_pop_rows(pop_df, prefix=""):
                 l3 = pop_df['total_3d_length_um']
@@ -6253,12 +6187,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
                 stats_rows.append([f"{prefix}3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
                 stats_rows.append([f"{prefix}3D Thickness (\u00b5m)", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
 
-            add_pop_rows(df_tracks)
-
-            if has_qf and not df_q.empty:
-                # Section Header for Biological Candidate Population
-                stats_rows.append(["--- BIOLOGICAL CANDIDATES ---", f"N={len(df_q)}", "", ""])
-                add_pop_rows(df_q)
+            add_pop_rows(df_q)
 
         if len(stats_rows) > 1:
             rows = len(stats_rows)
@@ -6345,10 +6274,10 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
                 ("Goal: ", "The optimizer rewarded multi-slice continuity while penalizing fragmentation, implausible merges, and biology-aware outlier categories."),
                 ("Practical use: ", "Treat tuned tracking values as strong starting points. Adjust them only if a new dataset clearly shows fragmentation or over-merging.")
             ]),
-            ("11. Candidate Audit (post-tracking)", [
+            ("11. Technical Track Audit (post-tracking)", [
                 ("Audit rules: ", "hard-fail tracks when 3D length > AUDIT_MAX_LENGTH_UM, 3D tortuosity > AUDIT_MAX_TORTUOSITY, effective thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, or track slices < AUDIT_MIN_SLICES. Ordinary thick/taper tracks remain warning-only."),
-                ("Meaning: ", "Audit does not change raw detection or tracking. It labels completed tracks as biological candidates, warning-only candidates, hard fails, and a reference-morphology diagnostic subset."),
-                ("Practical use: ", "Use biological candidates as the main analysis population. Treat reference-morphology pass and warning-free counts as separate diagnostics."),
+                ("Meaning: ", "Audit does not change raw detection or tracking. Technical-valid tracks form the estimated-nuclei population; technical failures are excluded."),
+                ("Practical use: ", "Use estimated unique nuclei as the one analysis population. Morphology-warning, warning-free, and reference-morphology flags are QC annotations only."),
                 ("Biology note: ", "At this acquisition z-step (~1.04 um), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
             ]),
             ("12. v5.7 U-Net rescue lane", [
@@ -6740,9 +6669,9 @@ TRACKING_TUNER_EXPLANATION = (
 )
 
 AUDIT_EXPLANATION = (
-    "Candidate audit is applied after 3D tracking. It does not delete tracks or change raw segmentation. "
-    "Instead, it labels completed tracks as biological candidates, warning-only candidates, hard fails, and a reference-morphology diagnostic subset. "
-    "Use biological candidates as the main analysis population; report warning-free and reference-morphology counts separately."
+    "The technical audit is applied after 3D tracking and does not change raw segmentation or linkage. "
+    "Technical-valid tracks form the one estimated-nuclei analysis population. "
+    "Morphology-warning, warning-free, and reference-morphology flags are QC annotations, not alternative populations."
 )
 
 
@@ -6861,7 +6790,7 @@ class ParameterEditor(tk.Toplevel):
             elif section == "Candidate Audit (post-tracking)":
                 audit_note = tk.Label(
                     section_frame,
-                    text="Audit labels suspicious tracks after tracking. It should annotate the population, and reports should distinguish all tracks from audit-passed tracks. Audit thresholds do not change segmentation or 3D linkage.",
+                    text="The audit labels reconstructed tracks after tracking. Technical-valid tracks form the one estimated-nuclei population; the remaining flags are QC annotations. Audit thresholds do not change segmentation or 3D linkage.",
                     fg="dimgray", bg="#f6f8fb", justify="left", anchor="w", wraplength=980
                 )
                 audit_note.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 8))
@@ -7591,18 +7520,21 @@ def summarize_study_sample(row, output_dir):
         except Exception:
             roi_pixels = 0
 
-    biological = int(_study_series_bool(tracks["is_biological_candidate"]).sum()) if "is_biological_candidate" in tracks else int(len(tracks))
-    quality = int(_study_series_bool(tracks["is_quality_track"]).sum()) if "is_quality_track" in tracks else 0
+    if "technical_valid" in tracks:
+        analysis_mask = _study_series_bool(tracks["technical_valid"])
+    elif "is_biological_candidate" in tracks:
+        analysis_mask = _study_series_bool(tracks["is_biological_candidate"])
+    else:
+        analysis_mask = pd.Series(True, index=tracks.index)
+    estimated_nuclei = int(analysis_mask.sum())
+    technical_failures = int((~analysis_mask).sum())
     rescued = int(source.str.startswith("unet_rescued").sum()) if not source.empty else 0
     exposure = _study_exposure_metrics(row, roi_pixels)
     roi_area = exposure["roi_area_um2"]
     roi_volume = exposure["sampled_roi_volume_um3"]
     n_slices = exposure["included_slice_count"]
 
-    biological_mask = _study_series_bool(tracks["is_biological_candidate"]) if "is_biological_candidate" in tracks else pd.Series(True, index=tracks.index)
-    quality_mask = _study_series_bool(tracks["is_quality_track"]) if "is_quality_track" in tracks else pd.Series(False, index=tracks.index)
-    biological_ids = set(tracks.loc[biological_mask, "track_id"].tolist()) if "track_id" in tracks else set()
-    quality_ids = set(tracks.loc[quality_mask, "track_id"].tolist()) if "track_id" in tracks else set()
+    analysis_ids = set(tracks.loc[analysis_mask, "track_id"].tolist()) if "track_id" in tracks else set()
     classical_track_ids, unet_track_ids = _study_track_source_sets(output_dir)
 
     z_min = int(row.get("z_min", 0) or 0)
@@ -7656,19 +7588,13 @@ def summarize_study_sample(row, output_dir):
         "saturn_classical_count": int((source == "saturn_classical").sum()) if not source.empty else 0,
         "unet_rescued_count": rescued,
         "unet_rescue_fraction": float(rescued / max(len(detections), 1)),
-        "all_3d_track_count": int(len(tracks)),
-        "all_3d_tracks_per_1000_um2": _study_scaled_rate(len(tracks), roi_area, 1_000.0),
-        "all_3d_tracks_per_100000_um3": _study_scaled_rate(len(tracks), roi_volume, 100_000.0),
-        "biological_candidate_track_count": biological,
-        "biological_tracks_per_1000_um2": _study_scaled_rate(biological, roi_area, 1_000.0),
-        "biological_tracks_per_100000_um3": _study_scaled_rate(biological, roi_volume, 100_000.0),
-        "strict_quality_track_count": quality,
-        "quality_tracks_per_1000_um2": _study_scaled_rate(quality, roi_area, 1_000.0),
-        "quality_tracks_per_100000_um3": _study_scaled_rate(quality, roi_volume, 100_000.0),
-        "classical_only_3d_track_count": int(len(classical_track_ids)),
-        "unet_associated_3d_track_count": int(len(unet_track_ids)),
-        "biological_unet_associated_track_count": int(len(unet_track_ids & biological_ids)),
-        "quality_unet_associated_track_count": int(len(unet_track_ids & quality_ids)),
+        "estimated_unique_nuclei": estimated_nuclei,
+        "estimated_nuclei_per_1000_um2": _study_scaled_rate(estimated_nuclei, roi_area, 1_000.0),
+        "estimated_nuclei_per_100000_um3": _study_scaled_rate(estimated_nuclei, roi_volume, 100_000.0),
+        "qc_technical_failure_track_count": technical_failures,
+        "qc_classical_only_3d_track_count": int(len(classical_track_ids)),
+        "qc_unet_associated_3d_track_count": int(len(unet_track_ids)),
+        "qc_analysis_population_unet_track_count": int(len(unet_track_ids & analysis_ids)),
         "lower_z_boundary_track_count": lower_boundary,
         "upper_z_boundary_track_count": upper_boundary,
         "z_boundary_track_count": boundary_count,
@@ -7693,15 +7619,9 @@ def _study_group_summary(specimen_frame):
     if complete.empty:
         return pd.DataFrame()
     metrics = [
-        "all_3d_track_count",
-        "all_3d_tracks_per_1000_um2",
-        "all_3d_tracks_per_100000_um3",
-        "biological_candidate_track_count",
-        "biological_tracks_per_1000_um2",
-        "biological_tracks_per_100000_um3",
-        "strict_quality_track_count",
-        "quality_tracks_per_1000_um2",
-        "quality_tracks_per_100000_um3",
+        "estimated_unique_nuclei",
+        "estimated_nuclei_per_1000_um2",
+        "estimated_nuclei_per_100000_um3",
         "median_3d_length_um",
         "median_3d_tortuosity",
         "roi_area_um2",
@@ -8910,10 +8830,11 @@ class SpermGUI:
         self.btn_ai.config(state='disabled', text='AI Working...')
         self.root.update()
 
-        # Token mitigation: Send biological candidates so AI sees the main analysis population.
-        has_candidates = "is_biological_candidate" in ts.columns
-        ts_main = ts[ts["is_biological_candidate"]] if has_candidates else (
-            ts[ts["is_quality_track"]] if "is_quality_track" in ts.columns else ts
+        # Send only the canonical estimated-nuclei population.
+        ts_main = (
+            ts[ts["technical_valid"].astype(bool)]
+            if "technical_valid" in ts.columns
+            else ts
         )
         csv_summary_str = ts_main.head(100).to_csv(index=False)
         species = self.species_var.get()
@@ -9635,8 +9556,6 @@ class SpermGUI:
                 # Save annotated track summary with explicit population flags.
                 ts.to_csv(os.path.join(out_dir, "track_summary.csv"), index=False)
 
-                ts_candidates = ts[ts["is_biological_candidate"]].copy() if "is_biological_candidate" in ts.columns else ts
-                ts_candidates.to_csv(os.path.join(out_dir, "track_summary_biological_candidates.csv"), index=False)
                 export_comparative_track_tables(out_dir, ts, None)
                 export_biologist_results(out_dir, ts, None)
 
@@ -9649,10 +9568,10 @@ class SpermGUI:
                 export_post_detection_qc(out_dir, df_trk, ts)
 
                 n_warning_free = int(ts["is_warning_free_track"].sum()) if "is_warning_free_track" in ts.columns else 0
-                n_candidates = len(ts_candidates)
+                n_candidates = int(ts["technical_valid"].sum()) if "technical_valid" in ts.columns else len(ts)
                 n_hard_fail = len(ts) - n_candidates
                 self.lbl_batch_op.config(
-                    text=f'Candidates: {n_candidates} kept / {n_hard_fail} hard-fail / {n_warning_free} warning-free',
+                    text=f'Estimated nuclei: {n_candidates} / {n_hard_fail} technical-fail / {n_warning_free} warning-free',
                     fg='#27ae60')
                 self.root.update()
 

@@ -195,7 +195,10 @@ Review track overlays and source tables before changing tracking thresholds.
 Saturn exports several deliberately separate populations:
 
 - **Raw 2D detections:** all accepted per-slice measurements.
-- **All 3D tracks:** the result of cross-slice linking.
+- **Reconstructed tracks:** the complete cross-slice tracking output retained
+  in the technical audit table.
+- **Estimated unique nuclei:** technical-valid reconstructed tracks; this is
+  the one biological analysis population.
 - **Technical-valid tracks:** tracks that pass acquisition and tracking
   integrity checks. This is the primary table for WT-versus-mutant
   comparisons.
@@ -269,21 +272,24 @@ batch_output/
 |-- overlays/
 |-- quality_overlays/
 |-- plots/
+|-- biologist_results/
+|   |-- sample_summary.csv
+|   |-- nuclei_for_analysis.csv
+|   `-- README.txt
 |-- spermatid_measurements.csv
 |-- track_summary.csv
-|-- track_summary_quality.csv
-|-- track_summary_biological_candidates.csv
-|-- track_summary_all_v5.7.csv
-|-- track_summary_technical_valid_v5.7.csv
-|-- track_summary_reference_morphology_v5.7.csv
-|-- track_summary_morphology_warning_v5.7.csv
-|-- track_summary_technical_failures_v5.7.csv
 |-- batch_analysis_results_v5.7.xlsx
 `-- batch_report_v5.7.pdf
 ```
 
 Exact optional files depend on configuration and whether U-Net inference,
 quality overlays, and presentation export are enabled.
+
+Use `biologist_results/sample_summary.csv` for sample comparisons and
+`biologist_results/nuclei_for_analysis.csv` for nucleus-level analysis.
+`track_summary.csv` is the complete technical audit table. The legacy
+`is_biological_candidate` column is identical to `technical_valid`; it is
+retained for compatibility and does not represent another population.
 
 ## 13. Measurement Nomenclature
 
@@ -318,7 +324,7 @@ conditions.
 | Preprocessing | `CLAHE_*`, `BG_SIGMA`, normalization settings | ROI images have systematically different contrast or background behavior. |
 | Classical segmentation | `RIDGE_SIGMAS`, `THRESHOLD_HI`, `THRESHOLD_LO` | Classical overlays are visibly too strict or permissive. |
 | Cleanup | `MAX_BRIDGE_PX`, branch and junction controls | True nuclei fragment or unrelated structures connect. |
-| Morphology | minimum length, maximum width, ratio, topology limits | Review overlays show consistent biological candidates being rejected. |
+| Morphology | minimum length, maximum width, ratio, topology limits | Review overlays show plausible nuclei receiving technical-failure flags. |
 | U-Net evidence | candidate, seed, rescue, split, and centerline thresholds | Probability maps are useful but rescue acceptance is too strict or permissive. |
 | Tracking | distance, gap, overlap, assignment, and continuity controls | Tracks fragment or falsely fuse. |
 | Audit/reporting | technical, reference-shape, and quality limits | Population labels need adjustment without changing detection or tracking. |

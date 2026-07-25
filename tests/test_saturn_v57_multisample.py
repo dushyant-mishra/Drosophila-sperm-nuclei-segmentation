@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -123,6 +124,52 @@ def test_biologist_results_uses_only_technical_valid_tracks(tmp_path):
     assert summary.loc[0, "median_3d_length_um"] == 12.0
     assert len(nuclei) == 2
     assert set(nuclei["estimated_nucleus_id"]) == {1, 2}
+
+
+def test_track_exports_do_not_duplicate_analysis_population(tmp_path):
+    saturn = load_saturn_v57()
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2, 3],
+            "technical_valid": [True, True, False],
+            "is_biological_candidate": [True, True, False],
+        }
+    )
+
+    paths = saturn.export_comparative_track_tables(tmp_path, tracks, "test")
+
+    assert set(paths) == {"track_summary_technical_failures_test.csv"}
+    assert not (tmp_path / "track_summary_all_test.csv").exists()
+    assert not (tmp_path / "track_summary_technical_valid_test.csv").exists()
+    assert not (tmp_path / "track_summary_biological_candidates_test.csv").exists()
+
+
+def test_excel_uses_one_track_audit_sheet_without_candidate_duplicate(tmp_path):
+    saturn = load_saturn_v57()
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2],
+            "technical_valid": [True, True],
+            "total_3d_length_um": [10.0, 12.0],
+            "max_length_2d": [9.0, 11.0],
+            "thickness_um": [2.0, 2.2],
+            "tortuosity_3d": [1.0, 1.1],
+            "z_span_um": [2.0, 3.0],
+            "z_covered_um": [2.0, 3.0],
+            "volume_um3": [20.0, 24.0],
+            "n_slices": [3, 4],
+        }
+    )
+
+    saturn.generate_excel_report(tmp_path, pd.DataFrame(), pd.DataFrame(), tracks)
+    workbook_path = tmp_path / f"batch_analysis_results_{saturn._VERSION}.xlsx"
+    with zipfile.ZipFile(workbook_path) as workbook:
+        workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
+
+    assert 'name="Biologist_Results"' in workbook_xml
+    assert 'name="3D_Track_Audit"' in workbook_xml
+    assert 'name="3D_Biological_Candidates"' not in workbook_xml
+    assert 'name="3D_Morphometrics"' not in workbook_xml
 
 
 def make_sample(root, group, sample_id, roi=True):
@@ -248,15 +295,15 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert len(calls) == 2
     assert set(summary["status"]) == {"complete"}
     assert set(summary["raw_2d_detection_count"]) == {2}
-    assert set(summary["biological_candidate_track_count"]) == {1}
+    assert set(summary["estimated_unique_nuclei"]) == {1}
     assert set(summary["roi_area_um2"].round(6)) == {198.0}
     assert set(summary["sampled_depth_um"].round(6)) == {3.12}
     assert set(summary["stack_span_um"].round(6)) == {2.08}
     assert set(summary["sampled_roi_volume_um3"].round(6)) == {617.76}
-    assert set(summary["all_3d_tracks_per_1000_um2"].round(6)) == {10.10101}
-    assert set(summary["all_3d_tracks_per_100000_um3"].round(6)) == {323.750324}
-    assert set(summary["unet_associated_3d_track_count"]) == {1}
-    assert set(summary["biological_unet_associated_track_count"]) == {0}
+    assert set(summary["estimated_nuclei_per_1000_um2"].round(6)) == {5.050505}
+    assert set(summary["estimated_nuclei_per_100000_um3"].round(6)) == {161.875162}
+    assert set(summary["qc_unet_associated_3d_track_count"]) == {1}
+    assert set(summary["qc_analysis_population_unet_track_count"]) == {0}
     assert set(summary["z_boundary_track_count"]) == {2}
     assert set(summary["z_boundary_track_fraction"]) == {1.0}
     assert (output_root / "study_manifest.csv").exists()
