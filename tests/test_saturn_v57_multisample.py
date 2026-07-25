@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import tifffile
+from scipy.ndimage import distance_transform_edt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,38 @@ def load_saturn_v57():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_component_distance_transform_matches_full_frame():
+    saturn = load_saturn_v57()
+    mask = np.zeros((96, 112), dtype=bool)
+    mask[15:35, 18:45] = True
+    mask[20:30, 25:38] = False
+
+    expected = distance_transform_edt(mask)
+    actual = saturn._distance_transform_component(mask)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_post_detection_qc_separates_warning_free_from_reference(tmp_path):
+    saturn = load_saturn_v57()
+    detections = pd.DataFrame({"track_link_method": ["new", "overlap", "overlap"]})
+    tracks = pd.DataFrame(
+        {
+            "quality_flags": ["", "wide", "unusual_pitch"],
+            "reference_morphology_pass": [True, True, False],
+            "is_biological_candidate": [True, True, True],
+            "has_warning_only": [False, True, True],
+        }
+    )
+
+    saturn.export_post_detection_qc(tmp_path, detections, tracks)
+    report = (tmp_path / "post_detection_qc.txt").read_text(encoding="utf-8")
+
+    assert "warning_free: 1" in report
+    assert "reference_morphology_pass: 2" in report
+    assert "\n  quality:" not in report
 
 
 def make_sample(root, group, sample_id, roi=True):

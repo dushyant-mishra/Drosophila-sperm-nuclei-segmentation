@@ -9,6 +9,7 @@ import torch
 from PIL import Image, ImageDraw
 
 from prepare_dataset import load_config, load_context
+from torch_device import describe_torch_device, select_torch_device
 from train_unet25d import build_model
 
 
@@ -200,11 +201,13 @@ def main():
     if not (0.0 <= candidate_threshold <= seed_threshold <= 1.0):
         raise ValueError("Require 0 <= candidate_threshold <= seed_threshold <= 1")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    payload = torch.load(checkpoint, map_location=device)
+    device = select_torch_device()
+    print(f"PyTorch tiled-inference device: {describe_torch_device(device)}")
+    payload = torch.load(checkpoint, map_location="cpu")
     model_cfg = payload.get("config", cfg)
-    model = build_model(model_cfg).to(device)
+    model = build_model(model_cfg)
     model.load_state_dict(payload["model"])
+    model = model.to(device)
     model.eval()
 
     summary_rows = []

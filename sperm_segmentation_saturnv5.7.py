@@ -362,7 +362,7 @@ CONFIG = {
     "AUDIT_MIN_SLICES":        1,       # single-slice nuclei may be biologically valid at this z-step
 
     # ------ output / debug ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    "SAVE_DEBUG_IMAGES":   True,
+    "SAVE_DEBUG_IMAGES":   False,
     "SAVE_MASK_TIFS":      True,
     "SAVE_LABEL_TIFS":     True,
     "SAVE_OVERLAYS":       True,
@@ -1977,6 +1977,42 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
 # MEASUREMENT  (single geodesic pass, all topology in one function)
 # =============================================================================
 
+def _expanded_component_bbox(mask, bbox=None, padding=1):
+    """Return a clipped component bounding box with a small background margin."""
+    h, w = mask.shape
+    if bbox is None:
+        ys, xs = np.nonzero(mask)
+        if ys.size == 0:
+            return 0, 0, 0, 0
+        min_y, min_x = int(ys.min()), int(xs.min())
+        max_y, max_x = int(ys.max()) + 1, int(xs.max()) + 1
+    else:
+        min_y, min_x, max_y, max_x = (int(v) for v in bbox)
+    pad = max(0, int(padding))
+    return (
+        max(0, min_y - pad),
+        max(0, min_x - pad),
+        min(h, max_y + pad),
+        min(w, max_x + pad),
+    )
+
+
+def _distance_transform_component(mask, bbox=None):
+    """
+    Compute an exact component distance transform on its local bounding box.
+
+    A full-sized result is returned for compatibility with existing measurement
+    code, but the expensive EDT itself runs only around the foreground object.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    out = np.zeros(mask.shape, dtype=np.float64)
+    y0, x0, y1, x1 = _expanded_component_bbox(mask, bbox=bbox, padding=1)
+    if y1 <= y0 or x1 <= x0:
+        return out
+    out[y0:y1, x0:x1] = distance_transform_edt(mask[y0:y1, x0:x1])
+    return out
+
+
 def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, peak_min_distance, compactness):
     """
     Split a connected U-Net probability mask into putative nucleus instances.
@@ -1994,23 +2030,25 @@ def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, p
     next_label = 1
     components = measure.label(mask)
     for comp in measure.regionprops(components):
-        comp_mask = components == comp.label
-        if np.count_nonzero(comp_mask) < min_component_px:
+        if int(comp.area) < min_component_px:
             continue
+        y0, x0, y1, x1 = _expanded_component_bbox(mask, bbox=comp.bbox, padding=1)
+        comp_mask = components[y0:y1, x0:x1] == comp.label
+        prob_crop = prob[y0:y1, x0:x1]
 
-        core = comp_mask & (prob >= seed_threshold)
+        core = comp_mask & (prob_crop >= seed_threshold)
         core = remove_objects_smaller_than(core, max(1, int(min_component_px)))
         markers = measure.label(core)
 
         if int(markers.max()) < 2:
             coords = feature.peak_local_max(
-                prob,
+                prob_crop,
                 labels=comp_mask.astype(np.uint8),
                 min_distance=max(1, int(peak_min_distance)),
                 threshold_abs=float(seed_threshold),
                 exclude_border=False,
             )
-            markers = np.zeros(mask.shape, dtype=np.int32)
+            markers = np.zeros(comp_mask.shape, dtype=np.int32)
             for i, (yy, xx) in enumerate(coords, start=1):
                 markers[int(yy), int(xx)] = i
             if coords.shape[0] >= 2:
@@ -2020,7 +2058,7 @@ def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, p
                 markers = measure.label(comp_mask)
 
         labels = skseg.watershed(
-            -prob,
+            -prob_crop,
             markers=markers,
             mask=comp_mask,
             compactness=max(0.0, float(compactness)),
@@ -2030,7 +2068,8 @@ def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, p
             sub_mask = labels == sub.label
             if np.count_nonzero(sub_mask) < min_component_px:
                 continue
-            final[sub_mask] = next_label
+            final_crop = final[y0:y1, x0:x1]
+            final_crop[sub_mask] = next_label
             next_label += 1
     return final.astype(np.int32)
 
@@ -2317,7 +2356,7 @@ def measure_spermatids(seg, cfg):
                 core = remove_objects_smaller_than(core, min_component)
                 if not np.any(core):
                     continue
-                core_dist = distance_transform_edt(core)
+                core_dist = _distance_transform_component(core)
                 core_skel = skeletonize(core) & valid & ~occupied
                 core_lab = measure.label(core_skel)
                 for sub_sp in measure.regionprops(core_lab):
@@ -2335,7 +2374,7 @@ def measure_spermatids(seg, cfg):
 
         for sp in measure.regionprops(rescue_lab):
             instance_mask = rescue_lab == sp.label
-            instance_dist = distance_transform_edt(instance_mask)
+            instance_dist = _distance_transform_component(instance_mask, bbox=sp.bbox)
             instance_skel = skeletonize(instance_mask) & valid & ~occupied
             instance_skel = remove_objects_smaller_than(instance_skel, max(1, int(round(cfg["MIN_SKEL_LEN_PX"] * 0.35))))
             if not np.any(instance_skel):
@@ -4337,7 +4376,7 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
             if "quality_flags" in df_tracks.columns:
                 flags = df_tracks["quality_flags"].fillna("").astype(str)
                 flag_counts = {
-                    "quality": int((flags == "").sum()),
+                    "warning_free": int((flags == "").sum()),
                     "all_flagged": int((flags != "").sum()),
                     "long": int(flags.str.contains("long", regex=False).sum()),
                     "tortuous": int(flags.str.contains("tortuous", regex=False).sum()),
@@ -4345,9 +4384,14 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                     "taper": int(flags.str.contains("taper", regex=False).sum()),
                     "single_slice": int(flags.str.contains("single_slice", regex=False).sum()),
                 }
-                lines.append("\nQuality / outlier counts:")
-                for key in ["quality", "all_flagged", "long", "tortuous", "thick", "taper", "single_slice"]:
+                lines.append("\nWarning / outlier counts:")
+                for key in ["warning_free", "all_flagged", "long", "tortuous", "thick", "taper", "single_slice"]:
                     lines.append(f"  {key}: {flag_counts.get(key, 0)}")
+            if "reference_morphology_pass" in df_tracks.columns:
+                lines.append(
+                    "  reference_morphology_pass: "
+                    f"{int(df_tracks['reference_morphology_pass'].sum())}"
+                )
             if "is_biological_candidate" in df_tracks.columns:
                 lines.append("\nBiological candidate tier:")
                 lines.append(f"  biological_candidates: {int(df_tracks['is_biological_candidate'].sum())}")
@@ -5159,7 +5203,7 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                     'Raw 2D Detections\n(All Fragments)',
                     'All 3D Tracks\n(Consolidated)',
                     'Biological Candidates\n(Hard-Fail Removed)',
-                    'Strict Quality\n(No Warnings)'
+                    'Reference Morphology\n(Diagnostic Subset)'
                 ]
 
                 bars = ax_bar.barh(y_pos, counts, color=colors, edgecolor='black', height=0.55)
@@ -5473,7 +5517,7 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 "10. Biological Candidate Audit (post-tracking)\n"
                 "   Hard-fail rules: length > AUDIT_MAX_LENGTH_UM, tortuosity > AUDIT_MAX_TORTUOSITY, extreme thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, and n_slices < AUDIT_MIN_SLICES.\n"
                 "   Warning-only rules: thickness > AUDIT_MAX_THICKNESS_UM and taper > AUDIT_MAX_TAPER_RATIO. These PSF-sensitive flags are retained for review but no longer remove tracks from the main candidate population.\n"
-                "   Interpretation: Audit annotates completed tracks after tracking. Main reports use biological candidates while strict no-warning quality remains a diagnostic subset.\n"
+                "   Interpretation: Audit annotates completed tracks after tracking. Main reports use biological candidates; reference-morphology pass is a separate diagnostic subset. Warning-free tracks are counted independently.\n"
                 "\n11. v5.7 U-Net Rescue Lane\n"
                 "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues are labeled in detection_source as unet_rescued or unet_rescued_split.\n"
                 "   The rescue-review overlay uses green for Saturn classical detections, cyan for accepted U-Net rescues, and magenta/orange/red for U-Net-positive candidates rejected by rescue gates.\n"
@@ -5819,7 +5863,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             n_hard_fail = total_3d - n_candidate
 
             add_horizontal_bar_chart(slide2,
-                                     ['Strict No-Warning', 'Biological Candidates', 'All 3D Tracks', 'Raw 2D Detections'],
+                                     ['Reference Morphology', 'Biological Candidates', 'All 3D Tracks', 'Raw 2D Detections'],
                                      [n_quality, n_candidate, total_3d, total_2d],
                                      None, Inches(0.2), Inches(1.5), Inches(4.5), Inches(4.5), "Tracking & Candidate Reduction")
 
@@ -6062,8 +6106,8 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             ]),
             ("11. Candidate Audit (post-tracking)", [
                 ("Audit rules: ", "hard-fail tracks when 3D length > AUDIT_MAX_LENGTH_UM, 3D tortuosity > AUDIT_MAX_TORTUOSITY, effective thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, or track slices < AUDIT_MIN_SLICES. Ordinary thick/taper tracks remain warning-only."),
-                ("Meaning: ", "Audit does not change raw detection or tracking. It labels completed tracks as biological candidates, warning-only candidates, hard fails, and strict no-warning quality tracks."),
-                ("Practical use: ", "Use biological candidates as the main analysis population. Use strict no-warning quality as a conservative diagnostic subset."),
+                ("Meaning: ", "Audit does not change raw detection or tracking. It labels completed tracks as biological candidates, warning-only candidates, hard fails, and a reference-morphology diagnostic subset."),
+                ("Practical use: ", "Use biological candidates as the main analysis population. Treat reference-morphology pass and warning-free counts as separate diagnostics."),
                 ("Biology note: ", "At this acquisition z-step (~1.04 um), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
             ]),
             ("12. v5.7 U-Net rescue lane", [
@@ -6456,8 +6500,8 @@ TRACKING_TUNER_EXPLANATION = (
 
 AUDIT_EXPLANATION = (
     "Candidate audit is applied after 3D tracking. It does not delete tracks or change raw segmentation. "
-    "Instead, it labels completed tracks as biological candidates, warning-only candidates, hard fails, and strict no-warning quality tracks. "
-    "Use biological candidates as the main analysis population; use strict quality as a conservative diagnostic subset."
+    "Instead, it labels completed tracks as biological candidates, warning-only candidates, hard fails, and a reference-morphology diagnostic subset. "
+    "Use biological candidates as the main analysis population; report warning-free and reference-morphology counts separately."
 )
 
 

@@ -17,6 +17,28 @@ from pathlib import Path
 import numpy as np
 
 _MODEL_CACHE = {}
+_REPORTED_DEVICES = set()
+
+
+def _device_helpers():
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[1]
+    unet_dir = repo_root / "unet25d"
+    if str(unet_dir) not in sys.path:
+        sys.path.insert(0, str(unet_dir))
+    from torch_device import describe_torch_device, select_torch_device
+
+    return select_torch_device, describe_torch_device
+
+
+def _resolve_device(device=None):
+    select_torch_device, describe_torch_device = _device_helpers()
+    resolved = select_torch_device(preferred=device)
+    if resolved not in _REPORTED_DEVICES:
+        print(f"    U-Net inference device: {describe_torch_device(resolved)}")
+        _REPORTED_DEVICES.add(resolved)
+    return resolved
 
 
 def robust_normalize_stack(stack):
@@ -91,10 +113,11 @@ def _load_model(checkpoint_path, device):
     if not checkpoint_path.exists():
         raise FileNotFoundError(checkpoint_path)
 
-    payload = torch.load(checkpoint_path, map_location=device)
+    payload = torch.load(checkpoint_path, map_location="cpu")
     cfg = payload.get("config", {"architecture": "residual_attention_unet", "base_channels": 24})
-    model = build_model(cfg).to(device)
+    model = build_model(cfg)
     model.load_state_dict(payload["model"])
+    model = model.to(device)
     model.eval()
     _MODEL_CACHE[cache_key] = (model, cfg)
     return model, cfg
@@ -107,12 +130,12 @@ def predict_probability(context_stack, checkpoint_path, device=None):
     Args:
         context_stack: numpy array shaped (3, height, width), ordered [z-1, z, z+1].
         checkpoint_path: path to a U-Net checkpoint saved by unet25d/train_unet25d.py.
-        device: optional torch device string. Defaults to cuda if available, else cpu.
+        device: optional torch device string. Defaults to CUDA, then Apple MPS,
+            then CPU according to availability.
     """
     import torch
 
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _resolve_device(device)
 
     model, _ = _load_model(checkpoint_path, device)
 
@@ -132,8 +155,7 @@ def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg
     """
     import torch
 
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _resolve_device(device)
     model, _ = _load_model(checkpoint_path, device)
 
     context = robust_normalize_stack(np.asarray(context_stack, dtype=np.float32))

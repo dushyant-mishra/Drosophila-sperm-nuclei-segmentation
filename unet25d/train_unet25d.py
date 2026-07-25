@@ -11,6 +11,8 @@ import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
+from torch_device import describe_torch_device, select_torch_device
+
 
 def load_config(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -296,12 +298,13 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0)
     valid_loader = DataLoader(valid_ds, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = select_torch_device()
+    print(f"PyTorch training device: {describe_torch_device(device)}")
     model = build_model(cfg).to(device)
     warm_start_info = ""
     if args.warm_start:
         warm_start_path = Path(args.warm_start)
-        checkpoint = torch.load(warm_start_path, map_location=device)
+        checkpoint = torch.load(warm_start_path, map_location="cpu")
         state = checkpoint.get("model", checkpoint)
         if args.allow_partial_warm_start:
             current = model.state_dict()
