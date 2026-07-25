@@ -5,6 +5,45 @@ combines ROI-aware classical segmentation, optional 2.5D U-Net probability
 support, cross-slice tracking, morphology measurements, quality-control
 populations, and multi-sample study management.
 
+## Visual Workflow
+
+Saturn first restricts analysis to the saved specimen ROI. Within that ROI it
+normalizes and denoises each slice, enhances elongated ridges, builds and
+cleans candidate masks, and reduces candidates to measurable centerlines.
+
+![Saturn v5.7 processing stages from ROI-aware normalization through U-Net candidate support](docs/readme_assets/saturn_v57_processing_stages.png)
+
+The optional 2.5D U-Net receives the previous, center, and next Z planes as
+three input channels. Its continuous probability map supplies candidate
+support and confident seeds; it does not directly replace Saturn's measurement
+or quality-control stages.
+
+![Previous, center, and next Z planes, the resulting U-Net probability map, and integration into Saturn v5.7](docs/readme_assets/saturn_v57_unet_integration.png)
+
+### Overlay Cues
+
+- **Green:** accepted Saturn classical detection.
+- **Cyan:** accepted U-Net rescue detection.
+- **Magenta, orange, or red:** U-Net-positive candidate rejected by a rescue
+  gate, such as a short fragment or implausible topology.
+- **Red ROI outline:** analysis boundary; pixels outside it do not contribute
+  to preprocessing thresholds or detections.
+
+Overlay thickness is display-only. Counts, lengths, widths, and tracking use
+the underlying masks and centerlines rather than the rendered colored lines.
+
+![Four consecutive slices showing classical detections, accepted U-Net rescues, and rejected U-Net-positive candidates](docs/readme_assets/saturn_v57_hybrid_overlays.png)
+
+After 2D measurement, detections can be linked across adjacent Z planes using
+calibrated XY and Z distances. The resulting track table supports 3D length,
+Z-span, Z-covered thickness, tortuosity, and approximate volume summaries.
+
+![Exploded image-plane view and calibrated trajectories for detections joined across four Z planes](docs/readme_assets/saturn_v57_3d_tracking.png)
+
+These panels are illustrative outputs from one development stack. They explain
+the computation and visual cues; they are not a genotype comparison, accuracy
+benchmark, or substitute for validation on new acquisition conditions.
+
 ## Run the GUI
 
 From PowerShell:
