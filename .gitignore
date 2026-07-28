@@ -56,3 +56,4 @@ unet25d/outputs/
 unet25d/**/*.pt
 unet25d/**/*.pth
 unet25d/**/*.npz
+training_packages/

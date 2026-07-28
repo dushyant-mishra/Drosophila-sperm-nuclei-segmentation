@@ -3,7 +3,9 @@
 Saturn v5.7 is the active Drosophila sperm-nucleus analysis pipeline. It
 combines ROI-aware classical segmentation, optional 2.5D U-Net probability
 support, cross-slice tracking, morphology measurements, quality-control
-populations, and multi-sample study management.
+populations, and multi-sample study management. The study manager supports
+explicit WT/mutant group assignment, flexible Z-stack filenames, and
+non-destructive canonical dataset organization.
 
 ## Visual Workflow
 
@@ -63,7 +65,8 @@ python .\sperm_segmentation_saturnv5.7.py
 ## Active Components
 
 - `sperm_segmentation_saturnv5.7.py`: GUI, segmentation, tracking, reporting,
-  ROI normalization, and multi-sample study manager.
+  ROI normalization, and multi-sample study manager with group assignment and
+  canonical dataset organization.
 - `utils/tune_parameters_Saturnv5_7.py`: v5.7 segmentation and U-Net rescue
   tuner.
 - `utils/saturn_unet25d_bridge.py`: lazy checkpoint loading and tiled U-Net

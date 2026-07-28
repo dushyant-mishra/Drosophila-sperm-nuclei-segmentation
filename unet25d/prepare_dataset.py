@@ -41,12 +41,28 @@ def robust_normalize_stack(stack):
 def load_context(stack_dir, image_pattern, z):
     planes = []
     for zz in (z - 1, z, z + 1):
-        zz = max(0, min(87, zz))
         path = Path(stack_dir) / image_pattern.format(z=zz)
         if not path.exists():
             raise FileNotFoundError(path)
         planes.append(read_tiff(path))
     return robust_normalize_stack(np.stack(planes, axis=0))
+
+
+def load_sample_roi(cfg, z, expected_shape):
+    """Load an optional per-sample ROI mask keyed by the synthetic z index."""
+    roi_dir = cfg.get("roi_mask_dir")
+    roi_pattern = cfg.get("roi_mask_pattern")
+    if not roi_dir or not roi_pattern:
+        return np.ones(expected_shape, dtype=bool)
+    path = Path(roi_dir) / str(roi_pattern).format(z=z)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    roi = np.asarray(np.load(path), dtype=bool)
+    if roi.shape != tuple(expected_shape):
+        raise ValueError(
+            f"ROI shape {roi.shape} does not match image shape {tuple(expected_shape)}: {path}"
+        )
+    return roi
 
 
 def dilate_binary(mask, radius):
@@ -232,8 +248,13 @@ def write_samples(split_name, samples, cfg):
         z = sample["z"]
         x = load_context(cfg["stack_image_dir"], cfg["image_pattern"], z)
         raw_y = sample["mask"].astype(np.uint8)
+        roi = load_sample_roi(cfg, z, raw_y.shape)
+        raw_y = (raw_y > 0).astype(np.uint8)
+        raw_y[~roi] = 0
         y = make_training_mask(raw_y, cfg)
+        y[~roi] = 0
         supervision = make_supervision_mask(x, raw_y, cfg)
+        supervision[~roi] = 0
 
         stem = Path(sample["file_name"]).stem
         npz_path = out_dir / f"{stem}.npz"
@@ -247,6 +268,7 @@ def write_samples(split_name, samples, cfg):
             mask=y,
             raw_annotation_mask=raw_y,
             supervision_mask=supervision,
+            roi_mask=roi.astype(np.uint8),
             z=np.array([z], dtype=np.int16),
             file_name=np.array([sample["file_name"]]),
         )

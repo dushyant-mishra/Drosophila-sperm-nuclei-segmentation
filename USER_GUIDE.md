@@ -70,6 +70,11 @@ technical performance.
 9. Review overlays and measurement tables before interpreting summary plots.
 
 Each batch is written to a new `batch_output`, `batch_output_1`, and so on.
+
+The top of **Configure Parameters** reports the active segmentation engine and
+whether the selected U-Net checkpoint exists. The **2.5D U-Net Integration**
+section appears directly below calibration and provides dropdowns for modes,
+checkboxes for enable/disable settings, and **Browse** for the checkpoint.
 Existing batches are not overwritten.
 
 ## 4. Draw, Save, and Reuse an ROI
@@ -218,12 +223,69 @@ replicates.
 1. Place `analysis_roi_v5_7.npy` in every specimen folder.
 2. Open **Multi-Sample Study** and select **Open Study Manager**.
 3. Select **Discover Root** and choose the parent study folder.
-4. Review sample ID, group, slices, Z range, ROI, XY calibration, and Z spacing.
-5. Double-click editable fields to correct metadata.
-6. Toggle **Include** for specimens that should not run.
-7. Select an output folder outside the source study tree.
-8. Select **Validate** and resolve every invalid row.
-9. Select **Run / Resume Study**.
+4. Review sample ID, slices, Z range, ROI, XY calibration, and Z spacing.
+5. Select one or more rows and use **Assign Group** to explicitly label them
+   `WT`, `KJ`, `Mutant`, or another biological group.
+6. Double-click editable fields to correct individual metadata.
+7. Toggle **Include** for specimens that should not run.
+8. Optionally select **Organize Dataset Copy** and choose a separate empty
+   folder. The reviewed group labels define the canonical group folders.
+9. Select a separate analysis-output folder outside both the original and
+   organized source trees.
+10. Select **Validate** and resolve every invalid row.
+11. Select **Run / Resume Study**.
+
+The progress bar reports completed specimens, not individual Z slices. While a
+study is running, select **Stop After Current Sample** to request a controlled
+pause. The current specimen is allowed to finish so its tables, report, and
+completion marker remain consistent; no new specimen is then started. Select
+**Run / Resume Study** later to skip completed specimens and continue with the
+remaining rows when the parameter fingerprint is unchanged.
+
+### Supported Source-Image Names
+
+The study manager discovers top-level TIFF planes using conservative filename
+families. Matching is case-insensitive:
+
+- Leica exports, including `Project_Series002_z00_ch00.tif` and
+  `Project001_Series002_z00_ch00.tif`.
+- Names with an explicit Z token and optional channel-zero token, such as
+  `SampleA_z000.tif`, `SampleA-Z000-C0.TIF`, or
+  `SampleA_z000_ch00.tiff`.
+- Channel-free trailing numeric indices, such as `SampleA_0001.tif`.
+
+Only channel `0` is accepted when a `c` or `ch` token is present. Generated
+output directories such as `overlays`, `masks`, `debug`, and `batch_output*`
+are excluded. Every discovered stack must still have unique, contiguous Z
+indices, consistent dimensions, and a matching ROI. Names without an explicit
+Z token or trailing numeric index should be renamed before study discovery.
+
+### Canonical Dataset Organization
+
+**Organize Dataset Copy** never renames, moves, or deletes original microscopy
+files. It creates a separate structure:
+
+```text
+OrganizedStudy/
+|-- WT/
+|   `-- WT_01/
+|       |-- WT_01_z0000_ch00.tif
+|       |-- WT_01_z0001_ch00.tif
+|       |-- analysis_roi_v5_7.npy
+|       `-- MetaData/
+|-- Mutant/
+|   `-- Mutant_01/
+|       `-- ...
+|-- organized_study_manifest.csv
+|-- source_file_mapping.csv
+`-- organization_summary.json
+```
+
+The source mapping records every original and canonical path. Existing ROIs are
+copied only to their corresponding specimen. Missing ROIs remain missing and
+must be drawn for that specimen; the organizer never borrows an ROI from
+another sample. Calibration and acquisition labels are retained in the
+organized manifest.
 
 The manager runs specimens independently. A failed specimen does not stop the
 remaining samples, and completed specimens can resume without rerunning when

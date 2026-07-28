@@ -5,6 +5,7 @@ import zipfile
 
 import numpy as np
 import pandas as pd
+import pytest
 import tifffile
 from scipy.ndimage import distance_transform_edt
 
@@ -34,7 +35,161 @@ def test_component_distance_transform_matches_full_frame():
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_post_detection_qc_separates_warning_free_from_reference(tmp_path):
+def test_tracking_rejects_join_that_exceeds_physical_length_guard():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "UM_PER_PX_XY": 0.4,
+            "UM_PER_SLICE_Z": 1.0,
+            "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
+        }
+    )
+    previous = {
+        "first_z": 0,
+        "first_x": 20.0,
+        "first_y": 20.0,
+        "last_z": 11,
+        "last_x": 20.0,
+        "last_y": 20.0,
+        "last_width": 2.0,
+        "last_length": 10.0,
+        "last_area": 30.0,
+        "last_orientation": 0.0,
+        "max_length_2d": 10.0,
+    }
+    candidate = {
+        "z_slice": 12,
+        "centroid_x": 20.0,
+        "centroid_y": 20.0,
+        "width_um": 2.0,
+        "length_um_geodesic": 10.0,
+        "area_px": 30.0,
+        "orientation": 0.0,
+    }
+
+    accepted, reason = saturn.check_extension_consistency(
+        previous, candidate, cfg, overlap_exists=True
+    )
+
+    assert not accepted
+    assert reason.startswith("technical_joined_length=")
+
+
+def test_unet_rescue_keeps_biologically_short_high_confidence_nucleus():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UM_PER_PX_XY": 0.3,
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_RESCUE_THRESHOLD": 0.7,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+            "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (48, 48)
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[23, 16:25] = 0.99
+    empty = np.zeros(shape, dtype=bool)
+    seg = {
+        "skel_pruned": empty.copy(),
+        "dist_clean": np.zeros(shape, dtype=float),
+        "skel_labeled": np.zeros(shape, dtype=np.int32),
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": empty.copy(),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert len(measured["results"]) == 1
+    result = measured["results"][0]
+    length_um = result["length_px_geodesic"] * cfg["UM_PER_PX_XY"]
+    assert 2.0 <= length_um < cfg["MIN_SKEL_LEN_UM"]
+    assert result["detection_source"] == "unet_rescued"
+
+
+def test_unet_rescue_confidence_exception_keeps_nucleus_below_resolution_floor():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UM_PER_PX_XY": 0.4,
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_RESCUE_THRESHOLD": 0.7,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+            "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+            "UNET_SHORT_RESCUE_MIN_MEAN_PROB": 0.85,
+            "MIN_LENGTH_WIDTH_RATIO": 1.5,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (48, 48)
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[23, 18:23] = 0.99
+    empty = np.zeros(shape, dtype=bool)
+    seg = {
+        "skel_pruned": empty.copy(),
+        "dist_clean": np.zeros(shape, dtype=float),
+        "skel_labeled": np.zeros(shape, dtype=np.int32),
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": empty.copy(),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert len(measured["results"]) == 1
+    result = measured["results"][0]
+    assert result["length_px_geodesic"] * cfg["UM_PER_PX_XY"] < 2.0
+    assert result["detection_source"] == "unet_rescued_short_high_confidence"
+
+
+def test_unet_instance_already_represented_by_saturn_is_not_fragmented():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UM_PER_PX_XY": 0.4,
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_RESCUE_THRESHOLD": 0.7,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+            "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (48, 48)
+    skeleton = np.zeros(shape, dtype=bool)
+    skeleton[24, 12:32] = True
+    labels = np.zeros(shape, dtype=np.int32)
+    labels[skeleton] = 1
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[22:27, 10:34] = 0.99
+    seg = {
+        "skel_pruned": skeleton,
+        "dist_clean": np.ones(shape, dtype=float),
+        "skel_labeled": labels,
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": np.zeros(shape, dtype=bool),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert len(measured["results"]) == 1
+    assert measured["results"][0]["detection_source"] == "saturn_classical"
+    assert np.count_nonzero(measured["unet_rescue_rejected_reason"]) == 0
+
+
+def test_post_detection_qc_reports_one_final_population(tmp_path):
     saturn = load_saturn_v57()
     detections = pd.DataFrame({"track_link_method": ["new", "overlap", "overlap"]})
     tracks = pd.DataFrame(
@@ -42,6 +197,8 @@ def test_post_detection_qc_separates_warning_free_from_reference(tmp_path):
             "quality_flags": ["", "wide", "unusual_pitch"],
             "reference_morphology_pass": [True, True, False],
             "is_biological_candidate": [True, True, True],
+            "technical_valid": [True, True, True],
+            "morphology_warning": [False, True, True],
             "has_warning_only": [False, True, True],
         }
     )
@@ -49,9 +206,11 @@ def test_post_detection_qc_separates_warning_free_from_reference(tmp_path):
     saturn.export_post_detection_qc(tmp_path, detections, tracks)
     report = (tmp_path / "post_detection_qc.txt").read_text(encoding="utf-8")
 
-    assert "warning_free: 1" in report
-    assert "reference_morphology_pass: 2" in report
-    assert "\n  quality:" not in report
+    assert "FINAL ANALYSIS POPULATION:" in report
+    assert "estimated_unique_nuclei: 3" in report
+    assert "nuclei_with_morphology_review_note: 2" in report
+    assert "reference_morphology_pass" not in report
+    assert "warning_free" not in report
 
 
 def test_tracking_audit_records_rejections_without_claiming_stops():
@@ -187,6 +346,31 @@ def make_sample(root, group, sample_id, roi=True):
     return folder
 
 
+def test_parameter_editor_exposes_v57_hybrid_configuration():
+    saturn = load_saturn_v57()
+    expected = {
+        "SEGMENTATION_ENGINE",
+        "UNET_MODEL_PATH",
+        "UNET_THRESHOLD_MODE",
+        "UNET_RESCUE_ENABLE",
+        "UNET_INSTANCE_SPLIT_ENABLE",
+        "UNET_RESCUE_SPLIT_THRESHOLDS",
+    }
+
+    unet_keys = set(saturn.PARAM_SECTIONS["2.5D U-Net Integration"])
+    assert expected <= unet_keys
+    assert list(saturn.PARAM_SECTIONS).index("2.5D U-Net Integration") == 1
+    assert all(saturn._parameter_editor_can_display(key, saturn.CONFIG) for key in expected)
+    assert saturn.PARAM_ENUM_OPTIONS["SEGMENTATION_ENGINE"] == (
+        "classical_saturn",
+        "hybrid",
+        "unet_assisted",
+    )
+    assert saturn._coerce_parameter_editor_value("hybrid", str) == "hybrid"
+    assert saturn._coerce_parameter_editor_value(True, bool) is True
+    assert saturn._coerce_parameter_editor_value("[0.7, 0.8, 0.9]", list) == [0.7, 0.8, 0.9]
+
+
 def test_discovery_uses_exact_sources_and_validates_roi(tmp_path):
     saturn = load_saturn_v57()
     make_sample(tmp_path, "WT Test SV", "WT-1")
@@ -205,6 +389,168 @@ def test_discovery_uses_exact_sources_and_validates_roi(tmp_path):
     assert errors == []
     assert all(row["status"] == "validated" for row in validated)
     assert all((row["z_min"], row["z_max"]) == (0, 2) for row in validated)
+
+
+def test_discovery_accepts_numbered_project_and_single_named_roi(tmp_path):
+    saturn = load_saturn_v57()
+    folder = tmp_path / "KJ" / "KJ-1"
+    folder.mkdir(parents=True)
+    image = np.zeros((24, 32), dtype=np.uint8)
+    for z_index in range(3):
+        tifffile.imwrite(
+            folder / f"Project001_Series013_z{z_index:02d}_ch00.tif",
+            image,
+        )
+    np.save(folder / "roi_KJ_01.npy", np.ones(image.shape, dtype=bool))
+
+    rows = saturn.discover_multisample_study(tmp_path)
+
+    assert len(rows) == 1
+    assert rows[0]["group"] == "KJ"
+    assert rows[0]["file_pattern"] == "Project001_Series013_z*_ch00.tif"
+    assert rows[0]["roi_path"].endswith("roi_KJ_01.npy")
+    validated, errors = saturn.validate_multisample_manifest(rows)
+    assert errors == []
+    assert validated[0]["status"] == "validated"
+
+
+def test_discovery_normalizes_kj_and_w1118_group_folder_names(tmp_path):
+    saturn = load_saturn_v57()
+    make_sample(tmp_path, "kj sv feb", "KJ-1")
+    make_sample(tmp_path, "w1118 sv feb", "WT-1")
+
+    rows = saturn.discover_multisample_study(tmp_path)
+
+    assert {row["group"] for row in rows} == {"KJ", "WT"}
+
+
+def test_discovery_accepts_generic_z_names_and_only_channel_zero(tmp_path):
+    saturn = load_saturn_v57()
+    folder = tmp_path / "Mutant" / "Sample-A"
+    folder.mkdir(parents=True)
+    image = np.zeros((24, 32), dtype=np.uint8)
+    for z_index in range(3):
+        tifffile.imwrite(folder / f"GraceSample-Z{z_index:03d}-C0.TIF", image)
+        tifffile.imwrite(folder / f"GraceSample-Z{z_index:03d}-C1.TIF", image)
+    np.save(folder / "roi_sample.npy", np.ones(image.shape, dtype=bool))
+
+    rows = saturn.discover_multisample_study(tmp_path)
+
+    assert len(rows) == 1
+    assert rows[0]["slice_count"] == 3
+    assert rows[0]["file_pattern"] == "GraceSample-Z[0-9]*-C0.TIF"
+    validated, errors = saturn.validate_multisample_manifest(rows)
+    assert errors == []
+    assert validated[0]["status"] == "validated"
+
+
+def test_discovery_accepts_trailing_numeric_slice_names(tmp_path):
+    saturn = load_saturn_v57()
+    folder = tmp_path / "WT" / "Sample-B"
+    folder.mkdir(parents=True)
+    image = np.zeros((24, 32), dtype=np.uint8)
+    for z_index in range(4):
+        tifffile.imwrite(folder / f"sampleB_{z_index:04d}.tiff", image)
+    np.save(folder / "analysis_roi_v5_7.npy", np.ones(image.shape, dtype=bool))
+
+    rows = saturn.discover_multisample_study(tmp_path)
+
+    assert len(rows) == 1
+    assert rows[0]["file_pattern"] == "sampleB_[0-9]*.tiff"
+    assert rows[0]["slice_count"] == 4
+    validated, errors = saturn.validate_multisample_manifest(rows)
+    assert errors == []
+    assert validated[0]["status"] == "validated"
+
+
+def test_discovery_excludes_generated_output_directories(tmp_path):
+    saturn = load_saturn_v57()
+    source = tmp_path / "WT" / "Sample-C"
+    output = source / "batch_output_1" / "overlays"
+    source.mkdir(parents=True)
+    output.mkdir(parents=True)
+    image = np.zeros((24, 32), dtype=np.uint8)
+    for z_index in range(3):
+        tifffile.imwrite(source / f"sampleC_z{z_index:03d}.tif", image)
+        tifffile.imwrite(output / f"overlay_z{z_index:03d}.tif", image)
+    np.save(source / "analysis_roi_v5_7.npy", np.ones(image.shape, dtype=bool))
+
+    rows = saturn.discover_multisample_study(tmp_path)
+
+    assert len(rows) == 1
+    assert rows[0]["input_dir"] == str(source.resolve())
+
+
+def test_organizer_creates_canonical_copy_and_preserves_group_and_roi(tmp_path):
+    saturn = load_saturn_v57()
+    source_root = tmp_path / "source"
+    make_sample(source_root, "OriginalFolders", "Specimen-A")
+    rows = saturn.discover_multisample_study(
+        source_root,
+        base_cfg={"UM_PER_PX_XY": 0.75, "UM_PER_SLICE_Z": 1.04},
+    )
+    rows[0]["group"] = "WT"
+    rows[0]["sample_id"] = "WT_01"
+    original_files = sorted(Path(rows[0]["input_dir"]).glob("*.tif"))
+
+    organized, summary = saturn.organize_multisample_study_copy(
+        rows,
+        tmp_path / "organized",
+    )
+
+    destination = tmp_path / "organized" / "WT" / "WT_01"
+    assert [path.name for path in sorted(destination.glob("*.tif"))] == [
+        "WT_01_z0000_ch00.tif",
+        "WT_01_z0001_ch00.tif",
+        "WT_01_z0002_ch00.tif",
+    ]
+    assert (destination / "analysis_roi_v5_7.npy").is_file()
+    assert (tmp_path / "organized" / "organized_study_manifest.csv").is_file()
+    assert (tmp_path / "organized" / "source_file_mapping.csv").is_file()
+    assert (tmp_path / "organized" / "organization_summary.json").is_file()
+    assert organized[0]["group"] == "WT"
+    assert organized[0]["file_pattern"] == "WT_01_z[0-9]*_ch00.tif"
+    assert summary["sample_count"] == 1
+    assert summary["samples_missing_roi"] == []
+    assert all(path.is_file() for path in original_files)
+
+
+def test_organizer_reports_missing_roi_without_borrowing_one(tmp_path):
+    saturn = load_saturn_v57()
+    source_root = tmp_path / "source"
+    make_sample(source_root, "Mutant", "Specimen-B", roi=False)
+    rows = saturn.discover_multisample_study(
+        source_root,
+        base_cfg={"UM_PER_PX_XY": 0.75, "UM_PER_SLICE_Z": 1.04},
+    )
+    rows[0]["group"] = "Mutant"
+    rows[0]["sample_id"] = "Mutant_01"
+
+    organized, summary = saturn.organize_multisample_study_copy(
+        rows,
+        tmp_path / "organized",
+    )
+
+    destination = tmp_path / "organized" / "Mutant" / "Mutant_01"
+    assert len(list(destination.glob("*.tif"))) == 3
+    assert not (destination / "analysis_roi_v5_7.npy").exists()
+    assert summary["samples_missing_roi"] == ["Mutant_01"]
+    validated, errors = saturn.validate_multisample_manifest(organized)
+    assert any("ROI file missing" in error for error in errors)
+    assert validated[0]["status"] == "invalid"
+
+
+def test_organizer_refuses_nonempty_unrelated_output_folder(tmp_path):
+    saturn = load_saturn_v57()
+    source_root = tmp_path / "source"
+    make_sample(source_root, "WT", "Specimen-C")
+    rows = saturn.discover_multisample_study(source_root)
+    output = tmp_path / "organized"
+    output.mkdir()
+    (output / "unrelated.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="empty output folder"):
+        saturn.organize_multisample_study_copy(rows, output)
 
 
 def test_validation_rejects_missing_roi_and_duplicate_sample_ids(tmp_path):
@@ -233,7 +579,7 @@ def test_leica_metadata_preserves_padded_series_and_physical_calibration(tmp_pat
         </Root>""",
         encoding="utf-8",
     )
-    result = saturn._study_parse_leica_metadata(tmp_path, 2, 9.0, 9.0)
+    result = saturn._study_parse_leica_metadata(tmp_path, "", 2, 9.0, 9.0)
     assert result["xy_um_per_pixel"] == 0.75
     assert result["z_um_per_slice"] == 2.0
     assert "objective=40x" in result["acquisition_class"]
@@ -328,3 +674,91 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     )
     assert len(calls) == 2
     assert all(len(list((output_root / "samples" / row["sample_id"]).glob("attempt_*"))) == 1 for row in rows)
+
+
+def test_study_run_stops_after_current_sample_and_resumes(tmp_path):
+    saturn = load_saturn_v57()
+    for sample_id in ("WT-1", "WT-2", "WT-3"):
+        make_sample(tmp_path / "input", "WT", sample_id)
+    rows = saturn.discover_multisample_study(
+        tmp_path / "input",
+        base_cfg={"UM_PER_PX_XY": 0.75, "UM_PER_SLICE_Z": 1.04},
+    )
+    calls = []
+    events = []
+    stop_state = {"requested": False}
+
+    def fake_batch_runner(cfg):
+        calls.append(Path(cfg["INPUT_DIR"]).name)
+        output = Path(cfg["OUTPUT_DIR"])
+        output.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "detection_source": ["saturn_classical"],
+                "length_um_geodesic": [9.5],
+                "width_um": [1.9],
+                "z_slice": [1],
+            }
+        ).to_csv(output / "spermatid_measurements_v5.7.csv", index=False)
+        pd.DataFrame(
+            {
+                "track_id": [1],
+                "detection_source": ["saturn_classical"],
+                "z_slice": [1],
+            }
+        ).to_csv(output / "measurements_with_tracks_v5.7.csv", index=False)
+        pd.DataFrame(
+            {
+                "track_id": [1],
+                "is_biological_candidate": [True],
+                "is_quality_track": [True],
+                "total_3d_length_um": [9.7],
+                "tortuosity_3d": [1.1],
+                "z_start": [1],
+                "z_end": [1],
+            }
+        ).to_csv(output / "track_summary_v5.7.csv", index=False)
+        pd.DataFrame(columns=["track_id", "z_start", "z_end"]).to_csv(
+            output / "track_summary_technical_failures_v5.7.csv", index=False
+        )
+        with (output / "stack_preprocessing_qc.json").open("w", encoding="utf-8") as handle:
+            json.dump({"roi_pixel_count": 352}, handle)
+        if len(calls) == 1:
+            stop_state["requested"] = True
+
+    output_root = tmp_path / "study_output"
+    state, summary = saturn.run_multisample_study(
+        rows,
+        output_root,
+        base_cfg={"UM_PER_PX_XY": 0.75, "UM_PER_SLICE_Z": 1.04},
+        progress_callback=events.append,
+        batch_runner=fake_batch_runner,
+        stop_requested=lambda: stop_state["requested"],
+    )
+
+    assert calls == ["WT-1"]
+    assert state["run_status"] == "stopped"
+    assert len(summary) == 3
+    assert summary["status"].value_counts().to_dict() == {"validated": 2, "complete": 1}
+    assert state["samples"]["WT-1"]["status"] == "complete"
+    assert "WT-2" not in state["samples"]
+    assert [event["event"] for event in events] == ["started", "complete", "stopped"]
+    assert events[-1]["position"] == 1
+
+    stop_state["requested"] = False
+    events.clear()
+    resumed_state, resumed_summary = saturn.run_multisample_study(
+        rows,
+        output_root,
+        base_cfg={"UM_PER_PX_XY": 0.75, "UM_PER_SLICE_Z": 1.04},
+        progress_callback=events.append,
+        batch_runner=fake_batch_runner,
+        stop_requested=lambda: stop_state["requested"],
+    )
+
+    assert calls == ["WT-1", "WT-2", "WT-3"]
+    assert resumed_state["run_status"] == "complete"
+    assert len(resumed_summary) == 3
+    assert all(record["status"] == "complete" for record in resumed_state["samples"].values())
+    assert events[0]["event"] == "skipped"
+    assert events[0]["sample_id"] == "WT-1"

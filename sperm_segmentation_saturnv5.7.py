@@ -140,7 +140,7 @@ Dushyant Mishra  |  Findlay Lab  |  Saturn Dataset Branch
 
 import os, sys, glob, re, time, warnings, heapq, argparse, math, pathlib as pl
 import time as _t
-import json, webbrowser, threading, subprocess
+import json, webbrowser, threading, subprocess, shutil
 from dataclasses import dataclass, asdict
 try:
     import requests
@@ -236,7 +236,12 @@ CONFIG = {
     "UNET_RESCUE_THRESHOLD": 0.60,
     "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
     "UNET_RESCUE_MIN_COMPONENT_PX": 3,
-    "UNET_RESCUE_MIN_SKEL_LEN_UM": 7.0,
+    # Technical noise floor only. Do not use expected biological length as an
+    # acceptance gate because genuinely short nuclei may be genotype-dependent.
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+    # Shorter centerlines remain eligible when the U-Net evidence itself is
+    # strong. This avoids encoding an expected WT/mutant length into acceptance.
+    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": 0.85,
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": 0,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
     "UNET_RESCUE_SPLIT_THRESHOLDS": [0.70, 0.80, 0.90],
@@ -325,6 +330,7 @@ CONFIG = {
     "TRACK_MAX_DIST_UM":    6.8711,
     "TRACK_MAX_GAP_SLICES": 1,
     "TRACK_BBOX_PADDING_PX": 2,
+    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
 
     # ------ conservative tracking stop-rules ---------------------------------------------------------------------------------------------------------------------------
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": 0.7668,      # Saturn V5 tuned default
@@ -401,6 +407,7 @@ _REQUIRED = {
     "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
     "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
     "UNET_RESCUE_MIN_SKEL_LEN_UM": (int, float),
+    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": (int, float),
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": int,
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": bool, "UNET_RESCUE_SPLIT_THRESHOLDS": list,
     "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": bool,
@@ -458,6 +465,7 @@ _REQUIRED = {
     "HYBRID_REPAIR_MAX_LINK_DIST_UM": (int, float),
     "HYBRID_REPAIR_MIN_OVERLAP": (int, float),
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": (int, float),
+    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": (int, float),
     "AUDIT_MAX_LENGTH_UM": (int, float),
     "AUDIT_MAX_TORTUOSITY": (int, float),
     "AUDIT_MAX_THICKNESS_UM": (int, float),
@@ -2247,8 +2255,11 @@ def measure_spermatids(seg, cfg):
         min_component = max(1, int(cfg.get("UNET_RESCUE_MIN_COMPONENT_PX", cfg.get("MIN_OBJ_PX", 3))))
         rescue_min_skel_um = float(cfg.get("UNET_RESCUE_MIN_SKEL_LEN_UM", cfg.get("MIN_SKEL_LEN_UM", 0.0)))
         rescue_min_skel_px = max(
-            float(cfg.get("MIN_SKEL_LEN_PX", 0.0)),
+            1.0,
             rescue_min_skel_um / max(float(cfg.get("UM_PER_PX_XY", 1.0)), 1e-9),
+        )
+        short_rescue_min_prob = float(
+            cfg.get("UNET_SHORT_RESCUE_MIN_MEAN_PROB", 0.85)
         )
         max_additions = max(0, int(cfg.get("UNET_RESCUE_MAX_ADDITIONS_PER_SLICE", 0)))
         split_retry = bool(cfg.get("UNET_RESCUE_SPLIT_RETRY_ENABLE", True))
@@ -2266,7 +2277,10 @@ def measure_spermatids(seg, cfg):
         occupied = clean_skel.copy()
         if exclude_px > 0 and np.any(occupied):
             occupied = morphology.binary_dilation(occupied, morphology.disk(exclude_px))
-        rescue_mask = (unet_prob >= rescue_thr) & valid & ~occupied
+        # Split complete U-Net instances before checking whether Saturn already
+        # represents them. Removing occupied pixels first can turn one complete
+        # nucleus into several artificial short residual fragments.
+        rescue_mask = (unet_prob >= rescue_thr) & valid
         rescue_mask = remove_objects_smaller_than(rescue_mask, min_component)
         rescue_lab = _split_unet_rescue_instances(
             unet_prob,
@@ -2279,7 +2293,16 @@ def measure_spermatids(seg, cfg):
         rescue_candidates = []
 
         def evaluate_rescue_coords(coords, dist_map, sp, source):
-            if coords.shape[0] < rescue_min_skel_px:
+            unet_vals = np.asarray(
+                unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32
+            )
+            unet_vals = unet_vals[np.isfinite(unet_vals)]
+            mean_unet_prob = float(np.mean(unet_vals)) if unet_vals.size else 0.0
+            high_confidence_short = (
+                coords.shape[0] >= 1
+                and mean_unet_prob >= short_rescue_min_prob
+            )
+            if coords.shape[0] < rescue_min_skel_px and not high_confidence_short:
                 return None, "short"
 
             topo = measure_topology(coords, W, allow_loops=cfg.get("ALLOW_LOOPS", False))
@@ -2291,9 +2314,10 @@ def measure_spermatids(seg, cfg):
             n_ep = topo["n_endpoints"]
             n_br = topo["n_branch_nodes"]
             if not (rescue_min_skel_px <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
-                if gl < rescue_min_skel_px:
+                if gl < rescue_min_skel_px and not high_confidence_short:
                     return None, "short"
-                return None, "long"
+                if gl > cfg["MAX_GEODESIC_LEN_PX"]:
+                    return None, "long"
 
             width = float(np.median(2.0 * dist_map[coords[:, 0], coords[:, 1]]))
             if width > cfg["MAX_WIDTH_PX"]:
@@ -2307,12 +2331,13 @@ def measure_spermatids(seg, cfg):
             if n_ep > cfg["MAX_ENDPOINT_COUNT"]:
                 return None, "endpoints"
 
-            unet_vals = np.asarray(unet_prob[coords[:, 0], coords[:, 1]], dtype=np.float32)
-            unet_vals = unet_vals[np.isfinite(unet_vals)]
             cy, cx = sp.centroid
+            resolved_source = source
+            if gl < rescue_min_skel_px and high_confidence_short:
+                resolved_source = "unet_rescued_short_high_confidence"
             return {
                 "coords": coords,
-                "score": float(np.mean(unet_vals)) if unet_vals.size else 0.0,
+                "score": mean_unet_prob,
                 "result": {
                     "length_px_geodesic": gl,
                     "length_px_count": float(coords.shape[0]),
@@ -2330,9 +2355,9 @@ def measure_spermatids(seg, cfg):
                     "bbox_max_y": float(sp.bbox[2]),
                     "bbox_max_x": float(sp.bbox[3]),
                     "orientation": float(sp.orientation),
-                    "unet_mean_probability": float(np.mean(unet_vals)) if unet_vals.size else np.nan,
+                    "unet_mean_probability": mean_unet_prob if unet_vals.size else np.nan,
                     "unet_max_probability": float(np.max(unet_vals)) if unet_vals.size else np.nan,
-                    "detection_source": source,
+                    "detection_source": resolved_source,
                 },
             }, None
 
@@ -2374,9 +2399,16 @@ def measure_spermatids(seg, cfg):
 
         for sp in measure.regionprops(rescue_lab):
             instance_mask = rescue_lab == sp.label
+            if np.any(instance_mask & occupied):
+                # This U-Net instance is already represented by an accepted
+                # Saturn centerline. It is neither a rescue nor a rejection.
+                continue
             instance_dist = _distance_transform_component(instance_mask, bbox=sp.bbox)
-            instance_skel = skeletonize(instance_mask) & valid & ~occupied
-            instance_skel = remove_objects_smaller_than(instance_skel, max(1, int(round(cfg["MIN_SKEL_LEN_PX"] * 0.35))))
+            instance_skel = skeletonize(instance_mask) & valid
+            instance_skel = remove_objects_smaller_than(
+                instance_skel,
+                max(1, int(math.floor(rescue_min_skel_px * 0.70))),
+            )
             if not np.any(instance_skel):
                 reject_rescue("short", sp.coords)
                 continue
@@ -2891,6 +2923,34 @@ def rows_from_results(results, z_idx, um):
 # TRACKING
 # =============================================================================
 
+def _estimated_tracking_extension_length_um(
+    prev_state, candidate_x, candidate_y, candidate_z, candidate_length, cfg
+):
+    """Estimate the physical length created by extending one track."""
+    um_xy = float(cfg["UM_PER_PX_XY"])
+    um_z = float(cfg["UM_PER_SLICE_Z"])
+    first_x = float(prev_state.get("first_x", prev_state["last_x"]))
+    first_y = float(prev_state.get("first_y", prev_state["last_y"]))
+    first_z = int(prev_state.get("first_z", prev_state["last_z"]))
+    centroid_span = math.hypot(
+        float(candidate_x) - first_x,
+        float(candidate_y) - first_y,
+    ) * um_xy
+    z_span = abs(int(candidate_z) - first_z) * um_z
+    finite_lengths = [
+        float(value)
+        for value in (
+            prev_state.get("max_length_2d"),
+            prev_state.get("last_length"),
+            candidate_length,
+            centroid_span,
+        )
+        if value is not None and np.isfinite(value)
+    ]
+    lateral_length = max(finite_lengths) if finite_lengths else centroid_span
+    return math.hypot(lateral_length, z_span)
+
+
 def check_extension_consistency(prev_state, candidate_detection, cfg, overlap_exists=False):
     """
     Check if extending a track with this detection would be biologically consistent.
@@ -2921,6 +2981,24 @@ def check_extension_consistency(prev_state, candidate_detection, cfg, overlap_ex
     cand_length = candidate_detection.get("length_um_geodesic")
     cand_area = candidate_detection.get("area_px")
     cand_ori = candidate_detection.get("orientation")
+    cand_z = candidate_detection.get("z_slice", prev_state["last_z"])
+
+    max_joined_length = float(
+        cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)
+    )
+    estimated_joined_length = _estimated_tracking_extension_length_um(
+        prev_state,
+        cand_x,
+        cand_y,
+        cand_z,
+        cand_length,
+        cfg,
+    )
+    if estimated_joined_length > max_joined_length:
+        return False, (
+            f"technical_joined_length={estimated_joined_length:.2f}um"
+            f">{max_joined_length:.2f}um"
+        )
 
     # Logic:
     # If overlap_exists, we allow the track to continue IF enough primary metrics are stable.
@@ -3102,6 +3180,7 @@ def track_across_slices_legacy(detections_df, cfg):
                 has_bbox = np.isfinite(det_min_y)
 
                 cand_det = {
+                    "z_slice": int(z),
                     "centroid_x": float(x),
                     "centroid_y": float(y),
                     "width_um": float(widths[k]) if np.isfinite(widths[k]) else None,
@@ -3164,7 +3243,11 @@ def track_across_slices_legacy(detections_df, cfg):
                 link_gap_slices[row_idx] = gap_slices
 
                 # Update track state
+                previous = active[tid]
                 active[tid] = {
+                    "first_z": previous.get("first_z", previous["last_z"]),
+                    "first_x": previous.get("first_x", previous["last_x"]),
+                    "first_y": previous.get("first_y", previous["last_y"]),
                     "last_z": int(z),
                     "last_x": float(xs[det_k]),
                     "last_y": float(ys[det_k]),
@@ -3173,6 +3256,10 @@ def track_across_slices_legacy(detections_df, cfg):
                     "last_area": float(areas[det_k]) if np.isfinite(areas[det_k]) else None,
                     "last_orientation": float(oris[det_k]) if np.isfinite(oris[det_k]) else None,
                     "last_bbox": (bbox_min_ys[det_k], bbox_min_xs[det_k], bbox_max_ys[det_k], bbox_max_xs[det_k]) if np.isfinite(bbox_min_ys[det_k]) else None,
+                    "max_length_2d": max(
+                        float(previous.get("max_length_2d") or 0.0),
+                        float(lengths[det_k]) if np.isfinite(lengths[det_k]) else 0.0,
+                    ),
                 }
 
         # Create new tracks for unmatched detections
@@ -3180,6 +3267,9 @@ def track_across_slices_legacy(detections_df, cfg):
             if track_ids[int(idxs[det_k])] == -1:
                 track_ids[int(idxs[det_k])] = next_tid
                 active[next_tid] = {
+                    "first_z": int(z),
+                    "first_x": float(xs[det_k]),
+                    "first_y": float(ys[det_k]),
                     "last_z": int(z),
                     "last_x": float(xs[det_k]),
                     "last_y": float(ys[det_k]),
@@ -3188,6 +3278,7 @@ def track_across_slices_legacy(detections_df, cfg):
                     "last_area": float(areas[det_k]) if np.isfinite(areas[det_k]) else None,
                     "last_orientation": float(oris[det_k]) if np.isfinite(oris[det_k]) else None,
                     "last_bbox": (bbox_min_ys[det_k], bbox_min_xs[det_k], bbox_max_ys[det_k], bbox_max_xs[det_k]) if np.isfinite(bbox_min_ys[det_k]) else None,
+                    "max_length_2d": float(lengths[det_k]) if np.isfinite(lengths[det_k]) else 0.0,
                 }
                 next_tid += 1
 
@@ -3525,6 +3616,7 @@ def track_across_slices_global_assignment(detections_df, cfg):
                 bbox = (row["bbox_min_y"], row["bbox_min_x"], row["bbox_max_y"], row["bbox_max_x"])
             dets.append({
                 "row_idx": int(row_idx),
+                "z": int(z),
                 "x": float(row["centroid_x"]),
                 "y": float(row["centroid_y"]),
                 "width": float(row["width_um"]) if "width_um" in df.columns and np.isfinite(row["width_um"]) else None,
@@ -3547,6 +3639,18 @@ def track_across_slices_global_assignment(detections_df, cfg):
             for ti, tid in enumerate(cand_tids):
                 st = active[tid]
                 for di, det in enumerate(dets):
+                    estimated_joined_length = _estimated_tracking_extension_length_um(
+                        st,
+                        det["x"],
+                        det["y"],
+                        det["z"],
+                        det["length"],
+                        cfg,
+                    )
+                    if estimated_joined_length > float(
+                        cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)
+                    ):
+                        continue
                     dx = det["x"] - st["last_x"]
                     dy = det["y"] - st["last_y"]
                     dist_um = math.sqrt(dx * dx + dy * dy) * um_xy
@@ -3592,7 +3696,11 @@ def track_across_slices_global_assignment(detections_df, cfg):
                 link_gap_slices[row_idx] = int(z - active[tid]["last_z"])
                 assigned_dets.add(int(di))
                 assigned_tracks.add(tid)
+                previous = active[tid]
                 active[tid] = {
+                    "first_z": previous.get("first_z", previous["last_z"]),
+                    "first_x": previous.get("first_x", previous["last_x"]),
+                    "first_y": previous.get("first_y", previous["last_y"]),
                     "last_z": int(z),
                     "last_x": det["x"],
                     "last_y": det["y"],
@@ -3602,6 +3710,10 @@ def track_across_slices_global_assignment(detections_df, cfg):
                     "last_orientation": det["orientation"],
                     "last_unet_probability": det["unet_probability"],
                     "last_bbox": det["bbox"],
+                    "max_length_2d": max(
+                        float(previous.get("max_length_2d") or 0.0),
+                        float(det["length"] or 0.0),
+                    ),
                 }
 
             for ti, tid in enumerate(cand_tids):
@@ -3621,6 +3733,9 @@ def track_across_slices_global_assignment(detections_df, cfg):
                 continue
             track_ids[row_idx] = next_tid
             active[next_tid] = {
+                "first_z": int(z),
+                "first_x": det["x"],
+                "first_y": det["y"],
                 "last_z": int(z),
                 "last_x": det["x"],
                 "last_y": det["y"],
@@ -3630,6 +3745,7 @@ def track_across_slices_global_assignment(detections_df, cfg):
                 "last_orientation": det["orientation"],
                 "last_unet_probability": det["unet_probability"],
                 "last_bbox": det["bbox"],
+                "max_length_2d": float(det["length"] or 0.0),
             }
             next_tid += 1
 
@@ -3737,7 +3853,10 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
     max_frag_slices = int(cfg.get("HYBRID_REPAIR_MAX_FRAGMENT_SLICES", 2))
     max_cost = float(cfg.get("HYBRID_REPAIR_MAX_COST", 3.6))
     min_overlap = float(cfg.get("HYBRID_REPAIR_MIN_OVERLAP", 0.05))
-    max_final_length = float(cfg.get("HYBRID_REPAIR_MAX_FINAL_LENGTH_UM", cfg.get("AUDIT_MAX_LENGTH_UM", 15.0)))
+    max_final_length = min(
+        float(cfg.get("HYBRID_REPAIR_MAX_FINAL_LENGTH_UM", 15.0)),
+        float(cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)),
+    )
 
     endpoints = {}
     for tid, grp in df.sort_values(["z_slice", "sperm_id"]).groupby("track_id"):
@@ -3994,6 +4113,16 @@ def flag_quality_tracks(df_tracks, cfg):
         return df_tracks
 
     mode = str(cfg.get("ANALYSIS_MODE", "comparative")).strip().lower()
+    parameter_set = str(cfg.get("SEGMENTATION_PARAMETER_SET", "")).strip()
+    if not parameter_set:
+        engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
+        parameter_set = f"{engine}_{_VERSION}"
+    preprocessing_profile = str(
+        cfg.get(
+            "RESOLVED_PREPROCESSING_PROFILE",
+            cfg.get("CLAHE_MODE", cfg.get("PREPROCESS_MODE", "unspecified")),
+        )
+    )
     n = len(df_tracks)
     if mode == "comparative":
         technical_masks, morphology_masks, reference_masks = _comparative_audit_masks(df_tracks, cfg)
@@ -4014,8 +4143,8 @@ def flag_quality_tracks(df_tracks, cfg):
             df_tracks["technical_valid"] & (~df_tracks["morphology_warning"])
         )
         df_tracks["analysis_mode"] = mode
-        df_tracks["segmentation_parameter_set"] = cfg.get("SEGMENTATION_PARAMETER_SET", "unspecified")
-        df_tracks["preprocessing_profile"] = cfg.get("CLAHE_MODE", cfg.get("PREPROCESS_MODE", "unspecified"))
+        df_tracks["segmentation_parameter_set"] = parameter_set
+        df_tracks["preprocessing_profile"] = preprocessing_profile
 
         df_tracks["quality_flags"] = [
             ",".join([x for x in [technical_strs[i], morphology_strs[i]] if x])
@@ -4093,8 +4222,8 @@ def flag_quality_tracks(df_tracks, cfg):
     df_tracks["reference_morphology_pass"] = ~any_flagged
     df_tracks["is_reference_morphology_track"] = df_tracks["reference_morphology_pass"].astype(bool)
     df_tracks["is_warning_free_track"] = (~any_flagged).astype(bool)
-    df_tracks["segmentation_parameter_set"] = cfg.get("SEGMENTATION_PARAMETER_SET", "unspecified")
-    df_tracks["preprocessing_profile"] = cfg.get("CLAHE_MODE", cfg.get("PREPROCESS_MODE", "unspecified"))
+    df_tracks["segmentation_parameter_set"] = parameter_set
+    df_tracks["preprocessing_profile"] = preprocessing_profile
     df_tracks["analysis_mode"] = mode
 
     n_quality = int((~any_flagged).sum())
@@ -4532,49 +4661,23 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                 lines.append(f"Median 3D length um: {float(df_tracks['total_3d_length_um'].median()):.3f}")
             if "z_span_um" in df_tracks.columns:
                 lines.append(f"Median Z-span um: {float(df_tracks['z_span_um'].median()):.3f}")
-            if "quality_flags" in df_tracks.columns:
-                flags = df_tracks["quality_flags"].fillna("").astype(str)
-                flag_counts = {
-                    "warning_free": int((flags == "").sum()),
-                    "all_flagged": int((flags != "").sum()),
-                    "long": int(flags.str.contains("long", regex=False).sum()),
-                    "tortuous": int(flags.str.contains("tortuous", regex=False).sum()),
-                    "thick": int(flags.str.contains("thick", regex=False).sum()),
-                    "taper": int(flags.str.contains("taper", regex=False).sum()),
-                    "single_slice": int(flags.str.contains("single_slice", regex=False).sum()),
-                }
-                lines.append("\nWarning / outlier counts:")
-                for key in ["warning_free", "all_flagged", "long", "tortuous", "thick", "taper", "single_slice"]:
-                    lines.append(f"  {key}: {flag_counts.get(key, 0)}")
-            if "reference_morphology_pass" in df_tracks.columns:
-                lines.append(
-                    "  reference_morphology_pass: "
-                    f"{int(df_tracks['reference_morphology_pass'].sum())}"
-                )
             if "technical_valid" in df_tracks.columns:
-                lines.append("\nPrimary analysis population:")
+                lines.append("\nFINAL ANALYSIS POPULATION:")
                 lines.append(f"  estimated_unique_nuclei: {int(df_tracks['technical_valid'].sum())}")
                 lines.append(f"  technical_failures: {int((~df_tracks['technical_valid']).sum())}")
-            if "has_warning_only" in df_tracks.columns:
-                lines.append(f"  warning_only: {int(df_tracks['has_warning_only'].sum())}")
-            if "rejected_extension_count" in df_tracks.columns:
-                rejected_counts = pd.to_numeric(
-                    df_tracks["rejected_extension_count"],
-                    errors="coerce",
-                ).fillna(0).astype(int)
-                lines.append("\nTracking near-miss audit (QC only):")
+            if "morphology_warning" in df_tracks.columns:
                 lines.append(
-                    "  tracks_with_rejected_candidate_extensions: "
-                    f"{int((rejected_counts > 0).sum())}"
+                    "  nuclei_with_morphology_review_note: "
+                    f"{int(df_tracks['morphology_warning'].astype(bool).sum())}"
                 )
                 lines.append(
-                    "  total_rejected_candidate_extension_events: "
-                    f"{int(rejected_counts.sum())}"
+                    "  interpretation: review notes do not remove nuclei and do "
+                    "not define another biological population"
                 )
-                lines.append(
-                    "  interpretation: a rejected candidate does not prove that "
-                    "the final track stopped; the track may link elsewhere"
-                )
+            lines.append(
+                "\nDetailed segmentation-source and rejected-link diagnostics "
+                "remain in the master audit tables; they are not biological counts."
+            )
 
         qc_path = os.path.join(out_dir, "post_detection_qc.txt")
         with open(qc_path, "w", encoding="utf-8") as f:
@@ -4597,8 +4700,21 @@ def get_audit_flag_counts(df_tracks, cfg=None):
     if "quality_flags" in df_tracks.columns:
         flags = df_tracks["quality_flags"].fillna("").astype(str)
         split_flags = flags.str.split(',')
-        for key in ["long", "tortuous", "thick", "taper", "single_slice"]:
-            counts[key] = int(split_flags.apply(lambda items: key in items if isinstance(items, list) else False).sum())
+        token_map = {
+            "long": "long",
+            "tortuous": "high_tortuosity",
+            "thick": "wide",
+            "taper": "high_taper",
+            "single_slice": "single_slice",
+        }
+        for key, token in token_map.items():
+            counts[key] = int(
+                split_flags.apply(
+                    lambda items, expected=token: expected in items
+                    if isinstance(items, list)
+                    else False
+                ).sum()
+            )
     elif cfg is not None:
         if "total_3d_length_um" in df_tracks.columns:
             counts["long"] = int((df_tracks["total_3d_length_um"] > cfg.get("AUDIT_MAX_LENGTH_UM", 15.0)).sum())
@@ -4780,6 +4896,7 @@ def process_batch(cfg):
         print(f"Saved exclusion copy: {excl_out}")
     preprocess_context = build_stack_preprocess_context(files, roi_mask, cfg, exclusion_mask=exclusion_mask)
     save_stack_preprocess_context(preprocess_context, cfg["OUTPUT_DIR"])
+    cfg["RESOLVED_PREPROCESSING_PROFILE"] = preprocess_context.selected_clahe_profile
     print(f"Stack preprocessing: profile={preprocess_context.selected_clahe_profile}, clip={preprocess_context.selected_clahe_clip}, norm=({preprocess_context.normalization_low:.3f}, {preprocess_context.normalization_high:.3f}), sampled_z={preprocess_context.sampled_z_indices}")
     all_rows   = []
     summaries  = []
@@ -6369,6 +6486,22 @@ PARAM_SECTIONS = {
     "Calibration & Scale": [
         "UM_PER_PX_XY", "UM_PER_SLICE_Z"
     ],
+    "2.5D U-Net Integration": [
+        "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_THRESHOLD_MODE",
+        "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
+        "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
+        "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX",
+        "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
+        "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
+        "UNET_SHORT_RESCUE_MIN_MEAN_PROB",
+        "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
+        "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
+        "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE", "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB",
+        "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
+        "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
+        "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
+        "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
+    ],
     "Image Enhancement": [
         "CLAHE_CLIP", "CLAHE_KERNEL", "BG_SIGMA", "THRESHOLD_HI", "THRESHOLD_LO"
     ],
@@ -6387,6 +6520,7 @@ PARAM_SECTIONS = {
     ],
     "3D Tracking": [
         "DO_TRACKING", "TRACKING_BACKEND", "TRACK_MAX_DIST_UM", "TRACK_MAX_GAP_SLICES", "TRACK_BBOX_PADDING_PX",
+        "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM",
         "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO", "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO",
         "CONSERVATIVE_MAX_AREA_JUMP_RATIO", "CONSERVATIVE_MAX_TORTUOSITY_JUMP",
         "CONSERVATIVE_MAX_CENTROID_JUMP_UM"
@@ -6402,21 +6536,6 @@ PARAM_SECTIONS = {
     "3D Tracking - Hybrid Fragment Repair": [
         "HYBRID_REPAIR_MAX_COST", "HYBRID_REPAIR_MAX_GAP_SLICES", "HYBRID_REPAIR_MAX_FRAGMENT_SLICES",
         "HYBRID_REPAIR_MAX_LINK_DIST_UM", "HYBRID_REPAIR_MIN_OVERLAP", "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM"
-    ],
-    "2.5D U-Net Integration": [
-        "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_THRESHOLD_MODE",
-        "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
-        "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
-        "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX",
-        "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
-        "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
-        "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
-        "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
-        "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE", "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB",
-        "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
-        "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
-        "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
-        "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
     ],
     "Candidate Audit (post-tracking)": [
         "AUDIT_MAX_LENGTH_UM", "AUDIT_MAX_TORTUOSITY", "AUDIT_MAX_THICKNESS_UM", "AUDIT_MAX_TAPER_RATIO",
@@ -6478,6 +6597,7 @@ PARAM_TITLES = {
     "HYBRID_REPAIR_MAX_LINK_DIST_UM": "Hybrid repair maximum link distance (um)",
     "HYBRID_REPAIR_MIN_OVERLAP": "Hybrid repair minimum bounding-box overlap",
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": "Hybrid repair maximum merged 3D length (um)",
+    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": "Maximum physically joined nucleus length (um)",
     "SEGMENTATION_ENGINE": "Segmentation engine",
     "UNET_MODEL_PATH": "U-Net checkpoint path",
     "UNET_THRESHOLD_MODE": "U-Net threshold mode",
@@ -6493,7 +6613,8 @@ PARAM_TITLES = {
     "UNET_RESCUE_THRESHOLD": "U-Net rescue probability threshold",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "Rescue exclusion around Saturn hits (px)",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum rescue component size (px)",
-    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Minimum rescued skeleton length (um)",
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Minimum resolvable U-Net centerline (um)",
+    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": "Short-nucleus U-Net confidence",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Maximum rescued detections per slice",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "Retry splitting rejected U-Net candidates",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "U-Net split retry thresholds",
@@ -6570,6 +6691,7 @@ PARAM_DESCRIPTIONS = {
     "HYBRID_REPAIR_MAX_LINK_DIST_UM": "V5.6 ROI-ADAPTIVE repair only. Hard distance gate for fragment merges unless there is direct bounding-box overlap evidence.",
     "HYBRID_REPAIR_MIN_OVERLAP": "V5.6 ROI-ADAPTIVE repair only. Preferred minimum bounding-box overlap for a repair link. Very close non-overlap links can still pass if the total cost is low.",
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": "V5.6 ROI-ADAPTIVE repair only. Rejects a proposed merge if the estimated merged 3D length would exceed this value.",
+    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": "Hard physical guard used by every tracking backend. A proposed cross-slice link is rejected when it would create a reconstructed nucleus longer than this value; individual long observations remain visible for review.",
     "SEGMENTATION_ENGINE": "v5.7 scaffold. classical_saturn keeps the existing pipeline. hybrid or unet_assisted allows optional U-Net probability evidence to support candidate detection and 3D linking.",
     "UNET_MODEL_PATH": "Path to a trained 2.5D U-Net checkpoint. Leave blank to keep Saturn fully classical.",
     "UNET_THRESHOLD_MODE": "soft keeps U-Net output as probability evidence; hard turns the probability map into a binary candidate mask. Soft is safer while the model is still being validated.",
@@ -6585,7 +6707,8 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_THRESHOLD": "Probability cutoff for the rescue lane. Higher values rescue fewer, more confident U-Net detections; lower values increase sensitivity but can add fragments.",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum binary component size before U-Net rescue skeletonization. Increase to suppress tiny U-Net specks; decrease to recover very faint fragments.",
-    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Minimum skeleton length for U-Net-only rescued detections. Increase to remove tiny fragments without making the core Saturn detector stricter.",
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Technical resolution floor for U-Net-only centerlines. Keep this well below expected biological nucleus lengths so genuinely short WT or mutant nuclei are retained; increase only when confirmed pixel-scale specks are being accepted.",
+    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": "Mean U-Net probability required to retain a centerline below the technical length floor. This confidence exception prevents expected WT or mutant length from becoming an acceptance rule.",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "If enabled, U-Net rescue candidates rejected as long, branched, looped, tortuous, or endpoint-heavy are retried at stricter probability-core thresholds before final rejection.",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
@@ -6673,6 +6796,43 @@ AUDIT_EXPLANATION = (
     "Technical-valid tracks form the one estimated-nuclei analysis population. "
     "Morphology-warning, warning-free, and reference-morphology flags are QC annotations, not alternative populations."
 )
+
+PARAM_ENUM_OPTIONS = {
+    "SEGMENTATION_ENGINE": ("classical_saturn", "hybrid", "unet_assisted"),
+    "UNET_THRESHOLD_MODE": ("soft", "hard"),
+    "UNET_CONTEXT_MODE": ("z_minus_z_z_plus",),
+    "UNET_INFERENCE_MODE": ("roi_tiled",),
+    "TRACKING_BACKEND": ("legacy", "global_assignment", "hybrid_repair"),
+}
+
+PARAM_EDITOR_VALUE_TYPES = (int, float, bool, str, list)
+
+
+def _parameter_editor_can_display(key, cfg):
+    """Return whether a documented configuration value can be edited safely."""
+    return (
+        key in cfg
+        and key in PARAM_DESCRIPTIONS
+        and isinstance(cfg[key], PARAM_EDITOR_VALUE_TYPES)
+    )
+
+
+def _coerce_parameter_editor_value(value, expected_type):
+    """Convert a Tk variable value back to its CONFIG-compatible type."""
+    if expected_type is bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"true", "1", "t", "y", "yes", "on"}
+    if expected_type is str:
+        return str(value).strip()
+    if expected_type is list:
+        if isinstance(value, list):
+            return value
+        parsed = json.loads(str(value).strip())
+        if not isinstance(parsed, list):
+            raise ValueError("list parameters must use JSON list syntax, for example [0.7, 0.8, 0.9]")
+        return parsed
+    return expected_type(str(value).strip())
 
 
 
@@ -6771,6 +6931,30 @@ class ParameterEditor(tk.Toplevel):
         intro.grid(row=row, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 12))
         row += 1
 
+        active_engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn"))
+        active_checkpoint = str(cfg.get("UNET_MODEL_PATH", "")).strip()
+        checkpoint_label = os.path.basename(active_checkpoint) if active_checkpoint else "none selected"
+        checkpoint_state = (
+            "found"
+            if active_checkpoint and os.path.isfile(active_checkpoint)
+            else ("missing" if active_checkpoint else "not required for classical mode")
+        )
+        active_summary = tk.Label(
+            self.scrollable_frame,
+            text=(
+                f"Active segmentation engine: {active_engine}    |    "
+                f"U-Net checkpoint: {checkpoint_label} ({checkpoint_state})"
+            ),
+            justify="left",
+            anchor="w",
+            bg="#ecfdf5" if checkpoint_state != "missing" else "#fef2f2",
+            fg="#166534" if checkpoint_state != "missing" else "#991b1b",
+            padx=10,
+            pady=7,
+        )
+        active_summary.grid(row=row, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
+        row += 1
+
         displayed = set()
         for section, keys in PARAM_SECTIONS.items():
             section_frame = tk.Frame(self.scrollable_frame, bg="#f6f8fb", bd=1, relief="groove")
@@ -6799,15 +6983,44 @@ class ParameterEditor(tk.Toplevel):
                 local_row = 1
 
             for k in keys:
-                if k not in cfg or k not in PARAM_DESCRIPTIONS or not isinstance(cfg[k], (int, float, bool)):
+                if not _parameter_editor_can_display(k, cfg):
                     continue
                 displayed.add(k)
                 v = cfg[k]
                 label_txt = f"{PARAM_TITLES.get(k, k)}\n[{k}]"
                 tk.Label(section_frame, text=label_txt, font=("Arial", 10, "bold"), width=34, anchor="e", justify="right", bg="#f6f8fb").grid(row=local_row, column=0, padx=(8, 10), pady=4, sticky="e")
-                var = tk.StringVar(value=str(v))
-                ent = tk.Entry(section_frame, textvariable=var, width=16)
-                ent.grid(row=local_row, column=1, padx=(0, 10), pady=4, sticky="w")
+                if isinstance(v, bool):
+                    var = tk.BooleanVar(value=v)
+                    control = tk.Checkbutton(
+                        section_frame,
+                        variable=var,
+                        bg="#f6f8fb",
+                        activebackground="#f6f8fb",
+                    )
+                    control.grid(row=local_row, column=1, padx=(0, 10), pady=4, sticky="w")
+                elif k in PARAM_ENUM_OPTIONS:
+                    var = tk.StringVar(value=str(v))
+                    control = ttk.Combobox(
+                        section_frame,
+                        textvariable=var,
+                        values=PARAM_ENUM_OPTIONS[k],
+                        state="readonly",
+                        width=24,
+                    )
+                    control.grid(row=local_row, column=1, padx=(0, 10), pady=4, sticky="w")
+                else:
+                    display_value = json.dumps(v) if isinstance(v, list) else str(v)
+                    var = tk.StringVar(value=display_value)
+                    control_frame = tk.Frame(section_frame, bg="#f6f8fb")
+                    control_frame.grid(row=local_row, column=1, padx=(0, 10), pady=4, sticky="w")
+                    width = 52 if k == "UNET_MODEL_PATH" else 24
+                    tk.Entry(control_frame, textvariable=var, width=width).pack(side="left")
+                    if k == "UNET_MODEL_PATH":
+                        tk.Button(
+                            control_frame,
+                            text="Browse...",
+                            command=lambda target=var: self._browse_checkpoint(target),
+                        ).pack(side="left", padx=(5, 0))
                 self.entries[k] = (var, type(v))
                 desc = tk.Label(section_frame, text=PARAM_DESCRIPTIONS[k], fg="dimgray", bg="#f6f8fb", anchor="w", justify="left", wraplength=760)
                 desc.grid(row=local_row, column=2, padx=(0, 10), pady=4, sticky="w")
@@ -6833,16 +7046,26 @@ class ParameterEditor(tk.Toplevel):
                 tk.Label(extra, text="No extended description registered yet. Use caution and compare with nearby parameters in the same stage.", fg="dimgray", bg="#fdfdfd", anchor="w", justify="left", wraplength=760).grid(row=local_row, column=2, padx=(0, 10), pady=4, sticky="w")
                 local_row += 1
 
+    def _browse_checkpoint(self, target_var):
+        current = str(target_var.get()).strip()
+        initial_dir = os.path.dirname(current) if current and os.path.isdir(os.path.dirname(current)) else os.getcwd()
+        selected = filedialog.askopenfilename(
+            title="Select v5.7 U-Net Checkpoint",
+            initialdir=initial_dir,
+            filetypes=[
+                ("PyTorch checkpoints", "*.pt *.pth"),
+                ("All files", "*.*"),
+            ],
+        )
+        if selected:
+            target_var.set(os.path.abspath(selected))
+
     def apply(self):
         new_cfg = self.current_config.copy()
         try:
             for k, (var, t) in self.entries.items():
-                val = var.get().strip()
-                if t == bool:
-                    new_cfg[k] = val.lower() in ['true', '1', 't', 'y', 'yes']
-                else:
-                    new_cfg[k] = t(val)
-        except ValueError as e:
+                new_cfg[k] = _coerce_parameter_editor_value(var.get(), t)
+        except (TypeError, ValueError, json.JSONDecodeError) as e:
             messagebox.showerror("Validation Error", f"Invalid input format: {e}")
             return
 
@@ -6873,11 +7096,7 @@ class ParameterEditor(tk.Toplevel):
                 import json
                 new_cfg = self.current_config.copy()
                 for k, (var, t) in self.entries.items():
-                    val = var.get().strip()
-                    if t == bool:
-                        new_cfg[k] = val.lower() in ['true', '1', 't', 'y', 'yes']
-                    else:
-                        new_cfg[k] = t(val)
+                    new_cfg[k] = _coerce_parameter_editor_value(var.get(), t)
                 with open(fpath, 'w') as f:
                     json.dump(new_cfg, f, indent=4)
                 messagebox.showinfo("Saved", f"Parameters saved to {os.path.basename(fpath)}")
@@ -7093,9 +7312,104 @@ STUDY_MANIFEST_COLUMNS = [
 ]
 
 _STUDY_SOURCE_RE = re.compile(
-    r"^Project_Series(?P<series>\d+)_z(?P<z>\d+)_ch00\.tif{1,2}$",
+    r"^Project(?P<project>\d*)_Series(?P<series>\d+)_z(?P<z>\d+)_ch00\.tif{1,2}$",
     re.IGNORECASE,
 )
+_STUDY_EXPLICIT_Z_RE = re.compile(
+    r"^(?P<prefix>.+?)(?P<z_sep>[_ .-]?)(?P<z_token>z)(?P<z>\d+)"
+    r"(?P<channel_part>[_ .-](?P<channel_tag>ch|c)(?P<channel>\d+))?"
+    r"\.(?P<extension>tif{1,2})$",
+    re.IGNORECASE,
+)
+_STUDY_TRAILING_INDEX_RE = re.compile(
+    r"^(?P<prefix>.+?)(?P<index_sep>[_ .-])(?P<z>\d+)"
+    r"\.(?P<extension>tif{1,2})$",
+    re.IGNORECASE,
+)
+_STUDY_EXCLUDED_DIR_NAMES = {
+    "overlays",
+    "quality_overlays",
+    "plots",
+    "debug",
+    "debug_images",
+    "masks",
+    "labels",
+    "segmentation_outputs",
+    "biologist_results",
+    "parameter_tuning_results",
+}
+
+
+def _study_parse_source_name(filename):
+    """Return a conservative stack identity and Z index for a source TIFF name."""
+    match = _STUDY_SOURCE_RE.match(filename)
+    if match:
+        project = match.group("project") or ""
+        series = int(match.group("series"))
+        project_token = f"Project{project}" if project else "Project"
+        return {
+            "kind": "leica",
+            "stack_key": ("leica", project.lower(), series),
+            "project": project,
+            "series": series,
+            "z": int(match.group("z")),
+            "file_pattern": f"{project_token}_Series{series:03d}_z*_ch00.tif",
+            "label": f"{project_token}_Series{series:03d}",
+        }
+
+    match = _STUDY_EXPLICIT_Z_RE.match(filename)
+    if match:
+        channel = match.group("channel")
+        if channel is not None and int(channel) != 0:
+            return None
+        prefix = match.group("prefix")
+        z_sep = match.group("z_sep")
+        z_token = match.group("z_token")
+        channel_part = match.group("channel_part") or ""
+        extension = match.group("extension")
+        identity = f"{prefix}{channel_part}".lower()
+        return {
+            "kind": "explicit_z",
+            "stack_key": ("explicit_z", identity),
+            "project": "",
+            "series": None,
+            "z": int(match.group("z")),
+            "file_pattern": (
+                f"{prefix}{z_sep}{z_token}[0-9]*{channel_part}.{extension}"
+            ),
+            "label": prefix.rstrip("_ .-") or "Z_stack",
+        }
+
+    match = _STUDY_TRAILING_INDEX_RE.match(filename)
+    if match:
+        prefix = match.group("prefix")
+        separator = match.group("index_sep")
+        extension = match.group("extension")
+        return {
+            "kind": "trailing_index",
+            "stack_key": ("trailing_index", prefix.lower()),
+            "project": "",
+            "series": None,
+            "z": int(match.group("z")),
+            "file_pattern": f"{prefix}{separator}[0-9]*.{extension}",
+            "label": prefix.rstrip("_ .-") or "Indexed_stack",
+        }
+    return None
+
+
+def _study_is_output_directory(folder, study_root):
+    """Exclude known generated-output trees from flexible TIFF discovery."""
+    try:
+        parts = folder.resolve().relative_to(study_root.resolve()).parts
+    except Exception:
+        parts = folder.parts
+    for part in parts:
+        normalized = part.lower()
+        if normalized in _STUDY_EXCLUDED_DIR_NAMES:
+            return True
+        if normalized.startswith(("batch_output", "attempt_", "v5_6_", "v5_7_")):
+            return True
+    return False
 
 
 def _study_bool(value):
@@ -7124,14 +7438,30 @@ def _study_group_from_folder(folder, study_root):
     except Exception:
         candidate = pl.Path(folder).parent.name
     candidate = re.sub(r"\s+Test\s+SV$", "", candidate, flags=re.IGNORECASE).strip()
+    normalized = candidate.lower()
+    if normalized.startswith(("kj ", "lkj ")):
+        return "KJ"
+    if normalized.startswith("w1118 "):
+        return "WT"
     return candidate or "Unassigned"
 
 
-def _study_parse_leica_metadata(sample_dir, series_number, fallback_xy, fallback_z):
+def _study_parse_leica_metadata(
+    sample_dir,
+    project_number,
+    series_number,
+    fallback_xy,
+    fallback_z,
+):
     """Read the physical calibration and acquisition signature from Leica XML."""
     import xml.etree.ElementTree as ET
 
-    xml_path = pl.Path(sample_dir) / "MetaData" / f"Project_Series{int(series_number):03d}.xml"
+    project_token = f"Project{project_number}" if project_number else "Project"
+    xml_path = (
+        pl.Path(sample_dir)
+        / "MetaData"
+        / f"{project_token}_Series{int(series_number):03d}.xml"
+    )
     result = {
         "xy_um_per_pixel": float(fallback_xy),
         "z_um_per_slice": float(fallback_z),
@@ -7194,26 +7524,33 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
     candidate_dirs = [study_root]
     candidate_dirs.extend(path for path in study_root.rglob("*") if path.is_dir())
     for folder in candidate_dirs:
+        if _study_is_output_directory(folder, study_root):
+            continue
         sources = []
         for path in folder.iterdir():
             if not path.is_file():
                 continue
-            match = _STUDY_SOURCE_RE.match(path.name)
-            if match:
-                sources.append((int(match.group("series")), int(match.group("z")), path))
+            parsed = _study_parse_source_name(path.name)
+            if parsed:
+                sources.append((parsed, path))
         if not sources:
             continue
 
-        series_values = sorted({series for series, _z, _path in sources})
-        for series in series_values:
+        stack_keys = sorted({parsed["stack_key"] for parsed, _path in sources})
+        for stack_key in stack_keys:
             series_sources = sorted(
-                [(z, path) for src_series, z, path in sources if src_series == series],
+                [
+                    (parsed["z"], path, parsed)
+                    for parsed, path in sources
+                    if parsed["stack_key"] == stack_key
+                ],
                 key=lambda item: item[0],
             )
-            z_values = [z for z, _path in series_sources]
+            z_values = [z for z, _path, _parsed in series_sources]
+            stack_info = series_sources[0][2]
             base_id = _study_safe_id(folder.name)
-            if len(series_values) > 1:
-                base_id = f"{base_id}_Series{series}"
+            if len(stack_keys) > 1:
+                base_id = f"{base_id}_{_study_safe_id(stack_info['label'])}"
             sample_id = base_id
             suffix = 2
             while sample_id.lower() in used_ids:
@@ -7221,13 +7558,32 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                 suffix += 1
             used_ids.add(sample_id.lower())
 
-            metadata = _study_parse_leica_metadata(
-                folder,
-                series,
-                cfg.get("UM_PER_PX_XY", 1.0),
-                cfg.get("UM_PER_SLICE_Z", 1.0),
-            )
+            if stack_info["kind"] == "leica":
+                metadata = _study_parse_leica_metadata(
+                    folder,
+                    stack_info["project"],
+                    stack_info["series"],
+                    cfg.get("UM_PER_PX_XY", 1.0),
+                    cfg.get("UM_PER_SLICE_Z", 1.0),
+                )
+            else:
+                metadata = {
+                    "xy_um_per_pixel": float(cfg.get("UM_PER_PX_XY", 1.0)),
+                    "z_um_per_slice": float(cfg.get("UM_PER_SLICE_Z", 1.0)),
+                    "acquisition_class": (
+                        f"generic filename ({stack_info['kind']}); "
+                        "calibration inherited from current settings"
+                    ),
+                }
             roi_path = folder / roi_filename
+            if not roi_path.is_file():
+                roi_candidates = sorted(
+                    path
+                    for path in folder.glob("*.npy")
+                    if path.is_file() and path.name.lower().startswith("roi")
+                )
+                if len(roi_candidates) == 1:
+                    roi_path = roi_candidates[0]
             rows.append(
                 {
                     "include": True,
@@ -7235,7 +7591,7 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                     "group": _study_group_from_folder(folder, study_root),
                     "input_dir": str(folder),
                     "roi_path": str(roi_path),
-                    "file_pattern": f"Project_Series{series:03d}_z*_ch00.tif",
+                    "file_pattern": stack_info["file_pattern"],
                     "slice_count": len(series_sources),
                     "z_min": min(z_values),
                     "z_max": max(z_values),
@@ -7275,6 +7631,204 @@ def load_multisample_manifest(path):
     return rows
 
 
+def organize_multisample_study_copy(
+    rows,
+    output_root,
+    progress_callback=None,
+    copy_metadata=True,
+):
+    """Create a canonical, non-destructive copy of discovered study stacks."""
+    from datetime import datetime
+
+    if not rows:
+        raise ValueError("No study rows were supplied for organization.")
+
+    output_root = pl.Path(output_root).resolve()
+    input_roots = {
+        pl.Path(str(row.get("input_dir", ""))).resolve()
+        for row in rows
+        if str(row.get("input_dir", "")).strip()
+    }
+    common_source_root = pl.Path(
+        os.path.commonpath([str(path) for path in input_roots])
+    ).resolve()
+    try:
+        output_root.relative_to(common_source_root)
+        raise ValueError(
+            "The organized output must be outside the discovered source tree."
+        )
+    except ValueError as exc:
+        if str(exc).startswith("The organized output"):
+            raise
+    for input_root in input_roots:
+        if output_root == input_root:
+            raise ValueError("The organized output cannot be an input specimen folder.")
+        try:
+            output_root.relative_to(input_root)
+            raise ValueError(
+                "The organized output must be outside every source specimen folder."
+            )
+        except ValueError as exc:
+            if str(exc).startswith("The organized output"):
+                raise
+
+    marker_path = output_root / "organization_summary.json"
+    if output_root.exists():
+        existing = list(output_root.iterdir())
+        if existing and not marker_path.is_file():
+            raise ValueError(
+                "Choose an empty output folder. Existing non-organizer content was found."
+            )
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    validated, _errors = validate_multisample_manifest(rows)
+    organized_rows = []
+    mapping_records = []
+    copied_files = 0
+    reused_files = 0
+    copied_bytes = 0
+    total = sum(_study_bool(row.get("include", True)) for row in validated)
+    position = 0
+
+    for row in validated:
+        if not _study_bool(row.get("include", True)):
+            continue
+        position += 1
+        sample_id = _study_safe_id(row.get("sample_id", "Sample"))
+        group = _study_safe_id(row.get("group", "Unassigned"))
+        source_dir = pl.Path(str(row.get("input_dir", ""))).resolve()
+        pattern = str(row.get("file_pattern", "")).strip()
+
+        blocking_messages = [
+            message.strip()
+            for message in str(row.get("message", "")).split(";")
+            if message.strip()
+            and message.strip() != "ROI file missing"
+            and not message.strip().startswith("unusual Z spacing")
+        ]
+        if blocking_messages:
+            raise ValueError(
+                f"{sample_id} cannot be organized: {'; '.join(blocking_messages)}"
+            )
+
+        source_members = []
+        for source_path in source_dir.glob(pattern):
+            parsed = _study_parse_source_name(source_path.name)
+            if parsed:
+                source_members.append((int(parsed["z"]), source_path))
+        source_members.sort(key=lambda item: item[0])
+        if not source_members:
+            raise ValueError(f"{sample_id} has no source TIFF files matching {pattern!r}.")
+
+        z_values = [z_index for z_index, _path in source_members]
+        if len(z_values) != len(set(z_values)):
+            raise ValueError(f"{sample_id} has duplicate Z indices.")
+        missing = sorted(set(range(min(z_values), max(z_values) + 1)) - set(z_values))
+        if missing:
+            raise ValueError(f"{sample_id} has missing Z indices: {missing}")
+
+        destination_dir = output_root / group / sample_id
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        for z_index, source_path in source_members:
+            destination_name = f"{sample_id}_z{z_index:04d}_ch00.tif"
+            destination_path = destination_dir / destination_name
+            if destination_path.exists():
+                if destination_path.stat().st_size != source_path.stat().st_size:
+                    raise ValueError(
+                        f"Existing organized file differs: {destination_path}"
+                    )
+                action = "reused"
+                reused_files += 1
+            else:
+                shutil.copy2(source_path, destination_path)
+                action = "copied"
+                copied_files += 1
+                copied_bytes += int(source_path.stat().st_size)
+            mapping_records.append(
+                {
+                    "sample_id": sample_id,
+                    "group": row.get("group", ""),
+                    "z_index": z_index,
+                    "source_path": str(source_path),
+                    "organized_path": str(destination_path),
+                    "action": action,
+                }
+            )
+
+        source_roi = pl.Path(str(row.get("roi_path", "")))
+        destination_roi = destination_dir / "analysis_roi_v5_7.npy"
+        if source_roi.is_file():
+            if destination_roi.exists():
+                if destination_roi.stat().st_size != source_roi.stat().st_size:
+                    raise ValueError(
+                        f"Existing organized ROI differs: {destination_roi}"
+                    )
+            else:
+                shutil.copy2(source_roi, destination_roi)
+
+        metadata_source = source_dir / "MetaData"
+        metadata_destination = destination_dir / "MetaData"
+        if copy_metadata and metadata_source.is_dir():
+            shutil.copytree(
+                metadata_source,
+                metadata_destination,
+                dirs_exist_ok=True,
+                copy_function=shutil.copy2,
+            )
+
+        organized_rows.append(
+            {
+                "include": True,
+                "sample_id": sample_id,
+                "group": row.get("group", ""),
+                "input_dir": str(destination_dir),
+                "roi_path": str(destination_roi),
+                "file_pattern": f"{sample_id}_z[0-9]*_ch00.tif",
+                "slice_count": len(source_members),
+                "z_min": min(z_values),
+                "z_max": max(z_values),
+                "xy_um_per_pixel": float(row["xy_um_per_pixel"]),
+                "z_um_per_slice": float(row["z_um_per_slice"]),
+                "acquisition_class": row.get("acquisition_class", ""),
+                "status": "pending",
+                "message": "" if destination_roi.is_file() else "ROI file missing",
+                "output_dir": "",
+            }
+        )
+        if progress_callback:
+            progress_callback(
+                {
+                    "sample_id": sample_id,
+                    "position": position,
+                    "total": total,
+                    "message": f"organized {len(source_members)} slices",
+                }
+            )
+
+    manifest_path = output_root / "organized_study_manifest.csv"
+    mapping_path = output_root / "source_file_mapping.csv"
+    save_multisample_manifest(organized_rows, manifest_path)
+    pd.DataFrame(mapping_records).to_csv(mapping_path, index=False)
+    summary = {
+        "pipeline_version": _VERSION,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "mode": "non-destructive copy",
+        "sample_count": len(organized_rows),
+        "copied_files": copied_files,
+        "reused_files": reused_files,
+        "copied_bytes": copied_bytes,
+        "samples_missing_roi": [
+            row["sample_id"]
+            for row in organized_rows
+            if not pl.Path(row["roi_path"]).is_file()
+        ],
+        "manifest_path": str(manifest_path),
+        "mapping_path": str(mapping_path),
+    }
+    _study_atomic_json(marker_path, summary)
+    return organized_rows, summary
+
+
 def validate_multisample_manifest(rows):
     """Validate study rows and return copied rows plus a flat error list."""
     from PIL import Image
@@ -7304,10 +7858,10 @@ def validate_multisample_manifest(rows):
             row_errors.append("input directory missing")
         else:
             for path in folder.glob(pattern):
-                match = _STUDY_SOURCE_RE.match(path.name)
-                if match:
+                parsed = _study_parse_source_name(path.name)
+                if parsed:
                     source_files.append(path)
-                    z_values.append(int(match.group("z")))
+                    z_values.append(int(parsed["z"]))
             order = np.argsort(z_values) if z_values else []
             source_files = [source_files[int(i)] for i in order]
             z_values = [z_values[int(i)] for i in order]
@@ -7740,9 +8294,25 @@ def _write_study_aggregates(output_root, rows, state):
     return summaries
 
 
-def run_multisample_study(rows, output_root, base_cfg=None, progress_callback=None, resume=True, batch_runner=None):
+def run_multisample_study(
+    rows,
+    output_root,
+    base_cfg=None,
+    progress_callback=None,
+    resume=True,
+    batch_runner=None,
+    stop_requested=None,
+):
     """Run validated specimens sequentially and resume completed sample attempts."""
     from datetime import datetime
+
+    def should_stop():
+        if stop_requested is None:
+            return False
+        if callable(stop_requested):
+            return bool(stop_requested())
+        is_set = getattr(stop_requested, "is_set", None)
+        return bool(is_set()) if callable(is_set) else bool(stop_requested)
 
     validated, errors = validate_multisample_manifest(rows)
     included_errors = []
@@ -7773,6 +8343,7 @@ def run_multisample_study(rows, output_root, base_cfg=None, progress_callback=No
         except Exception:
             pass
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    state["run_status"] = "running"
     _study_atomic_json(output_root / "runtime_parameters.json", {
         key: value for key, value in cfg_template.items() if not str(key).startswith("_")
     })
@@ -7782,6 +8353,21 @@ def run_multisample_study(rows, output_root, base_cfg=None, progress_callback=No
     included = [row for row in validated if row["include"]]
     total = len(included)
     for position, row in enumerate(included, start=1):
+        if should_stop():
+            state["run_status"] = "stopped"
+            state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _study_atomic_json(state_path, state)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "stopped",
+                        "sample_id": "",
+                        "position": position - 1,
+                        "total": total,
+                        "message": "stopped before starting the next specimen",
+                    }
+                )
+            break
         sample_id = row["sample_id"]
         prior = state.get("samples", {}).get(sample_id, {})
         marker = pl.Path(prior.get("output_dir", "")) / "sample_complete.json" if prior.get("output_dir") else None
@@ -7854,7 +8440,26 @@ def run_multisample_study(rows, output_root, base_cfg=None, progress_callback=No
         _write_study_aggregates(output_root, validated, state)
         if progress_callback:
             progress_callback({"event": event, "sample_id": sample_id, "position": position, "total": total, "message": message})
+        if should_stop():
+            state["run_status"] = "stopped"
+            state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            _study_atomic_json(state_path, state)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "stopped",
+                        "sample_id": sample_id,
+                        "position": position,
+                        "total": total,
+                        "message": "stopped after the current specimen",
+                    }
+                )
+            break
 
+    if state.get("run_status") != "stopped":
+        state["run_status"] = "complete"
+        state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _study_atomic_json(state_path, state)
     summaries = _write_study_aggregates(output_root, validated, state)
     return state, pd.DataFrame(summaries)
 
@@ -8161,9 +8766,14 @@ class SpermGUI:
         self.study_window = None
         self.study_tree = None
         self.study_run_button = None
+        self.study_stop_button = None
+        self.study_progress_bar = None
         self.study_status_var = tk.StringVar(value="No study loaded")
         self.study_output_var = tk.StringVar(value="Output: not selected")
+        self.study_progress_var = tk.DoubleVar(value=0)
+        self.study_progress_text_var = tk.StringVar(value="Progress: 0 / 0 specimens")
         self._study_running = False
+        self._study_stop_event = threading.Event()
 
         self.roi_points = []
         self.drawing = False
@@ -8401,6 +9011,8 @@ class SpermGUI:
             ("Discover Root", self._study_discover_root),
             ("Load Manifest", self._study_load_manifest),
             ("Save Manifest", self._study_save_manifest),
+            ("Assign Group", self._study_assign_group),
+            ("Organize Dataset Copy", self._study_organize_copy),
             ("Select Output", self._study_select_output),
             ("Validate", self._study_validate),
         ):
@@ -8413,11 +9025,37 @@ class SpermGUI:
             font=("Arial", 9, "bold"),
         )
         self.study_run_button.pack(side="right", padx=6, pady=6)
+        self.study_stop_button = tk.Button(
+            toolbar,
+            text="Stop After Current Sample",
+            command=self._study_request_stop,
+            bg="#fecaca",
+            state="disabled",
+        )
+        self.study_stop_button.pack(side="right", padx=4, pady=6)
 
         status = tk.Frame(window, bg="#f8fafc")
         status.pack(fill="x", padx=8, pady=(6, 2))
         tk.Label(status, textvariable=self.study_status_var, anchor="w", bg="#f8fafc").pack(fill="x")
         tk.Label(status, textvariable=self.study_output_var, anchor="w", bg="#f8fafc", fg="#475569").pack(fill="x")
+        progress_row = tk.Frame(status, bg="#f8fafc")
+        progress_row.pack(fill="x", pady=(5, 1))
+        self.study_progress_bar = ttk.Progressbar(
+            progress_row,
+            orient="horizontal",
+            mode="determinate",
+            variable=self.study_progress_var,
+            maximum=1,
+        )
+        self.study_progress_bar.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            progress_row,
+            textvariable=self.study_progress_text_var,
+            anchor="e",
+            bg="#f8fafc",
+            fg="#475569",
+            width=27,
+        ).pack(side="right", padx=(8, 0))
 
         table_frame = tk.Frame(window)
         table_frame.pack(fill="both", expand=True, padx=8, pady=6)
@@ -8425,7 +9063,7 @@ class SpermGUI:
             "include", "sample_id", "group", "slices", "z_range", "roi",
             "xy", "z_step", "status", "message",
         )
-        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
         self.study_tree = tree
         headings = {
             "include": "Include", "sample_id": "Sample ID", "group": "Group",
@@ -8454,7 +9092,10 @@ class SpermGUI:
 
         footer = tk.Label(
             window,
-            text="Double-click Include, Sample ID, Group, XY, or Z spacing to edit. Space toggles Include.",
+            text=(
+                "Select one or more rows to Assign Group. Double-click Include, "
+                "Sample ID, Group, XY, or Z spacing to edit. Space toggles Include."
+            ),
             anchor="w",
             fg="#475569",
         )
@@ -8470,6 +9111,8 @@ class SpermGUI:
         self.study_window = None
         self.study_tree = None
         self.study_run_button = None
+        self.study_stop_button = None
+        self.study_progress_bar = None
 
     def _study_refresh_tree(self):
         tree = self.study_tree
@@ -8513,12 +9156,28 @@ class SpermGUI:
         except (ValueError, IndexError):
             return None
 
+    def _study_selected_indices(self):
+        if self.study_tree is None:
+            return []
+        indices = []
+        for item in self.study_tree.selection():
+            try:
+                indices.append(int(item.rsplit("_", 1)[-1]))
+            except (ValueError, IndexError):
+                continue
+        return sorted(set(indices))
+
     def _study_toggle_selected(self, event=None):
-        index = self._study_selected_index()
-        if index is None or self._study_running:
+        indices = self._study_selected_indices()
+        if not indices or self._study_running:
             return "break"
-        self.study_rows[index]["include"] = not _study_bool(self.study_rows[index].get("include", True))
-        self.study_rows[index]["status"] = "pending" if self.study_rows[index]["include"] else "excluded"
+        for index in indices:
+            self.study_rows[index]["include"] = not _study_bool(
+                self.study_rows[index].get("include", True)
+            )
+            self.study_rows[index]["status"] = (
+                "pending" if self.study_rows[index]["include"] else "excluded"
+            )
         self._study_refresh_tree()
         return "break"
 
@@ -8628,6 +9287,164 @@ class SpermGUI:
         except Exception as exc:
             messagebox.showerror("Manifest Save Failed", str(exc), parent=self.study_window)
 
+    def _study_assign_group(self):
+        if self._study_running:
+            return
+        indices = self._study_selected_indices()
+        if not indices:
+            messagebox.showwarning(
+                "No Samples Selected",
+                "Select one or more specimen rows first.",
+                parent=self.study_window,
+            )
+            return
+        from tkinter import simpledialog
+
+        current_groups = {
+            str(self.study_rows[index].get("group", "")).strip()
+            for index in indices
+        }
+        initial = next(iter(current_groups)) if len(current_groups) == 1 else ""
+        group = simpledialog.askstring(
+            "Assign Biological Group",
+            f"Group label for {len(indices)} selected specimen(s):",
+            initialvalue=initial,
+            parent=self.study_window,
+        )
+        if group is None:
+            return
+        group = group.strip()
+        if not group:
+            messagebox.showerror(
+                "Invalid Group",
+                "The biological group cannot be blank.",
+                parent=self.study_window,
+            )
+            return
+        for index in indices:
+            self.study_rows[index]["group"] = group
+            self.study_rows[index]["status"] = "pending"
+            self.study_rows[index]["message"] = ""
+        self.study_status_var.set(
+            f"Assigned {len(indices)} specimen(s) to group {group!r}"
+        )
+        self._study_refresh_tree()
+
+    def _study_organize_copy(self):
+        if self._study_running:
+            return
+        if not self.study_rows or not self.study_root_dir:
+            messagebox.showwarning(
+                "Discover Study First",
+                "Use Discover Root, review the specimens, and assign biological "
+                "groups before organizing the dataset.",
+                parent=self.study_window,
+            )
+            return
+        source_root = self.study_root_dir
+        source_rows = [dict(row) for row in self.study_rows]
+
+        output_root = filedialog.askdirectory(
+            title="Select an EMPTY folder for the organized dataset copy",
+            initialdir=str(pl.Path(source_root).resolve().parent),
+            mustexist=False,
+            parent=self.study_window,
+        )
+        if not output_root:
+            return
+
+        slice_count = sum(int(row.get("slice_count", 0)) for row in source_rows)
+        proceed = messagebox.askyesno(
+            "Organize Dataset Copy",
+            "Create a non-destructive canonical copy?\n\n"
+            f"Discovered specimens: {len(source_rows)}\n"
+            f"TIFF planes: {slice_count}\n\n"
+            "The biological group labels currently shown in the table will "
+            "define the organized group folders.\n\n"
+            f"Source:\n{source_root}\n\n"
+            f"Organized copy:\n{output_root}\n\n"
+            "Original files will not be renamed, moved, or deleted.",
+            parent=self.study_window,
+        )
+        if not proceed:
+            return
+
+        self._study_running = True
+        if self.study_run_button is not None:
+            self.study_run_button.config(state="disabled", text="Organizing...")
+        self.study_status_var.set(
+            f"Preparing canonical copy of {len(source_rows)} specimens"
+        )
+
+        def progress(event):
+            self.root.after(
+                0,
+                lambda item=dict(event): self._study_organization_progress(item),
+            )
+
+        def worker():
+            try:
+                organized_rows, summary = organize_multisample_study_copy(
+                    source_rows,
+                    output_root,
+                    progress_callback=progress,
+                )
+                self.root.after(
+                    0,
+                    lambda: self._study_organization_finished(
+                        output_root,
+                        organized_rows,
+                        summary,
+                    ),
+                )
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                self.root.after(
+                    0,
+                    lambda: self._study_organization_failed(detail),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _study_organization_progress(self, event):
+        self.study_status_var.set(
+            f"[{event.get('position', 0)}/{event.get('total', 0)}] "
+            f"{event.get('sample_id', '')}: {event.get('message', '')}"
+        )
+
+    def _study_organization_finished(self, output_root, organized_rows, summary):
+        self._study_running = False
+        if self.study_run_button is not None and self.study_run_button.winfo_exists():
+            self.study_run_button.config(state="normal", text="Run / Resume Study")
+        self.study_root_dir = str(pl.Path(output_root).resolve())
+        self.study_rows = organized_rows
+        missing_roi = len(summary.get("samples_missing_roi", []))
+        self.study_status_var.set(
+            f"Organized {len(organized_rows)} samples; {missing_roi} need ROI"
+        )
+        self._study_refresh_tree()
+        messagebox.showinfo(
+            "Dataset Organization Complete",
+            f"Samples organized: {len(organized_rows)}\n"
+            f"Files copied: {summary.get('copied_files', 0)}\n"
+            f"Files reused: {summary.get('reused_files', 0)}\n"
+            f"Samples missing ROI: {missing_roi}\n\n"
+            f"Manifest:\n{summary.get('manifest_path', '')}\n\n"
+            "The organized study has been loaded into the manager.",
+            parent=self.study_window,
+        )
+
+    def _study_organization_failed(self, detail):
+        self._study_running = False
+        if self.study_run_button is not None and self.study_run_button.winfo_exists():
+            self.study_run_button.config(state="normal", text="Run / Resume Study")
+        self.study_status_var.set("Dataset organization failed")
+        messagebox.showerror(
+            "Dataset Organization Failed",
+            detail,
+            parent=self.study_window,
+        )
+
     def _study_select_output(self):
         if self._study_running:
             return
@@ -8705,8 +9522,18 @@ class SpermGUI:
             return
 
         self._study_running = True
+        self._study_stop_event.clear()
         if self.study_run_button is not None:
             self.study_run_button.config(state="disabled", text="Study Running...")
+        if self.study_stop_button is not None:
+            self.study_stop_button.config(
+                state="normal",
+                text="Stop After Current Sample",
+            )
+        self.study_progress_var.set(0)
+        if self.study_progress_bar is not None:
+            self.study_progress_bar.config(maximum=max(included, 1))
+        self.study_progress_text_var.set(f"Progress: 0 / {included} specimens")
         self.study_status_var.set(f"Starting {included}-sample study")
         rows = [dict(row) for row in self.study_rows]
         output_dir = self.study_output_dir
@@ -8723,6 +9550,7 @@ class SpermGUI:
                     base_cfg=cfg,
                     progress_callback=progress,
                     resume=True,
+                    stop_requested=self._study_stop_event,
                 )
                 self.root.after(0, lambda: self._study_run_finished(state, summary))
             except Exception as exc:
@@ -8731,24 +9559,59 @@ class SpermGUI:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _study_request_stop(self):
+        if not self._study_running or self._study_stop_event.is_set():
+            return
+        self._study_stop_event.set()
+        if self.study_stop_button is not None:
+            self.study_stop_button.config(
+                state="disabled",
+                text="Stop Requested",
+            )
+        self.study_status_var.set(
+            "Stop requested; the current specimen will finish, then the study will pause."
+        )
+
     def _study_progress_event(self, event):
         sample_id = event.get("sample_id", "")
         status = event.get("event", "running")
         message = event.get("message", "")
-        for row in self.study_rows:
-            if row.get("sample_id") == sample_id:
-                row["status"] = "complete" if status in {"complete", "skipped"} else status
-                row["message"] = message
-                break
-        self.study_status_var.set(
-            f"[{event.get('position', 0)}/{event.get('total', 0)}] {sample_id}: {message}"
+        if sample_id and status != "stopped":
+            for row in self.study_rows:
+                if row.get("sample_id") == sample_id:
+                    row["status"] = "complete" if status in {"complete", "skipped"} else status
+                    row["message"] = message
+                    break
+        position = int(event.get("position", 0) or 0)
+        total = int(event.get("total", 0) or 0)
+        if status == "started":
+            completed_position = max(position - 1, 0)
+        else:
+            completed_position = position
+        self.study_progress_var.set(completed_position)
+        if self.study_progress_bar is not None:
+            self.study_progress_bar.config(maximum=max(total, 1))
+        self.study_progress_text_var.set(
+            f"Progress: {completed_position} / {total} specimens"
         )
+        if status == "stopped":
+            self.study_status_var.set(message)
+        else:
+            self.study_status_var.set(
+                f"[{position}/{total}] {sample_id}: {message}"
+            )
         self._study_refresh_tree()
 
     def _study_run_finished(self, state, summary):
         self._study_running = False
+        self._study_stop_event.clear()
         if self.study_run_button is not None and self.study_run_button.winfo_exists():
             self.study_run_button.config(state="normal", text="Run / Resume Study")
+        if self.study_stop_button is not None and self.study_stop_button.winfo_exists():
+            self.study_stop_button.config(
+                state="disabled",
+                text="Stop After Current Sample",
+            )
         completed = sum(record.get("status") == "complete" for record in state.get("samples", {}).values())
         failed = sum(record.get("status") == "failed" for record in state.get("samples", {}).values())
         for row in self.study_rows:
@@ -8757,18 +9620,42 @@ class SpermGUI:
                 row["status"] = record.get("status", row.get("status", "pending"))
                 row["message"] = record.get("message", "")
                 row["output_dir"] = record.get("output_dir", "")
-        self.study_status_var.set(f"Study finished: {completed} complete, {failed} failed")
+        total = sum(_study_bool(row.get("include", True)) for row in self.study_rows)
+        self.study_progress_var.set(min(completed + failed, total))
+        self.study_progress_text_var.set(
+            f"Progress: {min(completed + failed, total)} / {total} specimens"
+        )
+        stopped = state.get("run_status") == "stopped"
+        self.study_status_var.set(
+            (
+                f"Study paused: {completed} complete, {failed} failed"
+                if stopped
+                else f"Study finished: {completed} complete, {failed} failed"
+            )
+        )
         self._study_refresh_tree()
         messagebox.showinfo(
-            "Study Run Finished",
-            f"Complete: {completed}\nFailed: {failed}\n\nAggregate table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}",
+            "Study Paused" if stopped else "Study Run Finished",
+            f"Complete: {completed}\nFailed: {failed}\n"
+            + (
+                "Pending specimens can be continued with Run / Resume Study.\n\n"
+                if stopped
+                else "\n"
+            )
+            + f"Aggregate table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}",
             parent=self.study_window,
         )
 
     def _study_run_failed(self, detail):
         self._study_running = False
+        self._study_stop_event.clear()
         if self.study_run_button is not None and self.study_run_button.winfo_exists():
             self.study_run_button.config(state="normal", text="Run / Resume Study")
+        if self.study_stop_button is not None and self.study_stop_button.winfo_exists():
+            self.study_stop_button.config(
+                state="disabled",
+                text="Stop After Current Sample",
+            )
         self.study_status_var.set(f"Study stopped: {detail}")
         messagebox.showerror("Study Run Failed", detail, parent=self.study_window)
 

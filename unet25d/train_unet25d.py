@@ -323,6 +323,7 @@ def main():
     history_path = out_dir / "train_history.csv"
     best_valid = -1.0
     rows = []
+    snapshot_epochs = {int(value) for value in cfg.get("snapshot_epochs", [])}
 
     for epoch in range(1, int(cfg["epochs"]) + 1):
         train_loss, train_dice = run_epoch(model, train_loader, optimizer, device, True)
@@ -350,6 +351,10 @@ def main():
                 {"model": model.state_dict(), "config": cfg, "epoch": epoch, "warm_start": warm_start_info},
                 best_path,
             )
+        snapshot_path = None
+        if epoch in snapshot_epochs:
+            snapshot_path = ckpt_dir / f"epoch_{epoch:03d}.pt"
+            shutil.copy2(last_path, snapshot_path)
 
         with open(history_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -360,6 +365,8 @@ def main():
             shutil.copy2(last_path, mirror_dir / "last.pt")
             if (ckpt_dir / "best.pt").exists():
                 shutil.copy2(ckpt_dir / "best.pt", mirror_dir / "best.pt")
+            if snapshot_path is not None:
+                shutil.copy2(snapshot_path, mirror_dir / snapshot_path.name)
             shutil.copy2(history_path, mirror_dir / "train_history.csv")
 
     print(f"Best validation Dice: {best_valid:.4f}")

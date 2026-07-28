@@ -73,7 +73,6 @@ UNET_RESCUE_PARAM_SPACE = [
     ("UNET_RESCUE_THRESHOLD", 0.45, 0.80, False),
     ("UNET_RESCUE_EXCLUDE_DILATION_PX", 0, 3, True),
     ("UNET_RESCUE_MIN_COMPONENT_PX", 2, 8, True),
-    ("UNET_RESCUE_MIN_SKEL_LEN_UM", 6.5, 9.0, False),
     ("UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB", 0.80, 0.95, False),
     ("UNET_INSTANCE_SEED_THRESHOLD", 0.65, 0.90, False),
     ("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 3, 10, True),
@@ -381,7 +380,6 @@ def summarize_candidate(rows, segs, cfg):
         + max(0.0, 0.08 - rescue_fraction) * 30.0
         + max(0.0, rescue_fraction - 0.42) * 35.0
         + split_ratio_penalty(total_unet_rescued, unet_rescued_split)
-        + short_frac * 4.0
         + long_frac * 4.0
         + wide_frac * 4.0
     )
@@ -410,7 +408,7 @@ def summarize_candidate(rows, segs, cfg):
         "mean_length_um": float(np.mean(lengths)) if lengths.size else 0.0,
         "median_width_um": median_width,
         "median_length_width_ratio": median_ratio,
-        "short_fragment_fraction": short_frac,
+        "short_length_fraction_reported_not_optimized": short_frac,
         "long_object_fraction": long_frac,
         "very_long_object_fraction": float(np.mean(lengths > 20.0)) if lengths.size else 0.0,
         "wide_object_fraction": wide_frac,
@@ -456,6 +454,10 @@ def evaluate_unet_rescue_candidate(params):
     summary["SEGMENTATION_ENGINE"] = cfg["SEGMENTATION_ENGINE"]
     summary["UNET_THRESHOLD_MODE"] = cfg["UNET_THRESHOLD_MODE"]
     summary["UNET_RESCUE_ENABLE"] = cfg["UNET_RESCUE_ENABLE"]
+    summary["UNET_RESCUE_MIN_SKEL_LEN_UM"] = cfg.get("UNET_RESCUE_MIN_SKEL_LEN_UM", 2.0)
+    summary["UNET_SHORT_RESCUE_MIN_MEAN_PROB"] = cfg.get(
+        "UNET_SHORT_RESCUE_MIN_MEAN_PROB", 0.85
+    )
     summary["UNET_RESCUE_SPLIT_RETRY_ENABLE"] = cfg.get("UNET_RESCUE_SPLIT_RETRY_ENABLE", True)
     summary["UNET_RESCUE_SPLIT_THRESHOLDS"] = cfg.get("UNET_RESCUE_SPLIT_THRESHOLDS", [0.70, 0.80, 0.90])
     summary["UNET_INSTANCE_SPLIT_ENABLE"] = cfg.get("UNET_INSTANCE_SPLIT_ENABLE", True)
