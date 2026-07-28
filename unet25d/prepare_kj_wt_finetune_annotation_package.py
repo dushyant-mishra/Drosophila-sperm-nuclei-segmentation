@@ -276,6 +276,8 @@ def main():
         center_image = read_2d(by_z[source_z])
         display = display_image(center_image, roi)
         Image.fromarray(display).save(annotation_dir / annotation_name)
+        # Sreeni resolves project images beside the .iap file when reopening it.
+        Image.fromarray(display).save(output / annotation_name)
         Image.fromarray(roi_guide(display, roi)).save(
             guide_dir / annotation_name.replace(".png", "_roi_guide.png")
         )
