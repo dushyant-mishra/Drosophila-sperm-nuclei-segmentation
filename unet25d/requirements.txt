@@ -3,4 +3,5 @@ pillow
 PyYAML
 torch
 tifffile
+matplotlib
 

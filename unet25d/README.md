@@ -100,6 +100,50 @@ For Saturn integration, COCO stays training-only. Runtime inference should use
 the trained checkpoint and raw image stack, then pass probability maps into
 Saturn for ROI-aware candidate repair, measurement, and QC.
 
+## KJ/WT Replay Fine-Tuning
+
+The current v5.7 fine-tuning workflow combines newly annotated KJ/WT images
+with the previous Sreeni annotations as replay data. The builder:
+
+- excludes annotations that cross or fall outside each ROI
+- remaps replay images to collision-free synthetic Z indices
+- carries the previous, center, and next TIFF planes into the package
+- keeps the four new validation specimens out of training
+- repeats the eight new training images twice for an approximately balanced
+  new-versus-replay epoch
+- applies conservative training-only gain, gamma, and noise augmentation
+
+Build the package locally with:
+
+```powershell
+python build_kj_wt_replay_finetune_package.py `
+  --new-package ..\training_packages\v5_7_kj_wt_tiny_finetune `
+  --replay-coco C:\path\to\previous\_annotations.coco.json `
+  --replay-stack C:\path\to\previous\raw_tiff_stack `
+  --replay-roi C:\path\to\previous\roi.npy `
+  --output ..\training_packages\v5_7_kj_wt_replay_finetune
+```
+
+After training, compare the warm-start checkpoint with the saved epoch
+snapshots using:
+
+```powershell
+python evaluate_brightness_recall.py `
+  --config ..\training_packages\v5_7_kj_wt_replay_finetune\kaggle_finetune.yaml `
+  --checkpoint baseline=C:\path\to\warm_start.pt `
+  --checkpoint epoch_003=C:\path\to\epoch_003.pt `
+  --checkpoint epoch_006=C:\path\to\epoch_006.pt `
+  --checkpoint epoch_009=C:\path\to\epoch_009.pt `
+  --checkpoint epoch_012=C:\path\to\epoch_012.pt `
+  --output C:\path\to\brightness_validation
+```
+
+The evaluator preserves continuous probability maps, shows identical image
+versions across thresholds, and reports probability-support recall separately
+for faint, intermediate, and bright manually annotated nuclei. This is a
+model-recall diagnostic; it does not replace Saturn instance splitting or
+biological QC.
+
 ## Notes
 
 - COCO polygons are rasterized into binary center-slice masks.

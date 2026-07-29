@@ -1,6 +1,7 @@
 ﻿import argparse
 import csv
 import random
+import re
 import shutil
 from pathlib import Path
 
@@ -20,13 +21,46 @@ def load_config(path):
 
 
 class SpermPatchDataset(Dataset):
-    def __init__(self, sample_dir, patch_size, patches_per_image, augment, seed, positive_patch_probability=0.8):
-        self.paths = sorted(Path(sample_dir).glob("*.npz"))
+    def __init__(
+        self,
+        sample_dir,
+        patch_size,
+        patches_per_image,
+        augment,
+        seed,
+        positive_patch_probability=0.8,
+        repeat_z_indices=None,
+        repeat_factor=1,
+        photometric_augment_probability=0.0,
+        photometric_gain_range=(1.0, 1.0),
+        photometric_gamma_range=(1.0, 1.0),
+        photometric_noise_std_max=0.0,
+    ):
+        base_paths = sorted(Path(sample_dir).glob("*.npz"))
+        repeat_z_indices = {int(z) for z in (repeat_z_indices or [])}
+        repeat_factor = max(1, int(repeat_factor))
+        self.paths = []
+        for path in base_paths:
+            match = re.search(r"_z(\d+)_ch00", path.stem, re.IGNORECASE)
+            z = int(match.group(1)) if match else None
+            copies = repeat_factor if z in repeat_z_indices else 1
+            self.paths.extend([path] * copies)
         self.patch_size = int(patch_size)
         self.patches_per_image = int(patches_per_image)
         self.augment = augment
         self.rng = random.Random(seed)
+        self.np_rng = np.random.default_rng(seed)
         self.positive_patch_probability = float(positive_patch_probability)
+        self.photometric_augment_probability = float(
+            photometric_augment_probability
+        )
+        self.photometric_gain_range = tuple(
+            float(value) for value in photometric_gain_range
+        )
+        self.photometric_gamma_range = tuple(
+            float(value) for value in photometric_gamma_range
+        )
+        self.photometric_noise_std_max = float(photometric_noise_std_max)
         if not self.paths:
             raise FileNotFoundError(f"No .npz samples found in {sample_dir}")
 
@@ -69,6 +103,18 @@ class SpermPatchDataset(Dataset):
                 x = np.rot90(x, k=k, axes=(1, 2)).copy()
                 y = np.rot90(y, k=k, axes=(1, 2)).copy()
                 valid = np.rot90(valid, k=k, axes=(1, 2)).copy()
+            if self.rng.random() < self.photometric_augment_probability:
+                gain = self.rng.uniform(*self.photometric_gain_range)
+                gamma = self.rng.uniform(*self.photometric_gamma_range)
+                x = np.clip(x, 0.0, 1.0) ** gamma
+                x = x * gain
+                if self.photometric_noise_std_max > 0:
+                    noise_std = self.rng.uniform(
+                        0.0,
+                        self.photometric_noise_std_max,
+                    )
+                    x = x + self.np_rng.normal(0.0, noise_std, size=x.shape)
+                x = np.clip(x, 0.0, 1.0).astype(np.float32)
 
         return torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(valid)
 
@@ -283,6 +329,12 @@ def main():
         True,
         seed,
         positive_patch_probability,
+        cfg.get("train_repeat_z_indices", []),
+        cfg.get("train_repeat_factor", 1),
+        cfg.get("photometric_augment_probability", 0.0),
+        cfg.get("photometric_gain_range", [1.0, 1.0]),
+        cfg.get("photometric_gamma_range", [1.0, 1.0]),
+        cfg.get("photometric_noise_std_max", 0.0),
     )
     valid_ds = SpermPatchDataset(
         out_dir / "dataset" / "valid",
