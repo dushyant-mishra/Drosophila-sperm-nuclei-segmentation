@@ -413,7 +413,7 @@ def main():
             writer.writeheader()
             writer.writerows(rows)
 
-        if mirror_dir:
+        if mirror_dir and mirror_dir.resolve() != ckpt_dir.resolve():
             shutil.copy2(last_path, mirror_dir / "last.pt")
             if (ckpt_dir / "best.pt").exists():
                 shutil.copy2(ckpt_dir / "best.pt", mirror_dir / "best.pt")
@@ -423,7 +423,7 @@ def main():
 
     print(f"Best validation Dice: {best_valid:.4f}")
     print(f"Saved checkpoints to {ckpt_dir}")
-    if mirror_dir:
+    if mirror_dir and mirror_dir.resolve() != ckpt_dir.resolve():
         print(f"Mirrored checkpoints to {mirror_dir}")
 
 

@@ -373,9 +373,7 @@ def update_config(output, new_train_z):
     )
     config["roi_mask_dir"] = f"{project_root}/roi_masks"
     config["output_dir"] = "/kaggle/working/v57_kj_wt_replay_outputs"
-    config["checkpoint_mirror_dir"] = (
-        "/kaggle/working/v57_kj_wt_replay_outputs/checkpoints"
-    )
+    config["checkpoint_mirror_dir"] = None
     config["train_repeat_z_indices"] = list(new_train_z)
     config["train_repeat_factor"] = 2
     config["photometric_augment_probability"] = 0.65
