@@ -23,6 +23,63 @@ def load_saturn_v57():
     return module
 
 
+def test_v57_import_adds_project_root_for_unet_bridge():
+    saturn = load_saturn_v57()
+
+    assert str(ROOT) in saturn.sys.path
+
+
+def test_hybrid_mode_refuses_missing_checkpoint_instead_of_falling_back():
+    saturn = load_saturn_v57()
+    shape = (16, 16)
+    mask = np.zeros(shape, dtype=bool)
+    ridge = np.zeros(shape, dtype=np.float32)
+    valid = np.ones(shape, dtype=bool)
+    cfg = saturn.CONFIG.copy()
+    cfg.update({"SEGMENTATION_ENGINE": "hybrid", "UNET_MODEL_PATH": ""})
+
+    with pytest.raises(RuntimeError, match="requires UNET_MODEL_PATH"):
+        saturn._apply_unet_candidate_support(
+            mask,
+            ridge,
+            valid,
+            shape,
+            (0, shape[0], 0, shape[1]),
+            valid,
+            cfg,
+            np.zeros((3, *shape), dtype=np.float32),
+            z_idx=5,
+        )
+
+
+def test_hybrid_mode_refuses_missing_checkpoint_file():
+    saturn = load_saturn_v57()
+    shape = (16, 16)
+    mask = np.zeros(shape, dtype=bool)
+    ridge = np.zeros(shape, dtype=np.float32)
+    valid = np.ones(shape, dtype=bool)
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UNET_MODEL_PATH": str(ROOT / "does_not_exist.pt"),
+        }
+    )
+
+    with pytest.raises(FileNotFoundError, match="checkpoint not found"):
+        saturn._apply_unet_candidate_support(
+            mask,
+            ridge,
+            valid,
+            shape,
+            (0, shape[0], 0, shape[1]),
+            valid,
+            cfg,
+            np.zeros((3, *shape), dtype=np.float32),
+            z_idx=5,
+        )
+
+
 def test_component_distance_transform_matches_full_frame():
     saturn = load_saturn_v57()
     mask = np.zeros((96, 112), dtype=bool)

@@ -2,6 +2,10 @@
 import os
 import sys
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 try:
     log_dir = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -230,6 +234,7 @@ CONFIG = {
     "UNET_ROI_PADDING_PX": 32,
     "UNET_STITCH_MODE": "weighted_average",
     "UNET_OUTSIDE_ROI_ZERO": True,
+    "UNET_FAIL_HARD": True,
     "UNET_SAVE_PROBABILITY_MAPS": True,
     "UNET_CANDIDATE_ACCOUNTING": True,
     "UNET_RESCUE_ENABLE": True,
@@ -402,7 +407,7 @@ _REQUIRED = {
     "UNET_CONTEXT_MODE": str, "UNET_INFERENCE_MODE": str,
     "UNET_TILE_SIZE": int, "UNET_TILE_OVERLAP": int, "UNET_TILE_BATCH_SIZE": int,
     "UNET_ROI_PADDING_PX": int,
-    "UNET_STITCH_MODE": str, "UNET_OUTSIDE_ROI_ZERO": bool,
+    "UNET_STITCH_MODE": str, "UNET_OUTSIDE_ROI_ZERO": bool, "UNET_FAIL_HARD": bool,
     "UNET_SAVE_PROBABILITY_MAPS": bool, "UNET_CANDIDATE_ACCOUNTING": bool,
     "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
     "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
@@ -1620,11 +1625,21 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
     has_cached_map = cache is not None and z_idx is not None and any(
         key in cache for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}")
     )
-    if engine not in {"unet_assisted", "hybrid"} or not model_path or (unet_context_stack is None and not has_cached_map):
+    if engine not in {"unet_assisted", "hybrid"}:
         return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
             "unet_enabled": False,
-            "unet_reason": "disabled_or_missing_context",
+            "unet_reason": "classical_engine_selected",
         }
+    if not has_cached_map and not model_path:
+        raise RuntimeError(
+            "Hybrid/U-Net segmentation requires UNET_MODEL_PATH; refusing classical-only fallback"
+        )
+    if not has_cached_map and unet_context_stack is None:
+        raise RuntimeError(
+            "Hybrid/U-Net segmentation requires a 2.5D context stack; refusing classical-only fallback"
+        )
+    if not has_cached_map and not os.path.isfile(model_path):
+        raise FileNotFoundError(f"U-Net checkpoint not found: {model_path}")
 
     try:
         unet_prob = None
@@ -1647,6 +1662,13 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
                 roi_mask=roi_mask_full,
                 cfg=cfg,
             )
+        unet_prob = np.asarray(unet_prob, dtype=np.float32)
+        if unet_prob.shape != full_shape:
+            raise ValueError(f"U-Net probability shape {unet_prob.shape} does not match {full_shape}")
+        if not np.all(np.isfinite(unet_prob)):
+            raise ValueError("U-Net probability map contains non-finite values")
+        if float(np.min(unet_prob)) < 0.0 or float(np.max(unet_prob)) > 1.0:
+            raise ValueError("U-Net probability map values must be within [0, 1]")
         y0, y1, x0, x1 = bbox
         prob_crop = unet_prob[y0:y1, x0:x1].astype(np.float32)
         cand_thr = float(cfg.get("UNET_CANDIDATE_THRESHOLD", cfg.get("UNET_THRESHOLD", 0.05)))
@@ -1680,10 +1702,11 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
             "unet_candidate_pixels": int(np.count_nonzero(full_candidate)),
             "unet_seed_pixels": int(np.count_nonzero(full_seed)),
             "unet_probability_mean_inside_roi": float(np.mean(full_prob[roi_mask_full])) if np.any(roi_mask_full) else 0.0,
+            "unet_probability_max_inside_roi": float(np.max(full_prob[roi_mask_full])) if np.any(roi_mask_full) else 0.0,
         }
     except Exception as exc:
-        if bool(cfg.get("UNET_FAIL_HARD", False)):
-            raise
+        if bool(cfg.get("UNET_FAIL_HARD", True)):
+            raise RuntimeError(f"U-Net inference failed for z={z_idx}: {exc}") from exc
         print(f"  WARNING: U-Net inference failed for z={z_idx}: {exc}")
         return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
             "unet_enabled": False,
@@ -6609,7 +6632,7 @@ PARAM_SECTIONS = {
         "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_THRESHOLD_MODE",
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
-        "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX",
+        "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX", "UNET_FAIL_HARD",
         "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
         "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
         "UNET_SHORT_RESCUE_MIN_MEAN_PROB",
@@ -6728,6 +6751,7 @@ PARAM_TITLES = {
     "UNET_TILE_OVERLAP": "U-Net tile overlap (px)",
     "UNET_TILE_BATCH_SIZE": "U-Net tile batch size",
     "UNET_ROI_PADDING_PX": "U-Net ROI padding (px)",
+    "UNET_FAIL_HARD": "Stop run if U-Net inference fails",
     "UNET_RESCUE_ENABLE": "Enable U-Net rescue lane",
     "UNET_RESCUE_THRESHOLD": "U-Net rescue probability threshold",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "Rescue exclusion around Saturn hits (px)",
@@ -6822,6 +6846,7 @@ PARAM_DESCRIPTIONS = {
     "UNET_TILE_OVERLAP": "Overlap between tiles. More overlap reduces edge artifacts during stitched inference but costs more GPU time.",
     "UNET_TILE_BATCH_SIZE": "How many ROI tiles are sent through the U-Net at once. Increase for faster GPU inference if memory allows; lower it if you hit CUDA memory errors.",
     "UNET_ROI_PADDING_PX": "Extra context around the selected ROI when preparing U-Net tiles. Helps avoid boundary artifacts without letting off-ROI tissue influence output.",
+    "UNET_FAIL_HARD": "Required safety gate for hybrid analysis. If model loading or inference fails, stop the run instead of silently substituting classical-only segmentation.",
     "UNET_RESCUE_ENABLE": "If enabled, U-Net high-probability regions not already covered by accepted Saturn detections are skeletonized and measured as a separate rescue lane.",
     "UNET_RESCUE_THRESHOLD": "Probability cutoff for the rescue lane. Higher values rescue fewer, more confident U-Net detections; lower values increase sensitivity but can add fragments.",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
