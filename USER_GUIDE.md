@@ -64,7 +64,8 @@ technical performance.
 5. Select **Load Tuned Params** when using a reviewed v5.7 parameter JSON.
 6. In **Configure Parameters**, confirm calibration, segmentation engine, and
    U-Net checkpoint settings.
-7. Use **Run Slice** for a representative visual check.
+7. Use **Run Slice** for a representative visual check. Its count is labeled
+   **2D preview candidates** and must not be interpreted as unique nuclei.
 8. Use **Run Batch (All Slices + 3D Track)** only after the slice check looks
    reasonable.
 9. Review overlays and measurement tables before interpreting summary plots.
@@ -356,6 +357,8 @@ batch_output/
 |   |-- sample_summary.csv
 |   |-- nuclei_for_analysis.csv
 |   `-- README.txt
+|-- analysis_summary.csv
+|-- analysis_summary.json
 |-- spermatid_measurements.csv
 |-- track_summary.csv
 |-- batch_analysis_results_v5.7.xlsx
@@ -367,6 +370,12 @@ quality overlays, and presentation export are enabled.
 
 Use `biologist_results/sample_summary.csv` for sample comparisons and
 `biologist_results/nuclei_for_analysis.csv` for nucleus-level analysis.
+`analysis_summary.csv` and `analysis_summary.json` provide the same concise
+primary result contract for GUI batch, command-line batch, and Study Manager
+specimen runs. For a full tracked stack, they report the estimated unique
+nuclei and morphology medians from technical-valid tracks. For **Run Slice**,
+they explicitly report a 2D preview population and leave
+`estimated_unique_nuclei` unavailable.
 `track_summary.csv` is the complete technical audit table. The legacy
 `is_biological_candidate` column is identical to `technical_valid`; it is
 retained for compatibility and does not represent another population.

@@ -200,6 +200,9 @@ def test_post_detection_qc_reports_one_final_population(tmp_path):
             "technical_valid": [True, True, True],
             "morphology_warning": [False, True, True],
             "has_warning_only": [False, True, True],
+            "total_3d_length_um": [9.0, 10.0, 11.0],
+            "z_span_um": [0.0, 1.0, 2.0],
+            "n_slices": [1, 2, 3],
         }
     )
 
@@ -211,6 +214,104 @@ def test_post_detection_qc_reports_one_final_population(tmp_path):
     assert "nuclei_with_morphology_review_note: 2" in report
     assert "reference_morphology_pass" not in report
     assert "warning_free" not in report
+
+
+def test_analysis_summary_uses_only_technical_valid_tracks(tmp_path):
+    saturn = load_saturn_v57()
+    detections = pd.DataFrame(
+        {
+            "length_um_geodesic": [9.0, 10.0, 30.0],
+            "width_um": [1.8, 2.0, 8.0],
+        }
+    )
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2, 3],
+            "technical_valid": [True, True, False],
+            "total_3d_length_um": [10.0, 12.0, 99.0],
+            "max_length_2d": [9.0, 11.0, 90.0],
+            "thickness_um": [1.8, 2.2, 20.0],
+            "tortuosity_3d": [1.0, 1.2, 9.0],
+            "z_span_um": [1.0, 3.0, 40.0],
+            "morphology_warning": [False, True, False],
+        }
+    )
+
+    summary = saturn.export_analysis_summary(tmp_path, detections, tracks)
+
+    assert summary["analysis_population"] == "technical-valid 3D tracks"
+    assert summary["estimated_unique_nuclei"] == 2
+    assert summary["median_3d_length_um"] == 11.0
+    assert summary["median_maximum_2d_length_um"] == 10.0
+    assert summary["technical_failure_track_count_qc"] == 1
+    assert summary["morphology_review_note_count_qc"] == 1
+    assert (tmp_path / "analysis_summary.csv").exists()
+    with (tmp_path / "analysis_summary.json").open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert payload["estimated_unique_nuclei"] == 2
+    assert payload["median_3d_length_um"] == 11.0
+
+
+def test_single_slice_summary_cannot_be_mistaken_for_unique_nuclei(tmp_path):
+    saturn = load_saturn_v57()
+    detections = pd.DataFrame(
+        {
+            "length_um_geodesic": [8.0, 10.0],
+            "width_um": [1.5, 2.0],
+        }
+    )
+
+    summary = saturn.export_analysis_summary(
+        tmp_path,
+        detections,
+        run_scope="single_slice_preview",
+        z_index=12,
+    )
+
+    assert summary["run_scope"] == "single_slice_preview"
+    assert summary["biological_count_available"] is False
+    assert np.isnan(summary["estimated_unique_nuclei"])
+    assert summary["candidate_2d_detection_count"] == 2
+    assert summary["median_2d_length_um"] == 9.0
+    with (tmp_path / "analysis_summary.json").open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert payload["estimated_unique_nuclei"] is None
+    assert "not unique nuclei" in payload["interpretation"].lower()
+
+
+def test_completed_tracking_with_no_detections_reports_zero_not_missing():
+    saturn = load_saturn_v57()
+
+    summary = saturn.build_analysis_summary(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        run_scope="full_stack_3d",
+    )
+
+    assert summary["biological_count_available"] is True
+    assert summary["estimated_unique_nuclei"] == 0
+    assert summary["analysis_population"] == "technical-valid 3D tracks"
+
+
+def test_post_detection_qc_medians_exclude_technical_failures(tmp_path):
+    saturn = load_saturn_v57()
+    tracks = pd.DataFrame(
+        {
+            "technical_valid": [True, True, False],
+            "total_3d_length_um": [10.0, 12.0, 99.0],
+            "z_span_um": [1.0, 3.0, 50.0],
+            "n_slices": [2, 4, 1],
+            "morphology_warning": [False, True, False],
+        }
+    )
+
+    saturn.export_post_detection_qc(tmp_path, pd.DataFrame(), tracks)
+    report = (tmp_path / "post_detection_qc.txt").read_text(encoding="utf-8")
+
+    assert "estimated_unique_nuclei: 2" in report
+    assert "Median 3D length um: 11.000" in report
+    assert "Median Z-span um: 2.000" in report
+    assert "Median 3D length um: 12.000" not in report
 
 
 def test_tracking_audit_records_rejections_without_claiming_stops():

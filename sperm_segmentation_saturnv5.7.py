@@ -4341,6 +4341,102 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
     }
 
 
+def _technical_valid_track_population(track_summary):
+    """Return the one canonical 3D population used for biological summaries."""
+    if track_summary is None or track_summary.empty:
+        return pd.DataFrame()
+    if "technical_valid" in track_summary.columns:
+        return track_summary[_study_series_bool(track_summary["technical_valid"])].copy()
+    return track_summary.copy()
+
+
+def build_analysis_summary(df=None, track_summary=None, run_scope="full_stack_3d", z_index=None):
+    """Build one concise result contract shared by CLI, GUI batch, and slice preview."""
+    detections = df.copy() if df is not None else pd.DataFrame()
+    tracks = track_summary.copy() if track_summary is not None else pd.DataFrame()
+
+    def median(frame, column):
+        if frame.empty or column not in frame.columns:
+            return np.nan
+        values = pd.to_numeric(frame[column], errors="coerce").dropna()
+        return float(values.median()) if not values.empty else np.nan
+
+    if run_scope == "single_slice_preview":
+        return {
+            "run_scope": "single_slice_preview",
+            "analysis_population": "2D candidate detections in one preview slice",
+            "biological_count_available": False,
+            "estimated_unique_nuclei": np.nan,
+            "z_index": z_index,
+            "candidate_2d_detection_count": int(len(detections)),
+            "median_2d_length_um": median(detections, "length_um_geodesic"),
+            "median_2d_width_um": median(detections, "width_um"),
+            "interpretation": (
+                "Preview candidates are not unique nuclei. Run the complete stack "
+                "with 3D tracking for biological counts and 3D morphology."
+            ),
+        }
+
+    tracking_completed = run_scope == "full_stack_3d"
+    primary = _technical_valid_track_population(tracks)
+    morphology_warning_count = 0
+    if not primary.empty and "morphology_warning" in primary.columns:
+        morphology_warning_count = int(
+            _study_series_bool(primary["morphology_warning"]).sum()
+        )
+    return {
+        "run_scope": "full_stack_3d" if tracking_completed else "stack_2d_only",
+        "analysis_population": (
+            "technical-valid 3D tracks"
+            if tracking_completed
+            else "2D candidate detections; no unique-nucleus estimate"
+        ),
+        "biological_count_available": bool(tracking_completed),
+        "estimated_unique_nuclei": int(len(primary)) if tracking_completed else np.nan,
+        "median_3d_length_um": median(primary, "total_3d_length_um"),
+        "median_maximum_2d_length_um": median(primary, "max_length_2d"),
+        "median_effective_thickness_um_psf_sensitive": median(primary, "thickness_um"),
+        "median_3d_tortuosity": median(primary, "tortuosity_3d"),
+        "median_z_span_um": median(primary, "z_span_um"),
+        "raw_2d_detection_count_qc": int(len(detections)),
+        "reconstructed_track_count_qc": int(len(tracks)),
+        "technical_failure_track_count_qc": int(len(tracks) - len(primary)),
+        "morphology_review_note_count_qc": morphology_warning_count,
+        "interpretation": (
+            "Use estimated_unique_nuclei and the technical-valid morphology medians "
+            "for specimen summaries. Fields ending in _qc are technical diagnostics, "
+            "not alternative biological populations."
+            if tracking_completed
+            else "Run with 3D tracking before interpreting a biological nucleus count."
+        ),
+    }
+
+
+def export_analysis_summary(out_dir, df=None, track_summary=None, run_scope="full_stack_3d", z_index=None):
+    """Write the canonical concise summary used by every execution path."""
+    ensure_dir(out_dir)
+    summary = build_analysis_summary(
+        df=df,
+        track_summary=track_summary,
+        run_scope=run_scope,
+        z_index=z_index,
+    )
+    csv_path = os.path.join(out_dir, "analysis_summary.csv")
+    json_path = os.path.join(out_dir, "analysis_summary.json")
+    pd.DataFrame([summary]).to_csv(csv_path, index=False)
+
+    json_summary = {}
+    for key, value in summary.items():
+        if isinstance(value, (np.integer, np.floating)):
+            value = value.item()
+        if isinstance(value, float) and not np.isfinite(value):
+            value = None
+        json_summary[key] = value
+    with open(json_path, "w", encoding="utf-8") as handle:
+        json.dump(json_summary, handle, indent=2)
+    return summary
+
+
 def summarize_comparative_population(df):
     """Return population-level summary metrics for sensitivity and blinded reports."""
     if df is None or df.empty:
@@ -4644,31 +4740,28 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                     lines.append(f"95th percentile link distance um: {float(linked_dist.quantile(0.95)):.3f}")
 
         if df_tracks is not None and not df_tracks.empty:
-            technical_valid_count = (
-                int(df_tracks["technical_valid"].sum())
-                if "technical_valid" in df_tracks.columns
-                else int(len(df_tracks))
-            )
+            primary = _technical_valid_track_population(df_tracks)
+            technical_valid_count = int(len(primary))
             lines.append(
                 f"\nPRIMARY BIOLOGICAL POPULATION (technical-valid 3D tracks): "
                 f"{technical_valid_count}"
             )
-            if "n_slices" in df_tracks.columns:
-                single_frac = float((df_tracks["n_slices"] <= 1).mean() * 100)
+            if "n_slices" in primary.columns and not primary.empty:
+                single_frac = float((primary["n_slices"] <= 1).mean() * 100)
                 lines.append(f"\nSingle-slice tracks: {single_frac:.1f}%")
-                lines.append(f"Median n_slices: {float(df_tracks['n_slices'].median()):.2f}")
-            if "total_3d_length_um" in df_tracks.columns:
-                lines.append(f"Median 3D length um: {float(df_tracks['total_3d_length_um'].median()):.3f}")
-            if "z_span_um" in df_tracks.columns:
-                lines.append(f"Median Z-span um: {float(df_tracks['z_span_um'].median()):.3f}")
+                lines.append(f"Median n_slices: {float(primary['n_slices'].median()):.2f}")
+            if "total_3d_length_um" in primary.columns and not primary.empty:
+                lines.append(f"Median 3D length um: {float(primary['total_3d_length_um'].median()):.3f}")
+            if "z_span_um" in primary.columns and not primary.empty:
+                lines.append(f"Median Z-span um: {float(primary['z_span_um'].median()):.3f}")
             if "technical_valid" in df_tracks.columns:
                 lines.append("\nFINAL ANALYSIS POPULATION:")
-                lines.append(f"  estimated_unique_nuclei: {int(df_tracks['technical_valid'].sum())}")
-                lines.append(f"  technical_failures: {int((~df_tracks['technical_valid']).sum())}")
-            if "morphology_warning" in df_tracks.columns:
+                lines.append(f"  estimated_unique_nuclei: {technical_valid_count}")
+                lines.append(f"  technical_failures: {int(len(df_tracks) - technical_valid_count)}")
+            if "morphology_warning" in primary.columns:
                 lines.append(
                     "  nuclei_with_morphology_review_note: "
-                    f"{int(df_tracks['morphology_warning'].astype(bool).sum())}"
+                    f"{int(_study_series_bool(primary['morphology_warning']).sum())}"
                 )
                 lines.append(
                     "  interpretation: review notes do not remove nuclei and do "
@@ -4815,7 +4908,7 @@ def process_one_image(image_path, cfg, output_dir):
     elapsed = time.time() - t0
 
     um = cfg["UM_PER_PX_XY"]
-    print(f"  Detected: {len(results)} spermatids  ({elapsed:.1f}s)")
+    print(f"  2D preview candidates: {len(results)}  ({elapsed:.1f}s)")
     if results:
         ls = [r["length_px_geodesic"]*um for r in results]
         print(f"  Geodesic length um: median={np.median(ls):.2f}  max={max(ls):.2f}")
@@ -4846,13 +4939,22 @@ def process_one_image(image_path, cfg, output_dir):
         tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_skel_labels.tif"),
                          meas["skel_label"].astype(np.uint16))
 
-    pd.DataFrame(rows_from_results(results, z_idx, um)).to_csv(
+    result_frame = pd.DataFrame(rows_from_results(results, z_idx, um))
+    result_frame.to_csv(
         os.path.join(output_dir, f"single_measurements_{_VERSION}.csv"), index=False)
+    export_analysis_summary(
+        output_dir,
+        df=result_frame,
+        run_scope="single_slice_preview",
+        z_index=z_idx,
+    )
 
     if cfg["SHOW_PREVIEW_WINDOW"]:
         show_single_preview(img_raw, seg, overlay_rgb, results, z_idx, cfg)
 
+    print("  Preview only: these are not estimated unique nuclei.")
     print(f"Saved to: {output_dir}")
+    return results, seg
 
 
 # =============================================================================
@@ -5026,6 +5128,13 @@ def process_batch(cfg):
         export_outlier_audit(cfg["OUTPUT_DIR"], ts, cfg)
         export_post_detection_qc(cfg["OUTPUT_DIR"], df_trk, ts)
 
+    analysis_summary = export_analysis_summary(
+        cfg["OUTPUT_DIR"],
+        df=df,
+        track_summary=ts,
+        run_scope="full_stack_3d" if cfg["DO_TRACKING"] else "stack_2d_only",
+    )
+
     # --- Reporting Phase (CLI/Batch) ---
     print(f"\nGenerating final reports in {cfg['OUTPUT_DIR']}...")
     generate_batch_report(cfg["OUTPUT_DIR"], df, df_sum, um, ts)
@@ -5034,8 +5143,18 @@ def process_batch(cfg):
     total = time.time() - t_batch
     print(f"\n{'='*55}")
     print(f"{_VERSION} DONE | {len(files)} slices | {total:.1f}s")
+    if analysis_summary["biological_count_available"]:
+        print(
+            "Primary result | estimated unique nuclei: "
+            f"{analysis_summary['estimated_unique_nuclei']} | "
+            "median 3D length: "
+            f"{analysis_summary['median_3d_length_um']:.3f} um"
+        )
+    else:
+        print("No biological nucleus count was produced because 3D tracking was unavailable.")
     print(f"Saved to: {cfg['OUTPUT_DIR']}")
-    print(df_sum.to_string(index=False))
+    print("Concise result: analysis_summary.csv")
+    print("Per-slice 2D counts remain available in slice_summary for technical review.")
 
 
 def write_error_log(out_dir, component, message):
@@ -10344,9 +10463,14 @@ class SpermGUI:
             params = CONFIG.copy()
             params['SAVE_DEBUG_IMAGES'] = False
             roi_mask = self.build_roi_mask()
+            preview_z = extract_z_index(
+                self.files[self.current_idx],
+                sequence_idx=self.current_idx,
+            )
 
             full_img = self.current_img
             crop_offset_y, crop_offset_x = 0, 0
+            crop_roi = roi_mask
 
             t0 = _t.time()
             log("  v5.7 U-Net-ready single-pass analysis...")
@@ -10363,14 +10487,33 @@ class SpermGUI:
                 roi_mask=roi_mask,
                 preprocess_context=preview_context,
                 exclusion_mask=None,
-                z_idx=self.current_idx,
+                z_idx=preview_z,
             )
             meas1 = measure_spermatids(seg1, params)
             results = meas1['results']
             skel_label_full = meas1['skel_label']
 
             elapsed = _t.time() - t0
-            log(f"  RESULT: {len(results)} spermatids detected ({elapsed:.1f}s)")
+            log(f"  RESULT: {len(results)} 2D preview candidates ({elapsed:.1f}s)")
+
+            preview_output_dir = params["OUTPUT_DIR"]
+            ensure_dir(preview_output_dir)
+            preview_frame = pd.DataFrame(
+                rows_from_results(results, preview_z, params["UM_PER_PX_XY"])
+            )
+            preview_frame.to_csv(
+                os.path.join(
+                    preview_output_dir,
+                    f"single_measurements_z{preview_z:03d}_{_VERSION}.csv",
+                ),
+                index=False,
+            )
+            export_analysis_summary(
+                preview_output_dir,
+                df=preview_frame,
+                run_scope="single_slice_preview",
+                z_index=preview_z,
+            )
 
             overlay = make_overlay(full_img, skel_label_full)
 
@@ -10385,7 +10528,7 @@ class SpermGUI:
 
             # Show results popup
             top = tk.Toplevel(self.root)
-            top.title(f'Results Z={self.current_idx} - {len(results)} spermatids')
+            top.title(f'2D Preview Z={preview_z} - {len(results)} candidates')
             top.geometry('1200x650')
 
             fig = Figure(figsize=(14, 6))
@@ -10402,7 +10545,7 @@ class SpermGUI:
             ax1.axis('off')
 
             ax2.imshow(overlay)
-            ax2.set_title(f'Overlay (N={len(results)})')
+            ax2.set_title(f'2D candidate overlay (N={len(results)})')
             ax2.axis('off')
 
             um = params['UM_PER_PX_XY']
@@ -10418,16 +10561,23 @@ class SpermGUI:
 
             if results:
                 lengths = [r['length_px_geodesic'] * um for r in results]
-                text = f'Found {len(results)} spermatids | median length {np.median(lengths):.2f} um ({elapsed:.1f}s)'
+                text = (
+                    f'2D preview candidates: {len(results)} | median 2D length '
+                    f'{np.median(lengths):.2f} um ({elapsed:.1f}s)\n'
+                    'Not a unique-nucleus count; run the complete stack for 3D results.'
+                )
             else:
-                text = f'Found 0 spermatids ({elapsed:.1f}s) - see gui_analysis_log.txt for diagnostics'
+                text = (
+                    f'2D preview candidates: 0 ({elapsed:.1f}s) - '
+                    'see gui_analysis_log.txt for diagnostics'
+                )
             lbl_stats = tk.Label(top, text=text, font=('Arial', 11))
             lbl_stats.pack(pady=4)
 
             lbl_tool = tk.Label(top, text="Active Tool: None (Press 'E' to Erase, 'S' to Split, 'Esc' to Cancel)", fg='blue', font=('Arial', 10, 'bold'))
             lbl_tool.pack(pady=2)
 
-            self.lbl_roi.config(text=f'Analysis done: {len(results)} spermatids')
+            self.lbl_roi.config(text=f'Preview done: {len(results)} 2D candidates')
 
             # ------ INTERACTIVE MANUAL CORRECTION LOGIC ------
             class ManualCorrector:
@@ -10532,7 +10682,7 @@ class SpermGUI:
 
                     self.ax.clear()
                     self.ax.imshow(new_overlay)
-                    self.ax.set_title(f'Overlay (N={len(new_results)}) - Manual Corrections Applied')
+                    self.ax.set_title(f'2D candidate overlay (N={len(new_results)}) - Manual Corrections Applied')
                     self.ax.axis('off')
 
                     # Redraw Text
@@ -10547,9 +10697,32 @@ class SpermGUI:
                     # Update Stats Label
                     if new_results:
                         lengths = [r['length_px_geodesic'] * _um for r in new_results]
-                        lbl_stats.config(text=f'Corrected: {len(new_results)} spermatids | median length {np.median(lengths):.2f} um')
+                        lbl_stats.config(
+                            text=(
+                                f'Corrected 2D candidates: {len(new_results)} | '
+                                f'median 2D length {np.median(lengths):.2f} um | '
+                                'not a unique-nucleus count'
+                            )
+                        )
                     else:
-                        lbl_stats.config(text=f'Corrected: 0 spermatids')
+                        lbl_stats.config(text='Corrected 2D candidates: 0')
+
+                    corrected_frame = pd.DataFrame(
+                        rows_from_results(new_results, preview_z, _um)
+                    )
+                    corrected_frame.to_csv(
+                        os.path.join(
+                            preview_output_dir,
+                            f"single_measurements_z{preview_z:03d}_{_VERSION}.csv",
+                        ),
+                        index=False,
+                    )
+                    export_analysis_summary(
+                        preview_output_dir,
+                        df=corrected_frame,
+                        run_scope="single_slice_preview",
+                        z_index=preview_z,
+                    )
 
             # Attach to popup so it doesn't get garbage collected
             top.corrector = ManualCorrector(can, ax2, seg1, params, crop_offset_y, crop_offset_x, full_img)
@@ -10770,11 +10943,18 @@ class SpermGUI:
                 export_outlier_audit(out_dir, ts, params)
                 export_post_detection_qc(out_dir, df_trk, ts)
 
-                n_warning_free = int(ts["is_warning_free_track"].sum()) if "is_warning_free_track" in ts.columns else 0
                 n_candidates = int(ts["technical_valid"].sum()) if "technical_valid" in ts.columns else len(ts)
-                n_hard_fail = len(ts) - n_candidates
+                primary_tracks = _technical_valid_track_population(ts)
+                median_3d_length = (
+                    float(primary_tracks["total_3d_length_um"].median())
+                    if not primary_tracks.empty and "total_3d_length_um" in primary_tracks.columns
+                    else np.nan
+                )
                 self.lbl_batch_op.config(
-                    text=f'Estimated nuclei: {n_candidates} / {n_hard_fail} technical-fail / {n_warning_free} warning-free',
+                    text=(
+                        f'Primary result: {n_candidates} estimated unique nuclei | '
+                        f'median 3D length {median_3d_length:.2f} um'
+                    ),
                     fg='#27ae60')
                 self.root.update()
 
@@ -10791,8 +10971,28 @@ class SpermGUI:
                 self.lbl_post_progress_val.config(text="80%")
                 self.root.update()
 
+            analysis_summary = export_analysis_summary(
+                out_dir,
+                df=df,
+                track_summary=ts,
+                run_scope="full_stack_3d",
+            )
+
             elapsed = _t.time() - t_batch
-            msg = f"Batch complete in {elapsed:.1f}s!\nSaved to: {out_dir}"
+            if analysis_summary["biological_count_available"]:
+                msg = (
+                    f"Batch complete in {elapsed:.1f}s.\n\n"
+                    f"Estimated unique nuclei: {analysis_summary['estimated_unique_nuclei']}\n"
+                    f"Median 3D length: {analysis_summary['median_3d_length_um']:.2f} um\n\n"
+                    f"Primary sample summary:\n"
+                    f"{os.path.join(out_dir, 'biologist_results', 'sample_summary.csv')}\n\n"
+                    f"Saved to:\n{out_dir}"
+                )
+            else:
+                msg = (
+                    f"Batch complete in {elapsed:.1f}s, but no 3D biological "
+                    f"population was produced.\n\nSaved to:\n{out_dir}"
+                )
             print(msg)
             self.lbl_batch_op.config(text='Batch Analysis Complete.', fg='green')
             self.lbl_progress_val.config(text="100% - Done", fg='green')
@@ -10810,11 +11010,20 @@ class SpermGUI:
             generate_excel_report(out_dir, df, df_sum, ts if not df.empty else None)
 
             # --- Store batch data for AI button ---
-            if not df.empty and ts is not None and len(ts) > 0:
-                self._last_batch_ts = ts
+            primary_for_ai = _technical_valid_track_population(ts)
+            if not primary_for_ai.empty:
+                self._last_batch_ts = primary_for_ai
                 self._last_batch_out_dir = out_dir
                 self.btn_ai.config(state='normal')
-                print(f"AI READY: {len(ts)} tracks stored. Click 'Run AI Analysis' to interpret.")
+                print(
+                    "AI READY: "
+                    f"{len(self._last_batch_ts)} technical-valid tracks stored. "
+                    "Click 'Run AI Analysis' to interpret."
+                )
+            else:
+                self._last_batch_ts = None
+                self._last_batch_out_dir = None
+                self.btn_ai.config(state='disabled')
 
             self.lbl_batch_op.config(text='Generating PowerPoint Dashboard...', fg='#c0392b') # Red-ish
             self.root.update()
@@ -10827,7 +11036,6 @@ class SpermGUI:
                 print(f"ERROR generating PPTX: {pptx_err}")
                 _tb.print_exc()
 
-            msg = f"Batch complete in {elapsed:.1f}s!\nSaved to: {out_dir}"
             print(msg)
             self.lbl_batch_op.config(text='ALL OPERATIONS COMPLETE', fg='green')
             self.lbl_progress_val.config(text="100%", fg='green')
