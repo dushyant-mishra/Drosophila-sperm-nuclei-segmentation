@@ -29,6 +29,39 @@ def test_v57_import_adds_project_root_for_unet_bridge():
     assert str(ROOT) in saturn.sys.path
 
 
+def test_quality_overlay_counts_only_report_genuinely_unmapped_labels():
+    saturn = load_saturn_v57()
+    labels = np.zeros((8, 8), dtype=np.int32)
+    labels[1:3, 1] = 1
+    labels[3:5, 3] = 2
+    labels[5:7, 5] = 3
+    labels[2:4, 6] = 4
+    slice_tracks = pd.DataFrame(
+        {
+            "sperm_id": [1, 2, 3],
+            "track_id": [101, 102, 103],
+        }
+    )
+    quality = {101: "candidate", 102: "warning", 103: "hard_fail"}
+
+    counts = saturn.quality_overlay_status_counts(labels, slice_tracks, quality)
+
+    assert counts == {
+        "candidate": 1,
+        "warning": 1,
+        "hard_fail": 1,
+        "unmapped": 1,
+    }
+    legend_labels = [
+        handle.get_label()
+        for handle in saturn.quality_overlay_legend_handles({"candidate", "warning"})
+    ]
+    assert legend_labels == [
+        "Included estimated nucleus",
+        "Included; morphology warning",
+    ]
+
+
 def test_hybrid_mode_refuses_missing_checkpoint_instead_of_falling_back():
     saturn = load_saturn_v57()
     shape = (16, 16)

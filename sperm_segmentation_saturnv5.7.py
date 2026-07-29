@@ -2671,14 +2671,58 @@ def make_quality_overlay(img_raw, skel_label, slice_tracks, track_quality_map):
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
-def quality_overlay_legend_handles():
-    """Return the shared legend for post-tracking QC overlays."""
+_QUALITY_OVERLAY_LEGEND = {
+    "candidate": ("#00d940", "Included estimated nucleus"),
+    "warning": ("#ffbf0d", "Included; morphology warning"),
+    "hard_fail": ("#ff2e0d", "Excluded technical failure"),
+    "unmapped": ("#a6a6a6", "Unmapped 2D candidate"),
+}
+
+
+def quality_overlay_legend_handles(active_statuses=None):
+    """Return a data-dependent legend for post-tracking QC overlays."""
+    statuses = (
+        list(_QUALITY_OVERLAY_LEGEND)
+        if active_statuses is None
+        else [status for status in _QUALITY_OVERLAY_LEGEND if status in active_statuses]
+    )
     return [
-        Patch(facecolor="#00d940", edgecolor="none", label="Included estimated nucleus"),
-        Patch(facecolor="#ffbf0d", edgecolor="none", label="Included; morphology warning"),
-        Patch(facecolor="#ff2e0d", edgecolor="none", label="Excluded technical failure"),
-        Patch(facecolor="#a6a6a6", edgecolor="none", label="Unmapped 2D candidate"),
+        Patch(
+            facecolor=_QUALITY_OVERLAY_LEGEND[status][0],
+            edgecolor="none",
+            label=_QUALITY_OVERLAY_LEGEND[status][1],
+        )
+        for status in statuses
     ]
+
+
+def quality_overlay_status_counts(skel_label, slice_tracks, track_quality_map):
+    """Count displayed skeleton labels in each post-tracking QC category."""
+    counts = {status: 0 for status in _QUALITY_OVERLAY_LEGEND}
+    label_quality = {}
+    if slice_tracks is not None and not slice_tracks.empty:
+        for _, row in slice_tracks.iterrows():
+            try:
+                label = int(row["sperm_id"])
+                track_id = int(row["track_id"])
+            except Exception:
+                continue
+            label_quality[label] = track_quality_map.get(track_id)
+
+    labels = np.unique(skel_label).astype(int) if skel_label is not None else np.array([], dtype=int)
+    for label in labels:
+        if label == 0:
+            continue
+        quality = label_quality.get(label)
+        if quality in {"candidate", "warning", "hard_fail"}:
+            counts[quality] += 1
+        elif quality is True:
+            counts["candidate"] += 1
+        elif quality is False:
+            counts["hard_fail"] += 1
+        else:
+            counts["unmapped"] += 1
+    return counts
 
 
 def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
@@ -2692,31 +2736,6 @@ def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
 
     quality_dir = os.path.join(out_dir, "quality_overlays")
     ensure_dir(quality_dir)
-    legend_fig, legend_ax = plt.subplots(figsize=(9, 1.2))
-    legend_ax.axis("off")
-    legend_ax.legend(
-        handles=quality_overlay_legend_handles(),
-        loc="center",
-        ncol=2,
-        fontsize=10,
-        frameon=True,
-        title="Track-QC overlay colors",
-    )
-    legend_ax.text(
-        0.5,
-        0.02,
-        "Biological summaries include green + amber tracks. Overlay thickness is display-only.",
-        transform=legend_ax.transAxes,
-        ha="center",
-        va="bottom",
-        fontsize=9,
-    )
-    legend_fig.savefig(
-        os.path.join(quality_dir, "quality_overlay_legend.png"),
-        dpi=180,
-        bbox_inches="tight",
-    )
-    plt.close(legend_fig)
 
     track_quality_map = {}
     for _, row in track_summary.iterrows():
@@ -2738,11 +2757,16 @@ def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
 
     max_proj_raw = None
     max_proj_quality = None
+    status_rows = []
     for z_idx in sorted(slice_cache):
         item = slice_cache[z_idx]
         img = item["image"]
         skel_label = item["skel_label"]
         slice_tracks = df_tracked[df_tracked["z_slice"].astype(int) == int(z_idx)]
+        status_rows.append({
+            "z_slice": int(z_idx),
+            **quality_overlay_status_counts(skel_label, slice_tracks, track_quality_map),
+        })
         quality_rgb = make_quality_overlay(img, skel_label, slice_tracks, track_quality_map)
 
         raw_rgb = (normalize_display(img) * 255).astype(np.uint8)
@@ -2767,6 +2791,39 @@ def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
     global_panel = np.hstack([raw_p, quality_p])
     out_path = os.path.join(out_dir, "quality_global_z_projection.png")
     _imwrite(out_path, global_panel)
+
+    status_df = pd.DataFrame(status_rows)
+    status_df.to_csv(os.path.join(quality_dir, "quality_overlay_counts.csv"), index=False)
+    active_statuses = {
+        status
+        for status in _QUALITY_OVERLAY_LEGEND
+        if status in status_df.columns and int(status_df[status].sum()) > 0
+    }
+    legend_fig, legend_ax = plt.subplots(figsize=(9, 1.2))
+    legend_ax.axis("off")
+    legend_ax.legend(
+        handles=quality_overlay_legend_handles(active_statuses),
+        loc="center",
+        ncol=2,
+        fontsize=10,
+        frameon=True,
+        title="Track-QC overlay colors",
+    )
+    legend_ax.text(
+        0.5,
+        0.02,
+        "Biological summaries include green + amber tracks. Overlay thickness is display-only.",
+        transform=legend_ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=9,
+    )
+    legend_fig.savefig(
+        os.path.join(quality_dir, "quality_overlay_legend.png"),
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(legend_fig)
     return out_path
 
 
@@ -6227,6 +6284,12 @@ def generate_batch_report(
             # --- SUBSEQUENT PAGES: PER-SLICE DETAILS (2 panels: [Panel] | [Histogram]) ---
             overlay_dir = os.path.join(out_dir, "overlays")
             quality_dir = os.path.join(out_dir, "quality_overlays")
+            quality_counts_path = os.path.join(quality_dir, "quality_overlay_counts.csv")
+            quality_counts = (
+                pd.read_csv(quality_counts_path)
+                if os.path.exists(quality_counts_path)
+                else pd.DataFrame()
+            )
             accepted_track_ids = set()
             if (
                     df_candidate_tracks is not None
@@ -6276,8 +6339,20 @@ def generate_batch_report(
                     panel_count_label = f"Pre-tracking 2D candidates: N={len(slice_data)}"
                 ax_panel.set_title(panel_count_label)
                 if uses_quality_overlay:
+                    active_statuses = {"candidate", "warning", "hard_fail"}
+                    if not quality_counts.empty and "z_slice" in quality_counts.columns:
+                        status_row = quality_counts[
+                            pd.to_numeric(quality_counts["z_slice"], errors="coerce").eq(z)
+                        ]
+                        if not status_row.empty:
+                            active_statuses = {
+                                status
+                                for status in _QUALITY_OVERLAY_LEGEND
+                                if status in status_row.columns
+                                and int(status_row.iloc[0][status]) > 0
+                            }
                     ax_panel.legend(
-                        handles=quality_overlay_legend_handles(),
+                        handles=quality_overlay_legend_handles(active_statuses),
                         loc="lower center",
                         bbox_to_anchor=(0.5, -0.12),
                         ncol=2,
@@ -10670,12 +10745,37 @@ class SpermGUI:
                         img = plt.imread(panel_path)
                     self.ax.imshow(img)
                     if panel_path == quality_panel_path:
+                        active_statuses = {"candidate", "warning", "hard_fail"}
+                        quality_counts_path = os.path.join(
+                            self.last_out_dir,
+                            "quality_overlays",
+                            "quality_overlay_counts.csv",
+                        )
+                        if os.path.exists(quality_counts_path):
+                            quality_counts = pd.read_csv(quality_counts_path)
+                            status_row = (
+                                quality_counts[
+                                    pd.to_numeric(
+                                        quality_counts["z_slice"],
+                                        errors="coerce",
+                                    ).eq(z_idx)
+                                ]
+                                if "z_slice" in quality_counts.columns
+                                else pd.DataFrame()
+                            )
+                            if not status_row.empty:
+                                active_statuses = {
+                                    status
+                                    for status in _QUALITY_OVERLAY_LEGEND
+                                    if status in status_row.columns
+                                    and int(status_row.iloc[0][status]) > 0
+                                }
                         self.ax.set_title(
-                            "Track-QC overlay: green/amber included; red excluded",
+                            "Track-QC overlay (green/amber are included)",
                             fontsize=9,
                         )
                         self.ax.legend(
-                            handles=quality_overlay_legend_handles(),
+                            handles=quality_overlay_legend_handles(active_statuses),
                             loc="lower center",
                             bbox_to_anchor=(0.5, -0.12),
                             ncol=2,
