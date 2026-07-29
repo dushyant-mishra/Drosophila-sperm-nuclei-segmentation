@@ -341,6 +341,12 @@ def test_analysis_summary_uses_only_technical_valid_tracks(tmp_path):
         {
             "length_um_geodesic": [9.0, 10.0, 30.0],
             "width_um": [1.8, 2.0, 8.0],
+            "detection_source": [
+                "saturn_classical",
+                "unet_rescued_low_ratio_high_confidence",
+                "unet_rescued_split",
+            ],
+            "unet_mean_probability": [0.8, 0.92, 0.85],
         }
     )
     tracks = pd.DataFrame(
@@ -356,7 +362,12 @@ def test_analysis_summary_uses_only_technical_valid_tracks(tmp_path):
         }
     )
 
-    summary = saturn.export_analysis_summary(tmp_path, detections, tracks)
+    summary = saturn.export_analysis_summary(
+        tmp_path,
+        detections,
+        tracks,
+        cfg={"SEGMENTATION_ENGINE": "hybrid", "UNET_MODEL_PATH": "best.pt"},
+    )
 
     assert summary["analysis_population"] == "technical-valid 3D tracks"
     assert summary["estimated_unique_nuclei"] == 2
@@ -364,6 +375,12 @@ def test_analysis_summary_uses_only_technical_valid_tracks(tmp_path):
     assert summary["median_maximum_2d_length_um"] == 10.0
     assert summary["technical_failure_track_count_qc"] == 1
     assert summary["morphology_review_note_count_qc"] == 1
+    assert summary["segmentation_engine"] == "hybrid"
+    assert summary["unet_checkpoint"] == "best.pt"
+    assert summary["unet_rescued_2d_count"] == 2
+    assert summary["unet_rescued_split_2d_count"] == 1
+    assert summary["unet_rescued_low_ratio_high_confidence_2d_count"] == 1
+    assert summary["unet_probability_supported_2d_count"] == 3
     assert (tmp_path / "analysis_summary.csv").exists()
     with (tmp_path / "analysis_summary.json").open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -377,6 +394,11 @@ def test_single_slice_summary_cannot_be_mistaken_for_unique_nuclei(tmp_path):
         {
             "length_um_geodesic": [8.0, 10.0],
             "width_um": [1.5, 2.0],
+            "detection_source": [
+                "saturn_classical",
+                "unet_rescued_low_ratio_high_confidence",
+            ],
+            "unet_mean_probability": [0.7, 0.93],
         }
     )
 
@@ -385,6 +407,7 @@ def test_single_slice_summary_cannot_be_mistaken_for_unique_nuclei(tmp_path):
         detections,
         run_scope="single_slice_preview",
         z_index=12,
+        cfg={"SEGMENTATION_ENGINE": "hybrid", "UNET_MODEL_PATH": "best.pt"},
     )
 
     assert summary["run_scope"] == "single_slice_preview"
@@ -392,6 +415,9 @@ def test_single_slice_summary_cannot_be_mistaken_for_unique_nuclei(tmp_path):
     assert np.isnan(summary["estimated_unique_nuclei"])
     assert summary["candidate_2d_detection_count"] == 2
     assert summary["median_2d_length_um"] == 9.0
+    assert summary["unet_rescued_2d_count"] == 1
+    assert summary["unet_rescued_low_ratio_high_confidence_2d_count"] == 1
+    assert summary["unet_probability_supported_2d_count"] == 2
     with (tmp_path / "analysis_summary.json").open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     assert payload["estimated_unique_nuclei"] is None
@@ -877,6 +903,11 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert set(summary["estimated_nuclei_per_100000_um3"].round(6)) == {161.875162}
     assert set(summary["qc_unet_associated_3d_track_count"]) == {1}
     assert set(summary["qc_analysis_population_unet_track_count"]) == {0}
+    assert set(summary["unet_rescued_2d_count"]) == {1}
+    assert set(summary["unet_rescued_other_2d_count"]) == {1}
+    assert set(summary["estimated_unique_nuclei_classical_only"]) == {1}
+    assert set(summary["estimated_unique_nuclei_with_unet_evidence"]) == {0}
+    assert set(summary["estimated_unique_nuclei_unet_fraction"]) == {0.0}
     assert set(summary["median_2d_length_um"]) == {9.0}
     assert set(summary["median_2d_width_um"]) == {1.8}
     assert set(summary["median_3d_length_um"]) == {9.4}

@@ -4396,10 +4396,55 @@ def _technical_valid_track_population(track_summary):
     return track_summary.copy()
 
 
-def build_analysis_summary(df=None, track_summary=None, run_scope="full_stack_3d", z_index=None):
+def _unet_detection_accounting(detections):
+    """Return one consistent U-Net provenance contract for every run mode."""
+    frame = detections if detections is not None else pd.DataFrame()
+    source = (
+        frame["detection_source"].fillna("saturn_classical").astype(str)
+        if not frame.empty and "detection_source" in frame.columns
+        else pd.Series(["saturn_classical"] * len(frame), index=frame.index, dtype=str)
+    )
+    unet = source.str.startswith("unet_rescued")
+    split = source == "unet_rescued_split"
+    short = source == "unet_rescued_short_high_confidence"
+    low_ratio = source == "unet_rescued_low_ratio_high_confidence"
+    direct = source == "unet_rescued"
+    known = direct | split | short | low_ratio
+    probability_supported = pd.Series(False, index=frame.index)
+    median_probability = np.nan
+    if not frame.empty and "unet_mean_probability" in frame.columns:
+        probability = pd.to_numeric(frame["unet_mean_probability"], errors="coerce")
+        probability_supported = probability.notna() & np.isfinite(probability)
+        accepted_probability = probability[unet].dropna()
+        if not accepted_probability.empty:
+            median_probability = float(accepted_probability.median())
+    return {
+        "saturn_classical_2d_count": int((source == "saturn_classical").sum()),
+        "unet_rescued_2d_count": int(unet.sum()),
+        "unet_rescued_direct_2d_count": int(direct.sum()),
+        "unet_rescued_split_2d_count": int(split.sum()),
+        "unet_rescued_short_high_confidence_2d_count": int(short.sum()),
+        "unet_rescued_low_ratio_high_confidence_2d_count": int(low_ratio.sum()),
+        "unet_rescued_other_2d_count": int((unet & ~known).sum()),
+        "unet_probability_supported_2d_count": int(probability_supported.sum()),
+        "median_probability_of_unet_rescues": median_probability,
+        "unet_rescue_fraction_of_2d_detections": float(unet.sum() / max(len(frame), 1)),
+    }
+
+
+def build_analysis_summary(
+    df=None,
+    track_summary=None,
+    run_scope="full_stack_3d",
+    z_index=None,
+    cfg=None,
+):
     """Build one concise result contract shared by CLI, GUI batch, and slice preview."""
     detections = df.copy() if df is not None else pd.DataFrame()
     tracks = track_summary.copy() if track_summary is not None else pd.DataFrame()
+    unet_accounting = _unet_detection_accounting(detections)
+    engine = str((cfg or {}).get("SEGMENTATION_ENGINE", "unknown"))
+    checkpoint = str((cfg or {}).get("UNET_MODEL_PATH", ""))
 
     def median(frame, column):
         if frame.empty or column not in frame.columns:
@@ -4417,6 +4462,9 @@ def build_analysis_summary(df=None, track_summary=None, run_scope="full_stack_3d
             "candidate_2d_detection_count": int(len(detections)),
             "median_2d_length_um": median(detections, "length_um_geodesic"),
             "median_2d_width_um": median(detections, "width_um"),
+            "segmentation_engine": engine,
+            "unet_checkpoint": checkpoint,
+            **unet_accounting,
             "interpretation": (
                 "Preview candidates are not unique nuclei. Run the complete stack "
                 "with 3D tracking for biological counts and 3D morphology."
@@ -4448,6 +4496,9 @@ def build_analysis_summary(df=None, track_summary=None, run_scope="full_stack_3d
         "reconstructed_track_count_qc": int(len(tracks)),
         "technical_failure_track_count_qc": int(len(tracks) - len(primary)),
         "morphology_review_note_count_qc": morphology_warning_count,
+        "segmentation_engine": engine,
+        "unet_checkpoint": checkpoint,
+        **unet_accounting,
         "interpretation": (
             "Use estimated_unique_nuclei and the technical-valid morphology medians "
             "for specimen summaries. Fields ending in _qc are technical diagnostics, "
@@ -4458,7 +4509,14 @@ def build_analysis_summary(df=None, track_summary=None, run_scope="full_stack_3d
     }
 
 
-def export_analysis_summary(out_dir, df=None, track_summary=None, run_scope="full_stack_3d", z_index=None):
+def export_analysis_summary(
+    out_dir,
+    df=None,
+    track_summary=None,
+    run_scope="full_stack_3d",
+    z_index=None,
+    cfg=None,
+):
     """Write the canonical concise summary used by every execution path."""
     ensure_dir(out_dir)
     summary = build_analysis_summary(
@@ -4466,7 +4524,18 @@ def export_analysis_summary(out_dir, df=None, track_summary=None, run_scope="ful
         track_summary=track_summary,
         run_scope=run_scope,
         z_index=z_index,
+        cfg=cfg,
     )
+    probability_map_count = 0
+    if os.path.isdir(out_dir):
+        probability_map_count = len(
+            [
+                name
+                for name in os.listdir(out_dir)
+                if name.endswith("_unet_probability.tif")
+            ]
+        )
+    summary["saved_unet_probability_map_count"] = int(probability_map_count)
     csv_path = os.path.join(out_dir, "analysis_summary.csv")
     json_path = os.path.join(out_dir, "analysis_summary.json")
     pd.DataFrame([summary]).to_csv(csv_path, index=False)
@@ -4988,11 +5057,17 @@ def process_one_image(image_path, cfg, output_dir):
     result_frame = pd.DataFrame(rows_from_results(results, z_idx, um))
     result_frame.to_csv(
         os.path.join(output_dir, f"single_measurements_{_VERSION}.csv"), index=False)
-    export_analysis_summary(
+    analysis_summary = export_analysis_summary(
         output_dir,
         df=result_frame,
         run_scope="single_slice_preview",
         z_index=z_idx,
+        cfg=cfg,
+    )
+    print(
+        "  Detection sources: "
+        f"{analysis_summary['saturn_classical_2d_count']} Saturn classical, "
+        f"{analysis_summary['unet_rescued_2d_count']} U-Net rescued"
     )
 
     if cfg["SHOW_PREVIEW_WINDOW"]:
@@ -5179,6 +5254,7 @@ def process_batch(cfg):
         df=df,
         track_summary=ts,
         run_scope="full_stack_3d" if cfg["DO_TRACKING"] else "stack_2d_only",
+        cfg=cfg,
     )
 
     # --- Reporting Phase (CLI/Batch) ---
@@ -5198,6 +5274,12 @@ def process_batch(cfg):
         )
     else:
         print("No biological nucleus count was produced because 3D tracking was unavailable.")
+    print(
+        "Model contribution QC | U-Net rescued 2D candidates: "
+        f"{analysis_summary['unet_rescued_2d_count']} | "
+        "probability-supported accepted detections: "
+        f"{analysis_summary['unet_probability_supported_2d_count']}"
+    )
     print(f"Saved to: {cfg['OUTPUT_DIR']}")
     print("Concise result: analysis_summary.csv")
     print("Per-slice 2D counts remain available in slice_summary for technical review.")
@@ -5975,7 +6057,7 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 "   Warning-only rules: thickness > AUDIT_MAX_THICKNESS_UM and taper > AUDIT_MAX_TAPER_RATIO. These PSF-sensitive flags remain in the estimated-nuclei population for review.\n"
                 "   Interpretation: Technical-valid tracks define the one estimated-nuclei population. Reference morphology and warning-free flags are QC annotations, not separate biological populations.\n"
                 "\n11. v5.7 U-Net Rescue Lane\n"
-                "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues are labeled in detection_source as unet_rescued or unet_rescued_split.\n"
+                "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues retain detailed detection_source labels for direct, split, short high-confidence, and low-ratio high-confidence recovery.\n"
                 "   The rescue-review overlay uses green for Saturn classical detections, cyan for accepted U-Net rescues, and magenta/orange/red for U-Net-positive candidates rejected by rescue gates.\n"
                 "   Overlay dilation is display-only and is never used for count, length, width, or 3D tracking calculations.\n\n"
                 "12. PSF-sensitive metrics note\n"
@@ -8232,7 +8314,7 @@ def summarize_study_sample(row, output_dir):
     tracks_path = _study_find_primary_track_summary(output_dir)
     detections = pd.read_csv(measurements_path) if measurements_path else pd.DataFrame()
     tracks = pd.read_csv(tracks_path) if tracks_path else pd.DataFrame()
-    source = detections.get("detection_source", pd.Series(dtype=str)).fillna("saturn_classical").astype(str)
+    unet_accounting = _unet_detection_accounting(detections)
 
     def median(frame, column):
         if column not in frame.columns or frame.empty:
@@ -8257,7 +8339,6 @@ def summarize_study_sample(row, output_dir):
     analysis_tracks = tracks.loc[analysis_mask].copy()
     estimated_nuclei = int(analysis_mask.sum())
     technical_failures = int((~analysis_mask).sum())
-    rescued = int(source.str.startswith("unet_rescued").sum()) if not source.empty else 0
     exposure = _study_exposure_metrics(row, roi_pixels)
     roi_area = exposure["roi_area_um2"]
     roi_volume = exposure["sampled_roi_volume_um3"]
@@ -8265,6 +8346,8 @@ def summarize_study_sample(row, output_dir):
 
     analysis_ids = set(tracks.loc[analysis_mask, "track_id"].tolist()) if "track_id" in tracks else set()
     classical_track_ids, unet_track_ids = _study_track_source_sets(output_dir)
+    analysis_unet_track_ids = unet_track_ids & analysis_ids
+    analysis_classical_track_ids = classical_track_ids & analysis_ids
 
     tracked_measurements_path = _study_find_output_csv(output_dir, "measurements_with_tracks")
     tracked_measurements = (
@@ -8337,16 +8420,22 @@ def summarize_study_sample(row, output_dir):
         "detection_positive_slice_fraction": float(positive_slice_count / n_slices) if n_slices > 0 else np.nan,
         "raw_2d_detection_count": int(len(detections)),
         "raw_2d_detections_per_1000_um2_per_slice": _study_scaled_rate(len(detections), roi_area * n_slices, 1_000.0),
-        "saturn_classical_count": int((source == "saturn_classical").sum()) if not source.empty else 0,
-        "unet_rescued_count": rescued,
-        "unet_rescue_fraction": float(rescued / max(len(detections), 1)),
+        "saturn_classical_count": unet_accounting["saturn_classical_2d_count"],
+        "unet_rescued_count": unet_accounting["unet_rescued_2d_count"],
+        "unet_rescue_fraction": unet_accounting["unet_rescue_fraction_of_2d_detections"],
+        **unet_accounting,
         "estimated_unique_nuclei": estimated_nuclei,
+        "estimated_unique_nuclei_classical_only": int(len(analysis_classical_track_ids)),
+        "estimated_unique_nuclei_with_unet_evidence": int(len(analysis_unet_track_ids)),
+        "estimated_unique_nuclei_unet_fraction": float(
+            len(analysis_unet_track_ids) / max(estimated_nuclei, 1)
+        ),
         "estimated_nuclei_per_1000_um2": _study_scaled_rate(estimated_nuclei, roi_area, 1_000.0),
         "estimated_nuclei_per_100000_um3": _study_scaled_rate(estimated_nuclei, roi_volume, 100_000.0),
         "qc_technical_failure_track_count": technical_failures,
         "qc_classical_only_3d_track_count": int(len(classical_track_ids)),
         "qc_unet_associated_3d_track_count": int(len(unet_track_ids)),
-        "qc_analysis_population_unet_track_count": int(len(unet_track_ids & analysis_ids)),
+        "qc_analysis_population_unet_track_count": int(len(analysis_unet_track_ids)),
         "lower_z_boundary_track_count": lower_boundary,
         "upper_z_boundary_track_count": upper_boundary,
         "z_boundary_track_count": boundary_count,
@@ -8383,6 +8472,11 @@ def _study_group_summary(specimen_frame):
         return pd.DataFrame()
     metrics = [
         "estimated_unique_nuclei",
+        "estimated_unique_nuclei_classical_only",
+        "estimated_unique_nuclei_with_unet_evidence",
+        "estimated_unique_nuclei_unet_fraction",
+        "unet_rescued_2d_count",
+        "unet_rescue_fraction_of_2d_detections",
         "estimated_nuclei_per_1000_um2",
         "estimated_nuclei_per_100000_um3",
         "median_2d_length_um",
@@ -10568,6 +10662,7 @@ class SpermGUI:
                 df=preview_frame,
                 run_scope="single_slice_preview",
                 z_index=preview_z,
+                cfg=params,
             )
 
             overlay = make_overlay(full_img, skel_label_full)
@@ -10777,6 +10872,7 @@ class SpermGUI:
                         df=corrected_frame,
                         run_scope="single_slice_preview",
                         z_index=preview_z,
+                        cfg=params,
                     )
 
             # Attach to popup so it doesn't get garbage collected
@@ -11031,6 +11127,7 @@ class SpermGUI:
                 df=df,
                 track_summary=ts,
                 run_scope="full_stack_3d",
+                cfg=params,
             )
 
             elapsed = _t.time() - t_batch
@@ -11039,6 +11136,8 @@ class SpermGUI:
                     f"Batch complete in {elapsed:.1f}s.\n\n"
                     f"Estimated unique nuclei: {analysis_summary['estimated_unique_nuclei']}\n"
                     f"Median 3D length: {analysis_summary['median_3d_length_um']:.2f} um\n\n"
+                    f"U-Net rescued 2D candidates: {analysis_summary['unet_rescued_2d_count']}\n"
+                    f"Probability-supported accepted detections: {analysis_summary['unet_probability_supported_2d_count']}\n\n"
                     f"Primary sample summary:\n"
                     f"{os.path.join(out_dir, 'biologist_results', 'sample_summary.csv')}\n\n"
                     f"Saved to:\n{out_dir}"
