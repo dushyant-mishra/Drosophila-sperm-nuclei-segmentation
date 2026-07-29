@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -106,3 +107,35 @@ def test_photometric_augmentation_changes_images_not_masks(tmp_path):
     np.testing.assert_allclose(image.numpy(), 0.25)
     assert int(target.sum()) == int(mask.sum())
     assert int(supervision.sum()) == mask.size
+
+
+def test_replay_builder_accepts_sreeni_manifest(tmp_path):
+    builder = load_unet25d_module("build_kj_wt_replay_finetune_package")
+    tifffile.imwrite(
+        tmp_path / "Project001_Series002_z05_ch00.tif",
+        np.zeros((12, 14), dtype=np.uint16),
+    )
+    manifest = {
+        "classes": ["sperm_nucleus"],
+        "images": [
+            {
+                "image": "images/Project001_Series002_z05_ch00.png",
+                "instances": [
+                    {
+                        "class": "sperm_nucleus",
+                        "segmentation": [2, 2, 8, 2, 8, 5, 2, 5],
+                    }
+                ],
+            }
+        ],
+    }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    coco = builder.load_replay_annotations(path, tmp_path)
+
+    assert len(coco["images"]) == 1
+    assert coco["images"][0]["width"] == 14
+    assert coco["images"][0]["height"] == 12
+    assert len(coco["annotations"]) == 1
+    assert coco["annotations"][0]["segmentation"][0] == manifest["images"][0]["instances"][0]["segmentation"]

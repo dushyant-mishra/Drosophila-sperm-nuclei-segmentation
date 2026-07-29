@@ -21,6 +21,52 @@ def load_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def load_replay_annotations(path, replay_stack):
+    document = load_json(path)
+    if "annotations" in document and "categories" in document:
+        return document
+    if "images" not in document:
+        raise ValueError(f"Unsupported replay annotation document: {path}")
+
+    by_z = stack_files(replay_stack)
+    example = np.asarray(tifffile.imread(next(iter(by_z.values()))))
+    if example.ndim > 2:
+        example = example[..., 0]
+    height, width = example.shape
+    images = []
+    annotations = []
+    annotation_id = 1
+    for image_id, image_record in enumerate(document["images"], start=1):
+        file_name = Path(image_record["image"]).name
+        images.append(
+            {
+                "id": image_id,
+                "file_name": file_name,
+                "width": int(width),
+                "height": int(height),
+            }
+        )
+        for instance in image_record.get("instances", []):
+            if instance.get("class") != "sperm_nucleus":
+                continue
+            segmentation = instance.get("segmentation", [])
+            annotations.append(
+                {
+                    "id": annotation_id,
+                    "image_id": image_id,
+                    "category_id": 1,
+                    "segmentation": [segmentation],
+                    "iscrowd": 0,
+                }
+            )
+            annotation_id += 1
+    return {
+        "images": images,
+        "annotations": annotations,
+        "categories": [{"id": 1, "name": "sperm_nucleus"}],
+    }
+
+
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
@@ -285,8 +331,12 @@ def update_config(output, new_train_z):
     config["photometric_noise_std_max"] = 0.02
     config["brightness_validation_enable"] = True
     config["brightness_validation_thresholds"] = [
+        0.02,
+        0.03,
         0.05,
+        0.08,
         0.10,
+        0.15,
         0.20,
         0.30,
         0.50,
@@ -319,12 +369,32 @@ def refresh_code_and_notebook(output):
 from pathlib import Path
 import shutil
 
-package_zip = next(Path("/kaggle/input").rglob("{package_name}.zip"))
+input_root = Path("/kaggle/input")
 work_root = Path("/kaggle/working/{package_name}")
 if work_root.exists():
     shutil.rmtree(work_root)
-shutil.unpack_archive(package_zip, Path("/kaggle/working"))
-print("Package:", package_zip)
+
+package_zips = sorted(input_root.rglob("{package_name}.zip"))
+extracted_configs = [
+    path
+    for path in input_root.rglob("kaggle_finetune.yaml")
+    if (path.parent / "combined_package_summary.json").exists()
+]
+
+if package_zips:
+    package_source = package_zips[0]
+    shutil.unpack_archive(package_source, Path("/kaggle/working"))
+elif extracted_configs:
+    package_source = extracted_configs[0].parent
+    shutil.copytree(package_source, work_root)
+else:
+    raise FileNotFoundError(
+        "Could not find the replay package ZIP or an extracted package "
+        "under /kaggle/input. Add the private package dataset first."
+    )
+
+assert (work_root / "kaggle_finetune.yaml").exists(), work_root
+print("Package source:", package_source)
 print("Work root:", work_root)
 ```
 
@@ -417,7 +487,14 @@ def main():
         description="Build the ROI-cleaned new-plus-replay v5.7 fine-tuning package."
     )
     parser.add_argument("--new-package", required=True, type=Path)
-    parser.add_argument("--replay-coco", required=True, type=Path)
+    parser.add_argument(
+        "--replay-coco",
+        "--replay-annotations",
+        dest="replay_annotations",
+        required=True,
+        type=Path,
+        help="Previous COCO JSON or Sreeni manifest.json used to train the checkpoint.",
+    )
     parser.add_argument("--replay-stack", required=True, type=Path)
     parser.add_argument("--replay-roi", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -451,7 +528,10 @@ def main():
     )
 
     replay_roi = np.load(args.replay_roi).astype(bool)
-    replay_coco = load_json(args.replay_coco)
+    replay_coco = load_replay_annotations(
+        args.replay_annotations,
+        args.replay_stack,
+    )
     replay_clean, replay_audit = filter_annotations_to_roi(
         replay_coco,
         lambda _file_name: replay_roi,
