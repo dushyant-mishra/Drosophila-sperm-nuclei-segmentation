@@ -21,6 +21,59 @@ def load_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def select_new_annotations(source):
+    split_rows = list(
+        csv.DictReader(
+            (source / "split_manifest.csv").open(
+                newline="",
+                encoding="utf-8",
+            )
+        )
+    )
+    expected_files = {row["annotation_file"] for row in split_rows}
+    candidates = (
+        source / "annotation_images" / "_annotations.json",
+        source / "annotations" / "_annotations.coco.json",
+        source / "annotations" / "_annotations.sreeni_original.coco.json",
+    )
+    errors = []
+    for path in candidates:
+        if not path.exists():
+            continue
+        document = load_json(path)
+        if "images" not in document or "annotations" not in document:
+            errors.append(f"{path}: not a COCO annotation document")
+            continue
+        actual_files = {
+            Path(image["file_name"]).name for image in document["images"]
+        }
+        if actual_files != expected_files:
+            missing = sorted(expected_files - actual_files)
+            extra = sorted(actual_files - expected_files)
+            errors.append(
+                f"{path}: image-set mismatch; missing={missing}, extra={extra}"
+            )
+            continue
+        annotation_counts = {
+            image["id"]: 0 for image in document["images"]
+        }
+        for annotation in document["annotations"]:
+            annotation_counts[annotation["image_id"]] += 1
+        empty = sorted(
+            Path(image["file_name"]).name
+            for image in document["images"]
+            if annotation_counts[image["id"]] == 0
+        )
+        if empty:
+            errors.append(f"{path}: images without annotations={empty}")
+            continue
+        return path, document
+    details = "\n".join(errors) if errors else "No annotation exports found."
+    raise ValueError(
+        "Could not select a complete current annotation export:\n" + details
+    )
+
+
 def load_replay_annotations(path, replay_stack):
     document = load_json(path)
     if "annotations" in document and "categories" in document:
@@ -506,10 +559,7 @@ def main():
         shutil.rmtree(output)
     shutil.copytree(source, output)
 
-    new_source = source / "annotations" / "_annotations.sreeni_original.coco.json"
-    if not new_source.exists():
-        new_source = source / "annotation_images" / "_annotations.json"
-    new_coco = load_json(new_source)
+    new_source, new_coco = select_new_annotations(source)
 
     def new_roi(file_name):
         return np.load(
@@ -522,6 +572,10 @@ def main():
         "new_kj_wt",
     )
     annotations_dir = output / "annotations"
+    write_json(
+        annotations_dir / "_annotations.sreeni_original.coco.json",
+        new_coco,
+    )
     write_json(
         annotations_dir / "_annotations.new_only_roi_clean.coco.json",
         new_clean,
@@ -595,6 +649,7 @@ def main():
         "replay_annotations_kept": len(replay_clean["annotations"]),
         "combined_images": len(merged["images"]),
         "combined_annotations": len(merged["annotations"]),
+        "new_annotation_source": str(new_source),
         "new_train_z_repeated_twice": new_train_z,
         "validation_z": [190, 200, 210, 220],
         "replay_context_note": (
