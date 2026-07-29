@@ -161,6 +161,7 @@ import matplotlib
 matplotlib.use('Agg', force=True)
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.patches import Patch
 from matplotlib.path import Path
 print(f"[matplotlib backend: {matplotlib.get_backend()}]")
 
@@ -2627,7 +2628,7 @@ def make_quality_overlay(img_raw, skel_label, slice_tracks, track_quality_map):
 
     Colors:
     - green: accepted estimated nucleus without warnings
-    - yellow/orange: accepted estimated nucleus with PSF-sensitive warnings
+    - yellow/orange: accepted estimated nucleus with a morphology warning
     - red: hard-failed track
     - gray: detection has no track/audit mapping
     """
@@ -2670,6 +2671,16 @@ def make_quality_overlay(img_raw, skel_label, slice_tracks, track_quality_map):
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
+def quality_overlay_legend_handles():
+    """Return the shared legend for post-tracking QC overlays."""
+    return [
+        Patch(facecolor="#00d940", edgecolor="none", label="Included estimated nucleus"),
+        Patch(facecolor="#ffbf0d", edgecolor="none", label="Included; morphology warning"),
+        Patch(facecolor="#ff2e0d", edgecolor="none", label="Excluded technical failure"),
+        Patch(facecolor="#a6a6a6", edgecolor="none", label="Unmapped 2D candidate"),
+    ]
+
+
 def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
     """
     Save per-slice and global audit-coded overlays after 3D tracking is audited.
@@ -2681,6 +2692,31 @@ def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
 
     quality_dir = os.path.join(out_dir, "quality_overlays")
     ensure_dir(quality_dir)
+    legend_fig, legend_ax = plt.subplots(figsize=(9, 1.2))
+    legend_ax.axis("off")
+    legend_ax.legend(
+        handles=quality_overlay_legend_handles(),
+        loc="center",
+        ncol=2,
+        fontsize=10,
+        frameon=True,
+        title="Track-QC overlay colors",
+    )
+    legend_ax.text(
+        0.5,
+        0.02,
+        "Biological summaries include green + amber tracks. Overlay thickness is display-only.",
+        transform=legend_ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=9,
+    )
+    legend_fig.savefig(
+        os.path.join(quality_dir, "quality_overlay_legend.png"),
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(legend_fig)
 
     track_quality_map = {}
     for _, row in track_summary.iterrows():
@@ -2808,7 +2844,18 @@ def show_single_preview(img_raw, seg, overlay_rgb, results, z_idx, cfg):
         hist_ax = _ax(0,2)
 
     ov_ax.imshow(overlay_rgb)
-    ov_ax.set_title(f"Overlay N={len(results)}"); ov_ax.axis("off")
+    ov_ax.set_title(f"Pre-tracking 2D candidates (N={len(results)})")
+    ov_ax.text(
+        0.5,
+        -0.025,
+        "Colors separate candidate IDs; they do not indicate source or acceptance.",
+        transform=ov_ax.transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#333333",
+    )
+    ov_ax.axis("off")
     for r in results:
         ov_ax.text(r["centroid_x"], r["centroid_y"],
                    f"{r['length_px_geodesic']*um:.1f}",
@@ -2870,7 +2917,17 @@ def save_detail_figure(img_raw, overlay_rgb, results, out_path, z_idx, um):
     axes[0].set_title(f"Z={z_idx:02d} - Original"); axes[0].axis("off")
 
     axes[1].imshow(overlay_rgb)
-    axes[1].set_title(f"Z={z_idx:02d} - Spermatids (N={len(results)})")
+    axes[1].set_title(f"Z={z_idx:02d} - Pre-tracking 2D candidates (N={len(results)})")
+    axes[1].text(
+        0.5,
+        -0.025,
+        "Colors separate candidate IDs; they do not indicate source or acceptance.",
+        transform=axes[1].transAxes,
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#333333",
+    )
     axes[1].axis("off")
     for r in results:
         axes[1].text(r["centroid_x"], r["centroid_y"],
@@ -5307,7 +5364,8 @@ def process_batch(cfg):
 
     # --- Reporting Phase (CLI/Batch) ---
     print(f"\nGenerating final reports in {cfg['OUTPUT_DIR']}...")
-    generate_batch_report(cfg["OUTPUT_DIR"], df, df_sum, um, ts)
+    generate_batch_report(
+        cfg["OUTPUT_DIR"], df, df_sum, um, ts, df_tracked=df_trk)
     generate_excel_report(cfg["OUTPUT_DIR"], df, df_sum, ts)
 
     total = time.time() - t_batch
@@ -5664,7 +5722,9 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
 
 
 
-def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callback=None, generate_pptx=True):
+def generate_batch_report(
+        out_dir, df, df_summary, um, df_tracks=None, gui_callback=None,
+        generate_pptx=True, df_tracked=None):
     """
     Compiles standard summary global output architectures including histograms, mathematical summaries,
     biological methodology pages, and graphical slice overlays natively to a `.pdf` file.
@@ -5676,6 +5736,9 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
         um (dict): User-defined pixel to micron mapping ratios.
         df_tracks (pd.DataFrame, optional): Unified 3D tracking geometries array.
         gui_callback (function, optional): Live variable passing to front-end dashboards elements.
+        df_tracked (pd.DataFrame, optional): Per-slice measurements with assigned
+            track IDs. Used to keep detailed overlay statistics aligned with the
+            technical-valid biological population.
 
     Returns:
         None (Saves directly to absolute path PDF)
@@ -6163,30 +6226,87 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
 
             # --- SUBSEQUENT PAGES: PER-SLICE DETAILS (2 panels: [Panel] | [Histogram]) ---
             overlay_dir = os.path.join(out_dir, "overlays")
+            quality_dir = os.path.join(out_dir, "quality_overlays")
+            accepted_track_ids = set()
+            if (
+                    df_candidate_tracks is not None
+                    and not df_candidate_tracks.empty
+                    and "track_id" in df_candidate_tracks.columns):
+                accepted_track_ids = set(
+                    pd.to_numeric(df_candidate_tracks["track_id"], errors="coerce")
+                    .dropna()
+                    .astype(int)
+                    .tolist()
+                )
             for idx_p, (row_idx, row) in enumerate(df_summary.iterrows()):
                 z = int(row['z_slice'])
-                panel_path = os.path.join(overlay_dir, f"z{z:02d}_panel.png")
+                quality_panel_path = os.path.join(quality_dir, f"z{z:02d}_quality_panel.png")
+                raw_panel_path = os.path.join(overlay_dir, f"z{z:02d}_panel.png")
+                panel_path = quality_panel_path if os.path.exists(quality_panel_path) else raw_panel_path
+                uses_quality_overlay = panel_path == quality_panel_path
 
                 if not os.path.exists(panel_path):
                     continue
 
                 fig_slice = plt.figure(figsize=(18, 7))
-                fig_slice.suptitle(f"Z-Slice {z:02d} Analysis [Original | Overlay | Distribution]", fontsize=12, fontweight='bold')
+                fig_slice.suptitle(
+                    f"Z-Slice {z:02d} Analysis [Original | Track-QC Overlay | Distribution]"
+                    if uses_quality_overlay else
+                    f"Z-Slice {z:02d} Pre-Tracking Review [Original | Candidate Overlay | Distribution]",
+                    fontsize=12,
+                    fontweight='bold',
+                )
 
                 # Panel: Side-by-Side (Original | Overlay)
                 ax_panel = fig_slice.add_subplot(1, 2, 1)
                 ax_panel.imshow(plt.imread(panel_path))
-                ax_panel.set_title(f"Visual Verification (N={int(row['n_spermatids'])})")
+                if (
+                        uses_quality_overlay
+                        and df_tracked is not None
+                        and not df_tracked.empty
+                        and {"z_slice", "track_id"}.issubset(df_tracked.columns)):
+                    tracked_z = pd.to_numeric(df_tracked["z_slice"], errors="coerce")
+                    tracked_ids = pd.to_numeric(df_tracked["track_id"], errors="coerce")
+                    slice_data = df_tracked[
+                        tracked_z.eq(z) & tracked_ids.isin(accepted_track_ids)
+                    ].copy()
+                    panel_count_label = f"Included track observations: N={len(slice_data)}"
+                else:
+                    slice_data = df[df['z_slice'] == z].copy()
+                    panel_count_label = f"Pre-tracking 2D candidates: N={len(slice_data)}"
+                ax_panel.set_title(panel_count_label)
+                if uses_quality_overlay:
+                    ax_panel.legend(
+                        handles=quality_overlay_legend_handles(),
+                        loc="lower center",
+                        bbox_to_anchor=(0.5, -0.12),
+                        ncol=2,
+                        fontsize=8,
+                        frameon=True,
+                    )
+                else:
+                    ax_panel.text(
+                        0.5,
+                        -0.04,
+                        "Rainbow colors separate candidate IDs; they are not QC categories.",
+                        transform=ax_panel.transAxes,
+                        ha="center",
+                        va="top",
+                        fontsize=8,
+                    )
                 ax_panel.axis('off')
 
                 # Plot: Stats
                 ax_hist = fig_slice.add_subplot(1, 2, 2)
-                slice_data = df[df['z_slice'] == z]
                 if not slice_data.empty:
                     ax_hist.hist(slice_data['length_um_geodesic'], bins=15, color='skyblue', edgecolor='black')
-                    ax_hist.set_title(f"Z={z} Length Distribution")
-                    ax_hist.set_xlabel("Spermatid Nucleus Length (um)")
-                    ax_hist.set_ylabel("Frequency (Count)")
+                    ax_hist.set_title(
+                        f"Z={z} Included-Observation 2D Lengths"
+                        if uses_quality_overlay else
+                        f"Z={z} Pre-Tracking Candidate 2D Lengths"
+                    )
+                    ax_hist.set_xlabel("2D geodesic length (um)")
+                    ax_hist.set_ylabel("Observations")
 
                     m_med = slice_data['length_um_geodesic'].median()
                     m_avg = slice_data['length_um_geodesic'].mean()
@@ -6194,7 +6314,14 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                     ax_hist.axvline(m_avg, color='orange', linestyle='--', alpha=0.7, label=f"Mean: {m_avg:.1f}")
                     ax_hist.legend(fontsize=9)
                 else:
-                    ax_hist.text(0.5, 0.5, "No Detections", ha='center', va='center')
+                    ax_hist.text(
+                        0.5,
+                        0.5,
+                        "No included track observations"
+                        if uses_quality_overlay else "No detections",
+                        ha='center',
+                        va='center',
+                    )
 
                 pdf.savefig(fig_slice, dpi=300)
                 plt.close(fig_slice)
@@ -10525,7 +10652,15 @@ class SpermGUI:
                     return
 
                 z_idx = extract_z_index(self.files[self.current_idx])
-                panel_path = os.path.join(self.last_out_dir, "overlays", f"z{z_idx:02d}_panel.png")
+                quality_panel_path = os.path.join(
+                    self.last_out_dir, "quality_overlays", f"z{z_idx:02d}_quality_panel.png")
+                raw_panel_path = os.path.join(
+                    self.last_out_dir, "overlays", f"z{z_idx:02d}_panel.png")
+                panel_path = (
+                    quality_panel_path
+                    if os.path.exists(quality_panel_path)
+                    else raw_panel_path
+                )
 
                 if os.path.exists(panel_path):
                     if _HAVE_CV2:
@@ -10534,6 +10669,24 @@ class SpermGUI:
                     else:
                         img = plt.imread(panel_path)
                     self.ax.imshow(img)
+                    if panel_path == quality_panel_path:
+                        self.ax.set_title(
+                            "Track-QC overlay: green/amber included; red excluded",
+                            fontsize=9,
+                        )
+                        self.ax.legend(
+                            handles=quality_overlay_legend_handles(),
+                            loc="lower center",
+                            bbox_to_anchor=(0.5, -0.12),
+                            ncol=2,
+                            fontsize=7,
+                            frameon=True,
+                        )
+                    else:
+                        self.ax.set_title(
+                            "Pre-tracking candidates; colors identify candidate IDs",
+                            fontsize=9,
+                        )
                     self.canvas.draw_idle()
                     return
                 else:
@@ -11221,7 +11374,16 @@ class SpermGUI:
                 self.lbl_post_progress_val.config(text=f"{v}%")
                 self.root.update()
 
-            generate_batch_report(out_dir, df, df_sum, um, ts if not df.empty else None, update_cb, generate_pptx=False)
+            generate_batch_report(
+                out_dir,
+                df,
+                df_sum,
+                um,
+                ts if not df.empty else None,
+                update_cb,
+                generate_pptx=False,
+                df_tracked=df_trk,
+            )
             generate_excel_report(out_dir, df, df_sum, ts if not df.empty else None)
 
             # --- Store batch data for AI button ---
