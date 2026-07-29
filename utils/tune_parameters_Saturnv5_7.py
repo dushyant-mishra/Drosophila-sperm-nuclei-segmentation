@@ -24,6 +24,8 @@ import tifffile
 
 import matplotlib
 matplotlib.use("Agg", force=True)
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 
 VERSION = "v5.7-unet-ready"
@@ -63,18 +65,47 @@ SEGMENTATION_PARAM_SPACE = [
 
 TRACKING_PARAM_SPACE = [
     ("TRACK_MAX_DIST_UM", 4.0, 7.2, False),
+    ("ASSIGNMENT_MAX_COST", 4.0, 9.0, False),
     ("ASSIGNMENT_DIST_WEIGHT", 0.8, 2.8, False),
     ("HYBRID_REPAIR_MAX_COST", 2.0, 5.5, False),
+    ("HYBRID_REPAIR_MAX_LINK_DIST_UM", 3.0, 6.0, False),
+    ("HYBRID_REPAIR_MIN_OVERLAP", 0.0, 0.15, False),
 ]
 
+TRACKING_CONFIG_KEYS = (
+    "TRACKING_BACKEND",
+    "TRACK_MAX_DIST_UM",
+    "TRACK_MAX_GAP_SLICES",
+    "TRACK_BBOX_PADDING_PX",
+    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM",
+    "ASSIGNMENT_MAX_COST",
+    "ASSIGNMENT_DIST_WEIGHT",
+    "ASSIGNMENT_OVERLAP_WEIGHT",
+    "ASSIGNMENT_LENGTH_WEIGHT",
+    "ASSIGNMENT_WIDTH_WEIGHT",
+    "ASSIGNMENT_AREA_WEIGHT",
+    "ASSIGNMENT_ANGLE_WEIGHT",
+    "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
+    "ASSIGNMENT_UNET_CONTINUITY_WEIGHT",
+    "HYBRID_REPAIR_MAX_COST",
+    "HYBRID_REPAIR_MAX_GAP_SLICES",
+    "HYBRID_REPAIR_MAX_FRAGMENT_SLICES",
+    "HYBRID_REPAIR_MAX_LINK_DIST_UM",
+    "HYBRID_REPAIR_MIN_OVERLAP",
+    "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM",
+    "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT",
+)
+
 UNET_RESCUE_PARAM_SPACE = [
-    ("UNET_CANDIDATE_THRESHOLD", 0.03, 0.12, False),
-    ("UNET_SEED_THRESHOLD", 0.25, 0.55, False),
-    ("UNET_RESCUE_THRESHOLD", 0.45, 0.80, False),
+    ("UNET_CANDIDATE_THRESHOLD", 0.02, 0.12, False),
+    ("UNET_SEED_THRESHOLD", 0.10, 0.50, False),
+    ("UNET_RESCUE_THRESHOLD", 0.20, 0.75, False),
     ("UNET_RESCUE_EXCLUDE_DILATION_PX", 0, 3, True),
     ("UNET_RESCUE_MIN_COMPONENT_PX", 2, 8, True),
-    ("UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB", 0.80, 0.95, False),
-    ("UNET_INSTANCE_SEED_THRESHOLD", 0.65, 0.90, False),
+    ("UNET_RESCUE_MIN_SKEL_LEN_UM", 1.5, 4.0, False),
+    ("UNET_SHORT_RESCUE_MIN_MEAN_PROB", 0.25, 0.85, False),
+    ("UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB", 0.25, 0.90, False),
+    ("UNET_INSTANCE_SEED_THRESHOLD", 0.30, 0.80, False),
     ("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 3, 10, True),
     ("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0, 0.02, False),
     ("MAX_WIDTH_UM", 3.5, 5.5, False),
@@ -103,7 +134,8 @@ def merge_base_params(paths):
     cfg = {}
     for path in paths or []:
         with open(path, "r", encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            loaded = json.load(f)
+        cfg.update({key: value for key, value in loaded.items() if key in CONFIG})
     return cfg
 
 
@@ -181,6 +213,21 @@ def checkpoint_signature(path):
     if not p.exists():
         return {"path": str(p), "exists": False}
     st = p.stat()
+    digest = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(p.resolve()),
+        "size": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+        "sha256": digest.hexdigest(),
+    }
+
+
+def image_signature(path):
+    p = Path(path)
+    st = p.stat()
     return {
         "path": str(p.resolve()),
         "size": int(st.st_size),
@@ -193,7 +240,10 @@ def unet_cache_manifest(cfg):
         "version": VERSION,
         "checkpoint": checkpoint_signature(cfg.get("UNET_MODEL_PATH", "")),
         "z_values": [int(z) for z in z_values_eval],
-        "image_files_by_z": {str(int(z)): str(files_by_z_eval[int(z)]) for z in z_values_eval},
+        "image_files_by_z": {
+            str(int(z)): image_signature(files_by_z_eval[int(z)])
+            for z in z_values_eval
+        },
         "image_shape": list(np.asarray(images_to_eval[0]).shape) if images_to_eval else None,
         "roi_digest": array_digest(roi_mask_global),
         "exclusion_digest": array_digest(exclusion_mask_global),
@@ -427,8 +477,8 @@ def split_ratio_penalty(total_rescued, split_rescued):
     return max(0.0, split_fraction - 0.75) * 4.0
 
 
-def evaluate_segmentation_candidate(params):
-    cfg = CONFIG.copy()
+def evaluate_segmentation_candidate(params, base_cfg=None):
+    cfg = (base_cfg or CONFIG).copy()
     cfg.update(params)
     rows, segs = segment_eval_images(cfg)
     summary = summarize_candidate(rows, segs, cfg)
@@ -437,8 +487,8 @@ def evaluate_segmentation_candidate(params):
     return summary
 
 
-def evaluate_unet_rescue_candidate(params):
-    cfg = CONFIG.copy()
+def evaluate_unet_rescue_candidate(params, base_cfg=None):
+    cfg = (base_cfg or CONFIG).copy()
     cfg.update(params)
     cfg["SEGMENTATION_ENGINE"] = "hybrid"
     cfg["UNET_THRESHOLD_MODE"] = "soft"
@@ -465,8 +515,142 @@ def evaluate_unet_rescue_candidate(params):
     return summary
 
 
+def tracking_dataframe_from_segments(segs, cfg):
+    rows = []
+    for z_idx, (_, measurements) in zip(z_values_eval, segs):
+        rows.extend(
+            segmentation.rows_from_results(
+                measurements["results"],
+                z_idx,
+                cfg["UM_PER_PX_XY"],
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def summarize_tracking_candidate(detections, tracked, tracks, cfg):
+    n_detections = int(len(detections))
+    n_tracks = int(len(tracks))
+    if n_tracks == 0:
+        return {
+            "score": 1e12,
+            "n_2d": n_detections,
+            "n_tracks": 0,
+            "tracking_error": "no_3d_tracks",
+        }
+
+    n_slices = pd.to_numeric(
+        tracks.get("n_slices", pd.Series(1, index=tracks.index)),
+        errors="coerce",
+    ).fillna(1)
+    lengths = pd.to_numeric(
+        tracks.get("total_3d_length_um", pd.Series(np.nan, index=tracks.index)),
+        errors="coerce",
+    )
+    max_2d = pd.to_numeric(
+        tracks.get("max_length_2d", pd.Series(np.nan, index=tracks.index)),
+        errors="coerce",
+    )
+    technical_valid = tracks.get(
+        "technical_valid", pd.Series(True, index=tracks.index)
+    ).fillna(False).astype(bool)
+    finite = np.isfinite(lengths) & (lengths > 0)
+    multi_slice = n_slices >= 2
+    impossible = finite & (lengths > 20.0)
+    over_guard = finite & multi_slice & (
+        lengths > float(cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0))
+    )
+    inflation = lengths / np.maximum(max_2d, 0.1)
+    excessive_inflation = np.isfinite(inflation) & (inflation > 1.5)
+
+    methods = tracked.get(
+        "track_link_method", pd.Series("new", index=tracked.index)
+    ).fillna("unknown").astype(str)
+    distances = pd.to_numeric(
+        tracked.get(
+            "track_link_distance_um", pd.Series(np.nan, index=tracked.index)
+        ),
+        errors="coerce",
+    )
+    gaps = pd.to_numeric(
+        tracked.get("track_link_gap_slices", pd.Series(0, index=tracked.index)),
+        errors="coerce",
+    ).fillna(0)
+    linked = methods != "new"
+    n_links = int(linked.sum())
+    long_link = linked & (
+        distances > 0.80 * float(cfg.get("TRACK_MAX_DIST_UM", 6.0))
+    )
+    gap_link = linked & (gaps > 1)
+    repaired = methods == "hybrid_repair"
+
+    single_fraction = float(np.mean(n_slices == 1))
+    invalid_fraction = float(np.mean(~technical_valid))
+    impossible_fraction = float(np.mean(impossible))
+    over_guard_fraction = float(np.mean(over_guard))
+    inflation_fraction = float(np.mean(excessive_inflation))
+    long_link_fraction = float(long_link.sum() / max(n_links, 1))
+    gap_link_fraction = float(gap_link.sum() / max(n_links, 1))
+
+    # Lower is better. Fragmentation is a weak term; impossible or unstable
+    # links dominate so the tuner cannot win merely by merging more objects.
+    score = (
+        invalid_fraction * 1000.0
+        + impossible_fraction * 1000.0
+        + over_guard_fraction * 250.0
+        + inflation_fraction * 80.0
+        + long_link_fraction * 40.0
+        + gap_link_fraction * 20.0
+        + single_fraction * 2.0
+    )
+    result = {
+        "score": float(score),
+        "n_2d": n_detections,
+        "n_tracks": n_tracks,
+        "single_slice_tracks": int((n_slices == 1).sum()),
+        "multi_slice_tracks": int(multi_slice.sum()),
+        "single_slice_fraction": single_fraction,
+        "median_track_slices": float(np.median(n_slices)),
+        "technical_invalid_fraction": invalid_fraction,
+        "over_15um_fraction": float(np.mean(finite & (lengths > 15.0))),
+        "single_slice_over_15um_fraction": float(
+            np.mean(finite & (~multi_slice) & (lengths > 15.0))
+        ),
+        "multi_slice_over_15um_fraction": float(
+            np.mean(finite & multi_slice & (lengths > 15.0))
+        ),
+        "over_20um_fraction": impossible_fraction,
+        "over_join_guard_fraction": over_guard_fraction,
+        "excessive_length_inflation_fraction": inflation_fraction,
+        "median_3d_length_um": float(np.nanmedian(lengths)),
+        "n_links": n_links,
+        "long_link_fraction": long_link_fraction,
+        "gap_link_fraction": gap_link_fraction,
+        "hybrid_repair_links": int(repaired.sum()),
+        "median_link_distance_um": (
+            float(np.nanmedian(distances[linked])) if n_links else 0.0
+        ),
+    }
+    for key in TRACKING_CONFIG_KEYS:
+        result[f"resolved_{key}"] = cfg.get(key)
+    return result
+
+
+def evaluate_tracking_candidate(detections, params, base_cfg=None):
+    cfg = (base_cfg or CONFIG).copy()
+    cfg.update(params)
+    cfg["DO_TRACKING"] = True
+    tracked, tracks = segmentation.track_across_slices(detections, cfg)
+    tracks = segmentation.flag_quality_tracks(tracks, cfg)
+    summary = summarize_tracking_candidate(detections, tracked, tracks, cfg)
+    summary.update(params)
+    results_list.append(summary)
+    return summary
+
+
 def run_profile_mode(outdir, base_cfg):
     records = []
+    review_images = []
     for profile in ("no_clahe", "high_contrast", "standard", "low_signal", "auto"):
         cfg = base_cfg.copy()
         if profile == "auto":
@@ -484,6 +668,16 @@ def run_profile_mode(outdir, base_cfg):
         rec = summarize_candidate(rows, segs, cfg)
         rec.update({"profile": profile, "selected_clahe_profile": ctx.selected_clahe_profile, "selected_clahe_clip": ctx.selected_clahe_clip})
         records.append(rec)
+        review_images.append(
+            (
+                profile,
+                segmentation.make_overlay(
+                    images_to_eval[0],
+                    segs[0][1]["skel_label"],
+                ),
+                len(segs[0][1]["results"]),
+            )
+        )
     records.sort(key=lambda r: r["score"])
     n = next_run_number(outdir, "profile_comparison_v5_7_*.csv")
     pd.DataFrame(records).to_csv(outdir / f"profile_comparison_v5_7_{n:03d}.csv", index=False)
@@ -491,7 +685,23 @@ def run_profile_mode(outdir, base_cfg):
         json.dump(records, f, indent=2)
     with open(outdir / f"best_preprocessing_profile_v5_7_{n:03d}.json", "w", encoding="utf-8") as f:
         json.dump(records[0], f, indent=2)
-    (outdir / f"profile_review_v5_7_{n:03d}.pdf").write_bytes(b"%PDF-1.4\n% Saturn v5.7 profile review placeholder\n")
+    with PdfPages(outdir / f"profile_review_v5_7_{n:03d}.pdf") as pdf:
+        fig, axes = plt.subplots(
+            len(review_images),
+            2,
+            figsize=(10, 3.2 * len(review_images)),
+            constrained_layout=True,
+        )
+        for row_idx, (profile, overlay, count) in enumerate(review_images):
+            axes[row_idx, 0].imshow(images_to_eval[0], cmap="gray")
+            axes[row_idx, 0].set_title(f"{profile}: raw Z={z_values_eval[0]}")
+            axes[row_idx, 1].imshow(overlay)
+            axes[row_idx, 1].set_title(f"{profile}: overlay, n={count}")
+            axes[row_idx, 0].axis("off")
+            axes[row_idx, 1].axis("off")
+        fig.suptitle("Saturn v5.7 preprocessing profile review")
+        pdf.savefig(fig, dpi=180)
+        plt.close(fig)
     return records[0]
 
 
@@ -507,6 +717,146 @@ def sample_candidates(space, maxiter, seed):
     return candidates
 
 
+def candidate_from_config(space, base_cfg, overrides=None):
+    values = dict(base_cfg or {})
+    values.update(overrides or {})
+    vector = []
+    for key, lo, hi, _ in space:
+        value = float(values.get(key, (lo + hi) / 2))
+        vector.append(min(max(value, lo), hi))
+    return params_from_vector(vector, space)
+
+
+def sample_unet_rescue_candidates(space, maxiter, seed, base_cfg):
+    count = max(1, int(maxiter))
+    prioritized = [
+        (
+            "evidence_0.05_0.30",
+            candidate_from_config(
+                space,
+                base_cfg,
+                {
+                    "UNET_CANDIDATE_THRESHOLD": 0.05,
+                    "UNET_SEED_THRESHOLD": 0.30,
+                    "UNET_RESCUE_THRESHOLD": 0.30,
+                    "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+                    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": 0.35,
+                    "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": 0.30,
+                    "UNET_INSTANCE_SEED_THRESHOLD": 0.50,
+                },
+            ),
+        ),
+        ("reviewed_base", candidate_from_config(space, base_cfg)),
+        ("space_midpoint", sample_candidates(space, 1, seed)[0]),
+    ]
+    random_candidates = sample_candidates(space, count + len(prioritized), seed)[1:]
+
+    candidates = []
+    seen = set()
+    for role, candidate in prioritized + [
+        (f"deterministic_random_{idx:03d}", candidate)
+        for idx, candidate in enumerate(random_candidates, start=1)
+    ]:
+        signature = tuple(candidate[key] for key, *_ in space)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append((role, candidate))
+        if len(candidates) == count:
+            break
+    return candidates
+
+
+def sample_tracking_candidates(space, maxiter, seed, base_cfg):
+    count = max(1, int(maxiter))
+    prioritized = [
+        ("reviewed_base", candidate_from_config(space, base_cfg)),
+        ("space_midpoint", sample_candidates(space, 1, seed)[0]),
+    ]
+    random_candidates = sample_candidates(space, count + len(prioritized), seed)[1:]
+    candidates = []
+    seen = set()
+    for role, candidate in prioritized + [
+        (f"deterministic_random_{idx:03d}", candidate)
+        for idx, candidate in enumerate(random_candidates, start=1)
+    ]:
+        signature = tuple(candidate[key] for key, *_ in space)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append((role, candidate))
+        if len(candidates) == count:
+            break
+    return candidates
+
+
+def generate_candidate_review_pdf(outdir, mode, records, base_cfg, review_candidates):
+    if mode not in {"segmentation", "unet_rescue"} or not records:
+        return None
+    review_count = min(3, max(1, int(review_candidates)), len(records))
+    selected = records[:review_count]
+    rendered = []
+    space = (
+        UNET_RESCUE_PARAM_SPACE
+        if mode == "unet_rescue"
+        else SEGMENTATION_PARAM_SPACE
+    )
+    for record in selected:
+        cfg = base_cfg.copy()
+        cfg.update({key: record[key] for key, *_ in space})
+        if mode == "unet_rescue":
+            cfg.update(
+                {
+                    "SEGMENTATION_ENGINE": "hybrid",
+                    "UNET_THRESHOLD_MODE": "soft",
+                    "UNET_RESCUE_ENABLE": True,
+                    "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
+                    "UNET_INSTANCE_SPLIT_ENABLE": True,
+                    "TUNING_OBJECTIVE": "unet_rescue",
+                }
+            )
+        _, segs = segment_eval_images(cfg)
+        rendered.append((record, segs))
+
+    n = next_run_number(outdir, f"candidate_visual_review_v5_7_{mode}_*.pdf")
+    path = outdir / f"candidate_visual_review_v5_7_{mode}_{n:03d}.pdf"
+    with PdfPages(path) as pdf:
+        for slice_idx, (img, z_idx) in enumerate(
+            zip(images_to_eval, z_values_eval)
+        ):
+            fig, axes = plt.subplots(
+                1,
+                review_count,
+                figsize=(6 * review_count, 6),
+                squeeze=False,
+                constrained_layout=True,
+            )
+            for col, (record, segs) in enumerate(rendered):
+                seg, measurements = segs[slice_idx]
+                if mode == "unet_rescue":
+                    overlay = segmentation.make_unet_rescue_review_overlay(
+                        img,
+                        measurements["skel_label"],
+                        measurements["results"],
+                        measurements.get("unet_rescue_rejected_reason"),
+                    )
+                else:
+                    overlay = segmentation.make_overlay(
+                        img, measurements["skel_label"]
+                    )
+                axes[0, col].imshow(overlay)
+                role = record.get("candidate_role", f"rank {col + 1}")
+                axes[0, col].set_title(
+                    f"Rank {col + 1}: {role}\n"
+                    f"n={len(measurements['results'])}, score={record['score']:.3f}"
+                )
+                axes[0, col].axis("off")
+            fig.suptitle(f"Saturn v5.7 {mode} candidate review, Z={z_idx}")
+            pdf.savefig(fig, dpi=180)
+            plt.close(fig)
+    return path
+
+
 def next_run_number(outdir, pattern):
     existing = sorted(outdir.glob(pattern))
     nums = []
@@ -519,20 +869,173 @@ def next_run_number(outdir, pattern):
     return (max(nums) + 1) if nums else 1
 
 
-def save_results(outdir, mode, best, records):
+def loadable_parameter_preset(cfg, selected):
+    preset = {}
+    for key in CONFIG:
+        if str(key).startswith("_"):
+            continue
+        value = selected.get(key, cfg.get(key))
+        preset[key] = segmentation._json_scalar(value)
+    preset["_TUNING_METADATA"] = {
+        "pipeline_version": VERSION,
+        "mode": selected.get("mode"),
+        "numerical_rank": selected.get("numerical_rank"),
+        "selection_status": selected.get("selection_status"),
+        "score": selected.get("score"),
+        "selected_z_indices": [int(z) for z in z_values_eval],
+        "preprocessing_profile": getattr(
+            preprocess_context_global,
+            "selected_clahe_profile",
+            cfg.get("CLAHE_MODE", "unspecified"),
+        ),
+        "note": "Numerical candidate for visual inspection; not a finalized biological parameter set.",
+    }
+    return preset
+
+
+def aggregate_stratum_results(paths, outdir, cfg, selected_role):
+    by_role = {}
+    source_paths = []
+    parameter_keys = [key for key, *_ in UNET_RESCUE_PARAM_SPACE]
+    for path in paths:
+        source = Path(path)
+        with open(source, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        source_paths.append(str(source.resolve()))
+        for rank, record in enumerate(
+            sorted(records, key=lambda item: float(item["score"])), start=1
+        ):
+            role = str(record.get("candidate_role", "")).strip()
+            if not role:
+                continue
+            entry = dict(record)
+            entry["stratum_path"] = str(source.resolve())
+            entry["stratum_rank"] = rank
+            by_role.setdefault(role, []).append(entry)
+
+    expected_strata = len(source_paths)
+    complete_roles = {
+        role: entries
+        for role, entries in by_role.items()
+        if len(entries) == expected_strata
+    }
+    if selected_role not in complete_roles:
+        raise ValueError(
+            f"Shared candidate role '{selected_role}' is not present in every stratum"
+        )
+
+    summaries = []
+    for role, entries in complete_roles.items():
+        signatures = {
+            tuple(entry[key] for key in parameter_keys)
+            for entry in entries
+        }
+        if len(signatures) != 1:
+            raise ValueError(
+                f"Candidate role '{role}' has different parameters across strata"
+            )
+        summaries.append(
+            {
+                "candidate_role": role,
+                "stratum_count": len(entries),
+                "mean_score": float(np.mean([entry["score"] for entry in entries])),
+                "mean_rank": float(
+                    np.mean([entry["stratum_rank"] for entry in entries])
+                ),
+                "min_rank": int(min(entry["stratum_rank"] for entry in entries)),
+                "max_rank": int(max(entry["stratum_rank"] for entry in entries)),
+                "mean_n_2d": float(np.mean([entry["n_2d"] for entry in entries])),
+                "mean_unet_rescue_fraction": float(
+                    np.mean(
+                        [entry["unet_rescue_fraction"] for entry in entries]
+                    )
+                ),
+                "max_very_long_object_fraction": float(
+                    max(entry["very_long_object_fraction"] for entry in entries)
+                ),
+                **{
+                    key: entries[0][key]
+                    for key in parameter_keys
+                },
+            }
+        )
+    summaries.sort(key=lambda item: (item["mean_rank"], item["mean_score"]))
+
+    selected_entries = complete_roles[selected_role]
+    selected = dict(selected_entries[0])
+    selected.update(
+        {
+            "mode": "unet_rescue_shared",
+            "numerical_rank": next(
+                idx
+                for idx, item in enumerate(summaries, start=1)
+                if item["candidate_role"] == selected_role
+            ),
+            "selection_status": "shared_candidate_for_visual_inspection",
+        }
+    )
+    preset = loadable_parameter_preset(cfg, selected)
+    preset["_TUNING_METADATA"].update(
+        {
+            "candidate_role": selected_role,
+            "source_stratum_results": source_paths,
+            "selection_basis": (
+                "One unchanged candidate across all biological strata; "
+                "selected explicitly after cross-stratum review."
+            ),
+        }
+    )
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    n = next_run_number(outdir, "shared_unet_rescue_params_v5_7_*.json")
+    preset_path = outdir / f"shared_unet_rescue_params_v5_7_{n:03d}.json"
+    with open(preset_path, "w", encoding="utf-8") as f:
+        json.dump(preset, f, indent=2)
+    pd.DataFrame(summaries).to_csv(
+        outdir / f"shared_candidate_comparison_v5_7_{n:03d}.csv",
+        index=False,
+    )
+    with open(
+        outdir / f"shared_candidate_comparison_v5_7_{n:03d}.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(summaries, f, indent=2)
+    return preset_path, summaries
+
+
+def save_results(outdir, mode, best, records, cfg, review_candidates=6):
     n = next_run_number(outdir, f"best_{mode}_params_v5_7_*.json")
+    for rank, record in enumerate(records, start=1):
+        record["numerical_rank"] = rank
+        record["selection_status"] = (
+            "first_candidate_for_visual_inspection"
+            if rank == 1
+            else "candidate_for_review"
+        )
+        record["mode"] = mode
+    best = records[0] if records else best
+    preset = loadable_parameter_preset(cfg, best)
     with open(outdir / f"best_{mode}_params_v5_7_{n:03d}.json", "w", encoding="utf-8") as f:
-        json.dump(best, f, indent=2)
+        json.dump(preset, f, indent=2)
     with open(outdir / f"tuning_results_saturnv5_7_{mode}.json", "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2)
     pd.DataFrame(records).to_csv(outdir / f"tuning_results_saturnv5_7_{mode}.csv", index=False)
+    review_count = min(max(1, int(review_candidates)), len(records))
+    with open(
+        outdir / f"candidate_review_queue_v5_7_{mode}_{n:03d}.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(records[:review_count], f, indent=2)
     with open(outdir / f"tuning_summary_saturnv5_7_{mode}.txt", "w", encoding="utf-8") as f:
         f.write(f"SATURN V5.7 U-NET-READY {mode.upper()} TUNING SUMMARY\n")
-        f.write(f"Analysis mode: {CONFIG.get('ANALYSIS_MODE', 'comparative')}\n")
+        f.write(f"Analysis mode: {cfg.get('ANALYSIS_MODE', 'comparative')}\n")
         f.write("Comparative mode reports morphology but does not optimize toward WT-like length, width, taper, tortuosity, count, volume, or Z-span.\n")
         f.write(f"Selected Z indices: {z_values_eval}\n")
         f.write(f"Preprocessing profile: {preprocess_context_global.selected_clahe_profile}\n")
-        f.write(f"Best score: {best.get('score')}\n")
+        f.write(f"Numerically lowest score: {best.get('score')}\n")
+        f.write("Selection status: first candidate for visual inspection; not a finalized biological parameter set.\n")
 
 
 def run_self_check():
@@ -565,9 +1068,18 @@ def run_self_check():
     tmp = Path(os.environ.get("TEMP", ".")) / f"saturnv56_selfcheck_{os.getpid()}"
     tmp.mkdir(exist_ok=True)
     a = tmp / "a.json"; b = tmp / "b.json"
-    a.write_text(json.dumps({"X": 1, "Y": 1}), encoding="utf-8")
-    b.write_text(json.dumps({"Y": 2}), encoding="utf-8")
-    checks.append(("repeated base-parameter merge order", merge_base_params([str(a), str(b)]) == {"X": 1, "Y": 2}))
+    a.write_text(
+        json.dumps({"THRESHOLD_HI": 91.0, "THRESHOLD_LO": 82.0}),
+        encoding="utf-8",
+    )
+    b.write_text(json.dumps({"THRESHOLD_LO": 83.0}), encoding="utf-8")
+    checks.append(
+        (
+            "repeated base-parameter merge order",
+            merge_base_params([str(a), str(b)])
+            == {"THRESHOLD_HI": 91.0, "THRESHOLD_LO": 83.0},
+        )
+    )
 
     calls = []
     orig = segmentation.segment_slice
@@ -596,7 +1108,17 @@ def run_self_check():
     checks.append(("profile output naming", "profile_comparison_v5_7_001.csv".startswith("profile_comparison_v5_7_")))
     checks.append(("segmentation output naming", "best_segmentation_params_v5_7_001.json".startswith("best_segmentation_params_v5_7_")))
     checks.append(("U-Net rescue mode available", "unet_rescue" in ("profile", "segmentation", "tracking", "unet_rescue")))
-    checks.append(("U-Net rescue candidate sampling", "UNET_RESCUE_THRESHOLD" in sample_candidates(UNET_RESCUE_PARAM_SPACE, 1, 1)[0]))
+    unet_candidates = sample_unet_rescue_candidates(
+        UNET_RESCUE_PARAM_SPACE, 2, 1, CONFIG
+    )
+    checks.append(
+        (
+            "U-Net evidence candidate first",
+            unet_candidates[0][0] == "evidence_0.05_0.30"
+            and unet_candidates[0][1]["UNET_CANDIDATE_THRESHOLD"] == 0.05
+            and unet_candidates[0][1]["UNET_SEED_THRESHOLD"] == 0.30,
+        )
+    )
     ctx_calls = []
     def fake_context(files_by_z, z_idx):
         ctx_calls.append((files_by_z, z_idx))
@@ -636,8 +1158,12 @@ def main(argv=None):
     parser.add_argument("--unet-model", default=None)
     parser.add_argument("--unet-cache-dir", default=None)
     parser.add_argument("--rebuild-unet-cache", action="store_true")
-    parser.add_argument("--save-all-debug-candidates", action="store_true")
     parser.add_argument("--review-candidates", type=int, default=6)
+    parser.add_argument("--aggregate-stratum-results", action="append", default=[])
+    parser.add_argument(
+        "--shared-candidate-role",
+        default="evidence_0.05_0.30",
+    )
     parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--maxiter", type=int, default=6)
     parser.add_argument("--seed", type=int, default=12345)
@@ -656,6 +1182,23 @@ def main(argv=None):
         cfg["UNET_MODEL_PATH"] = args.unet_model
     if args.profile != "auto":
         cfg["CLAHE_MODE"] = args.profile
+    segmentation.validate_config(cfg)
+
+    if args.aggregate_stratum_results:
+        if args.unet_model:
+            cfg["UNET_MODEL_PATH"] = args.unet_model
+        preset_path, summaries = aggregate_stratum_results(
+            args.aggregate_stratum_results,
+            outdir,
+            cfg,
+            args.shared_candidate_role,
+        )
+        print(f"Shared preset: {preset_path}")
+        print(
+            f"Aggregated {len(summaries)} common candidates across "
+            f"{len(args.aggregate_stratum_results)} strata"
+        )
+        return
 
     if not args.dir:
         raise SystemExit("--dir is required unless --self-check is used")
@@ -670,10 +1213,23 @@ def main(argv=None):
     first = segmentation.ensure_2d_image(segmentation.robust_imread(files[slice_indices[0]]), files[slice_indices[0]])
     globals()["roi_mask_global"] = load_mask(args.roi_mask, first.shape) if args.roi_mask else np.ones(first.shape, dtype=bool)
     globals()["exclusion_mask_global"] = load_mask(args.exclusion_mask, first.shape) if args.exclusion_mask else None
+    if not np.any(roi_mask_global):
+        raise SystemExit("ROI mask is empty")
+    if exclusion_mask_global is not None and not np.any(
+        roi_mask_global & ~exclusion_mask_global
+    ):
+        raise SystemExit("Exclusion mask removes the entire ROI")
     globals()["preprocess_context_global"] = build_global_context(files, slice_indices, cfg, roi_mask_global, exclusion_mask_global)
     segmentation.save_stack_preprocess_context(preprocess_context_global, outdir)
     globals()["images_to_eval"] = [segmentation.ensure_2d_image(segmentation.robust_imread(files[i]), files[i]) for i in slice_indices]
     globals()["z_values_eval"] = [segmentation.extract_z_index(files[i], sequence_idx=i) for i in slice_indices]
+    if len(set(z_values_eval)) != len(z_values_eval):
+        raise SystemExit(f"Selected files contain duplicate Z indices: {z_values_eval}")
+    if args.mode == "tracking" and not require_consecutive(z_values_eval):
+        raise SystemExit(
+            "Tracking mode requires consecutive source Z indices; selected files "
+            f"resolved to {z_values_eval}"
+        )
     globals()["files_by_z_eval"] = {
         int(segmentation.extract_z_index(files[i], sequence_idx=i)): files[i]
         for i in range(len(files))
@@ -686,6 +1242,8 @@ def main(argv=None):
 
     if args.mode == "unet_rescue" and not str(cfg.get("UNET_MODEL_PATH", "")).strip():
         raise SystemExit("--mode unet_rescue requires --unet-model or a base params JSON with UNET_MODEL_PATH")
+    if args.mode == "unet_rescue" and not Path(cfg["UNET_MODEL_PATH"]).is_file():
+        raise SystemExit(f"U-Net checkpoint not found: {cfg['UNET_MODEL_PATH']}")
     if args.mode == "unet_rescue":
         cache_dir = Path(args.unet_cache_dir) if args.unet_cache_dir else outdir / "unet_probability_cache"
         cfg["_UNET_PROBABILITY_CACHE"] = build_unet_probability_cache(
@@ -704,28 +1262,43 @@ def main(argv=None):
     records = []
     if args.mode == "tracking":
         rows, segs = segment_eval_images(cfg)
-        seg_cache_summary = summarize_candidate(rows, segs, cfg)
-        for cand in sample_candidates(space, args.maxiter, args.seed):
-            rec = dict(cand)
-            rec.update(seg_cache_summary)
-            rec["score"] = seg_cache_summary["score"] + abs(cand.get("TRACK_MAX_DIST_UM", 5.0) - 5.5)
+        detections = tracking_dataframe_from_segments(segs, cfg)
+        for role, cand in sample_tracking_candidates(
+            space, args.maxiter, args.seed, cfg
+        ):
+            rec = evaluate_tracking_candidate(detections, cand, base_cfg=cfg)
+            rec["candidate_role"] = role
             records.append(rec)
     elif args.mode == "unet_rescue":
-        for cand in sample_candidates(space, args.maxiter, args.seed):
-            cfg_cand = {
-                "UNET_MODEL_PATH": cfg["UNET_MODEL_PATH"],
-                "_UNET_PROBABILITY_CACHE": cfg.get("_UNET_PROBABILITY_CACHE"),
-                "_UNET_PROBABILITY_CACHE_DIR": cfg.get("_UNET_PROBABILITY_CACHE_DIR"),
-                **cand,
-            }
-            records.append(evaluate_unet_rescue_candidate(cfg_cand))
+        for role, cand in sample_unet_rescue_candidates(
+            space, args.maxiter, args.seed, cfg
+        ):
+            rec = evaluate_unet_rescue_candidate(cand, base_cfg=cfg)
+            rec["candidate_role"] = role
+            records.append(rec)
     else:
         for cand in sample_candidates(space, args.maxiter, args.seed):
-            records.append(evaluate_segmentation_candidate(cand))
+            records.append(evaluate_segmentation_candidate(cand, base_cfg=cfg))
     records.sort(key=lambda r: r["score"])
     best = records[0] if records else {}
-    save_results(outdir, args.mode, best, records)
+    review_path = generate_candidate_review_pdf(
+        outdir,
+        args.mode,
+        records,
+        cfg,
+        args.review_candidates,
+    )
+    save_results(
+        outdir,
+        args.mode,
+        best,
+        records,
+        cfg,
+        review_candidates=args.review_candidates,
+    )
     print(f"Best {args.mode} score={best.get('score')}")
+    if review_path is not None:
+        print(f"Candidate visual review: {review_path}")
 
 
 if __name__ == "__main__":
