@@ -612,15 +612,22 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
                 "track_id": [1, 2],
                 "detection_source": ["saturn_classical", "unet_rescued_core"],
                 "z_slice": [0, 2],
+                "length_um_geodesic": [9.0, 10.0],
+                "width_um": [1.8, 2.0],
             }
         ).to_csv(output / "measurements_with_tracks_v5.7.csv", index=False)
         pd.DataFrame(
             {
                 "track_id": [1, 2],
+                "technical_valid": [True, False],
                 "is_biological_candidate": [True, False],
                 "is_quality_track": [True, False],
-                "total_3d_length_um": [9.4, 10.2],
+                "max_length_2d": [9.0, 10.0],
+                "total_3d_length_um": [9.4, 99.0],
                 "tortuosity_3d": [1.1, 1.2],
+                "thickness_um": [1.7, 8.0],
+                "volume_um3": [24.0, 400.0],
+                "z_span_um": [0.0, 0.0],
                 "z_start": [0, 2],
                 "z_end": [0, 2],
             }
@@ -650,11 +657,22 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert set(summary["estimated_nuclei_per_100000_um3"].round(6)) == {161.875162}
     assert set(summary["qc_unet_associated_3d_track_count"]) == {1}
     assert set(summary["qc_analysis_population_unet_track_count"]) == {0}
+    assert set(summary["median_2d_length_um"]) == {9.0}
+    assert set(summary["median_2d_width_um"]) == {1.8}
+    assert set(summary["median_3d_length_um"]) == {9.4}
+    assert set(summary["median_3d_thickness_um"]) == {1.7}
+    assert set(summary["median_3d_volume_um3"]) == {24.0}
     assert set(summary["z_boundary_track_count"]) == {2}
     assert set(summary["z_boundary_track_fraction"]) == {1.0}
     assert (output_root / "study_manifest.csv").exists()
     assert (output_root / "specimen_summary.csv").exists()
     assert (output_root / "group_summary.csv").exists()
+    assert (output_root / "specimen_group_comparisons.csv").exists()
+    assert (output_root / "specimen_group_comparison_qc.json").exists()
+    assert (output_root / "specimen_group_comparison.pdf").exists()
+    comparisons = pd.read_csv(output_root / "specimen_group_comparisons.csv")
+    assert set(comparisons["analysis_unit"]) == {"biological specimen"}
+    assert set(comparisons["inference_status"]) == {"insufficient_specimens"}
     with (output_root / "normalization_qc.json").open("r", encoding="utf-8") as handle:
         normalization_qc = json.load(handle)
     assert normalization_qc["roi_area_max_min_ratio"] == 1.0
@@ -674,6 +692,43 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     )
     assert len(calls) == 2
     assert all(len(list((output_root / "samples" / row["sample_id"]).glob("attempt_*"))) == 1 for row in rows)
+
+
+def test_specimen_group_comparison_is_deterministic_and_uses_specimens():
+    saturn = load_saturn_v57()
+    specimen_frame = pd.DataFrame(
+        {
+            "sample_id": ["WT-1", "WT-2", "WT-3", "KJ-1", "KJ-2", "KJ-3"],
+            "group": ["WT", "WT", "WT", "KJ", "KJ", "KJ"],
+            "status": ["complete"] * 6,
+            "median_3d_length_um": [9.0, 9.5, 10.0, 11.0, 12.0, 13.0],
+        }
+    )
+
+    first, qc_first = saturn._study_specimen_group_comparisons(
+        specimen_frame,
+        random_seed=123,
+        bootstrap_resamples=250,
+        permutation_resamples=999,
+    )
+    second, qc_second = saturn._study_specimen_group_comparisons(
+        specimen_frame,
+        random_seed=123,
+        bootstrap_resamples=250,
+        permutation_resamples=999,
+    )
+
+    pd.testing.assert_frame_equal(first, second)
+    assert qc_first == qc_second
+    row = first[first["metric"] == "median_3d_length_um"].iloc[0]
+    assert row["analysis_unit"] == "biological specimen"
+    assert row["reference_group"] == "WT"
+    assert row["comparison_group"] == "KJ"
+    assert row["reference_n"] == 3
+    assert row["comparison_n"] == 3
+    assert row["median_difference_comparison_minus_reference"] == 2.5
+    assert row["cliffs_delta_comparison_minus_reference"] > 0
+    assert row["inference_status"] == "exploratory_small_sample"
 
 
 def test_study_run_stops_after_current_sample_and_resumes(tmp_path):

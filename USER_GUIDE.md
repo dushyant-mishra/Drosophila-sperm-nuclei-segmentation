@@ -299,8 +299,26 @@ the same parameter fingerprint is used.
 - `specimen_summary.csv`: one raw and normalized summary row per specimen.
 - `group_summary.csv`: group summaries calculated from specimen rows.
 - `normalization_qc.json`: exposure and Z-boundary warnings.
-- `study_track_records.csv`: pooled tracks with unique `study_track_id`.
+- `specimen_group_comparisons.csv`: exploratory two-group comparisons in which
+  each biological specimen is one replicate. It reports group medians, the
+  comparison-minus-reference median difference, percent difference, Cliff's
+  delta, a bootstrap interval, a permutation p-value, and an FDR-adjusted
+  q-value.
+- `specimen_group_comparison.pdf`: dot plots showing every specimen and the
+  group medians. A clearly named `WT`, `wild type`, or `w1118` group is used as
+  the reference when present.
+- `specimen_group_comparison_qc.json`: sample sizes, random seed, comparison
+  direction, and small-sample warnings.
+- `study_track_records.csv`: pooled tracks with unique `study_track_id`. This
+  file is for descriptive summaries and audit; its nuclei are nested within
+  specimens and must not be treated as independent biological replicates.
 - `samples/<sample_id>/attempt_NNN/`: complete output for one specimen.
+
+The specimen morphology fields are calculated from the technical-valid track
+population used for `estimated_unique_nuclei`. A technical-failure outlier
+therefore cannot alter the reported specimen median length, tortuosity,
+thickness, volume, or Z span. The two-group comparison is intentionally marked
+exploratory, especially when either group has fewer than five specimens.
 
 ## 11. Count Normalization
 

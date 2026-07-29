@@ -8080,6 +8080,7 @@ def summarize_study_sample(row, output_dir):
         analysis_mask = _study_series_bool(tracks["is_biological_candidate"])
     else:
         analysis_mask = pd.Series(True, index=tracks.index)
+    analysis_tracks = tracks.loc[analysis_mask].copy()
     estimated_nuclei = int(analysis_mask.sum())
     technical_failures = int((~analysis_mask).sum())
     rescued = int(source.str.startswith("unet_rescued").sum()) if not source.empty else 0
@@ -8090,6 +8091,29 @@ def summarize_study_sample(row, output_dir):
 
     analysis_ids = set(tracks.loc[analysis_mask, "track_id"].tolist()) if "track_id" in tracks else set()
     classical_track_ids, unet_track_ids = _study_track_source_sets(output_dir)
+
+    tracked_measurements_path = _study_find_output_csv(output_dir, "measurements_with_tracks")
+    tracked_measurements = (
+        pd.read_csv(tracked_measurements_path)
+        if tracked_measurements_path is not None
+        else pd.DataFrame()
+    )
+    per_track_2d = pd.DataFrame()
+    if (
+        analysis_ids
+        and not tracked_measurements.empty
+        and "track_id" in tracked_measurements.columns
+    ):
+        accepted_detections = tracked_measurements[
+            tracked_measurements["track_id"].isin(analysis_ids)
+        ].copy()
+        aggregations = {}
+        if "length_um_geodesic" in accepted_detections.columns:
+            aggregations["maximum_2d_length_um"] = ("length_um_geodesic", "max")
+        if "width_um" in accepted_detections.columns:
+            aggregations["median_2d_width_um"] = ("width_um", "median")
+        if aggregations:
+            per_track_2d = accepted_detections.groupby("track_id").agg(**aggregations)
 
     z_min = int(row.get("z_min", 0) or 0)
     z_max = int(row.get("z_max", max(n_slices - 1, 0)) or 0)
@@ -8156,10 +8180,21 @@ def summarize_study_sample(row, output_dir):
         "z_coverage_censored": bool(boundary_count > 0),
         "normalization_valid": bool(roi_area > 0 and roi_volume > 0),
         "normalization_warning": "; ".join(normalization_warnings),
-        "median_2d_length_um": median(detections, "length_um_geodesic"),
-        "median_2d_width_um": median(detections, "width_um"),
-        "median_3d_length_um": median(tracks, "total_3d_length_um"),
-        "median_3d_tortuosity": median(tracks, "tortuosity_3d"),
+        "median_2d_length_um": (
+            median(per_track_2d, "maximum_2d_length_um")
+            if "maximum_2d_length_um" in per_track_2d
+            else median(analysis_tracks, "max_length_2d")
+        ),
+        "median_2d_width_um": (
+            median(per_track_2d, "median_2d_width_um")
+            if "median_2d_width_um" in per_track_2d
+            else median(analysis_tracks, "median_width_um")
+        ),
+        "median_3d_length_um": median(analysis_tracks, "total_3d_length_um"),
+        "median_3d_tortuosity": median(analysis_tracks, "tortuosity_3d"),
+        "median_3d_thickness_um": median(analysis_tracks, "thickness_um"),
+        "median_3d_volume_um3": median(analysis_tracks, "volume_um3"),
+        "median_3d_z_span_um": median(analysis_tracks, "z_span_um"),
         "acquisition_class": row.get("acquisition_class", ""),
     }
     return summary
@@ -8176,8 +8211,13 @@ def _study_group_summary(specimen_frame):
         "estimated_unique_nuclei",
         "estimated_nuclei_per_1000_um2",
         "estimated_nuclei_per_100000_um3",
+        "median_2d_length_um",
+        "median_2d_width_um",
         "median_3d_length_um",
         "median_3d_tortuosity",
+        "median_3d_thickness_um",
+        "median_3d_volume_um3",
+        "median_3d_z_span_um",
         "roi_area_um2",
         "sampled_roi_volume_um3",
         "z_boundary_track_fraction",
@@ -8194,6 +8234,267 @@ def _study_group_summary(specimen_frame):
             record[f"{metric}_std"] = float(values.std(ddof=1)) if len(values) > 1 else np.nan
         records.append(record)
     return pd.DataFrame(records)
+
+
+_STUDY_COMPARISON_METRICS = {
+    "estimated_nuclei_per_1000_um2": "Estimated nuclei per 1,000 um2",
+    "estimated_nuclei_per_100000_um3": "Estimated nuclei per 100,000 um3",
+    "median_2d_length_um": "Specimen median 2D length (um)",
+    "median_2d_width_um": "Specimen median 2D width (um)",
+    "median_3d_length_um": "Specimen median 3D length (um)",
+    "median_3d_tortuosity": "Specimen median 3D tortuosity",
+    "median_3d_thickness_um": "Specimen median effective thickness (um)",
+    "median_3d_volume_um3": "Specimen median volume (um3)",
+    "median_3d_z_span_um": "Specimen median Z span (um)",
+}
+
+
+def _study_reference_group(groups):
+    """Prefer a clearly named WT group as the comparison reference."""
+    groups = sorted(str(group) for group in groups)
+    for group in groups:
+        label = group.lower()
+        if "wild" in label or "w1118" in label or re.search(r"(^|[^a-z])wt([^a-z]|$)", label):
+            return group
+    return groups[0] if groups else ""
+
+
+def _study_cliffs_delta(reference, comparison):
+    """Return Cliff's delta with positive values favoring the comparison group."""
+    reference = np.asarray(reference, dtype=float)
+    comparison = np.asarray(comparison, dtype=float)
+    if reference.size == 0 or comparison.size == 0:
+        return np.nan
+    differences = comparison[:, None] - reference[None, :]
+    return float((np.count_nonzero(differences > 0) - np.count_nonzero(differences < 0)) / differences.size)
+
+
+def _study_bh_qvalues(p_values):
+    """Benjamini-Hochberg correction while preserving missing values."""
+    values = np.asarray(p_values, dtype=float)
+    adjusted = np.full(values.shape, np.nan, dtype=float)
+    valid_indices = np.flatnonzero(np.isfinite(values))
+    if valid_indices.size == 0:
+        return adjusted
+    order = valid_indices[np.argsort(values[valid_indices])]
+    ranked = values[order] * valid_indices.size / np.arange(1, valid_indices.size + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]
+    adjusted[order] = np.clip(ranked, 0.0, 1.0)
+    return adjusted
+
+
+def _study_specimen_group_comparisons(
+    specimen_frame,
+    random_seed=57057,
+    bootstrap_resamples=5000,
+    permutation_resamples=9999,
+):
+    """Compare two groups using specimens, never individual nuclei, as replicates."""
+    complete = specimen_frame.copy()
+    if "status" in complete.columns:
+        complete = complete[complete["status"] == "complete"].copy()
+    if "group" not in complete.columns:
+        complete["group"] = ""
+    complete["group"] = complete["group"].fillna("").astype(str).str.strip()
+    complete = complete[complete["group"] != ""]
+    groups = sorted(complete["group"].unique().tolist())
+    qc = {
+        "analysis_unit": "biological specimen",
+        "nested_nucleus_records_role": "descriptive and audit only; not independent replicates",
+        "random_seed": int(random_seed),
+        "bootstrap_resamples": int(bootstrap_resamples),
+        "permutation_resamples": int(permutation_resamples),
+        "groups": groups,
+        "specimen_counts": {
+            group: int((complete["group"] == group).sum()) for group in groups
+        },
+        "comparison_status": "not_run",
+        "warnings": [],
+    }
+    if len(groups) != 2:
+        qc["warnings"].append(
+            f"Specimen comparison requires exactly two non-empty groups; found {len(groups)}."
+        )
+        return pd.DataFrame(
+            columns=[
+                "metric",
+                "metric_label",
+                "analysis_unit",
+                "reference_group",
+                "comparison_group",
+                "reference_n",
+                "comparison_n",
+                "reference_median",
+                "comparison_median",
+                "median_difference_comparison_minus_reference",
+                "cliffs_delta_comparison_minus_reference",
+                "bootstrap_95ci_low",
+                "bootstrap_95ci_high",
+                "permutation_p_value",
+                "bh_fdr_q_value",
+                "inference_status",
+            ]
+        ), qc
+
+    reference_group = _study_reference_group(groups)
+    comparison_group = next(group for group in groups if group != reference_group)
+    qc["reference_group"] = reference_group
+    qc["comparison_group"] = comparison_group
+    qc["effect_direction"] = f"{comparison_group} minus {reference_group}"
+    qc["comparison_status"] = "exploratory"
+    if min(qc["specimen_counts"].values()) < 3:
+        qc["warnings"].append(
+            "At least one group has fewer than three specimens; inferential estimates are not reported."
+        )
+    elif min(qc["specimen_counts"].values()) < 5:
+        qc["warnings"].append(
+            "At least one group has fewer than five specimens; intervals and p-values are highly uncertain."
+        )
+
+    from scipy.stats import permutation_test
+
+    records = []
+    for metric_index, (metric, label) in enumerate(_STUDY_COMPARISON_METRICS.items()):
+        if metric not in complete.columns:
+            continue
+        reference = pd.to_numeric(
+            complete.loc[complete["group"] == reference_group, metric],
+            errors="coerce",
+        ).dropna().to_numpy(dtype=float)
+        comparison = pd.to_numeric(
+            complete.loc[complete["group"] == comparison_group, metric],
+            errors="coerce",
+        ).dropna().to_numpy(dtype=float)
+        if reference.size == 0 and comparison.size == 0:
+            continue
+
+        reference_median = float(np.median(reference)) if reference.size else np.nan
+        comparison_median = float(np.median(comparison)) if comparison.size else np.nan
+        median_difference = comparison_median - reference_median
+        record = {
+            "metric": metric,
+            "metric_label": label,
+            "analysis_unit": "biological specimen",
+            "reference_group": reference_group,
+            "comparison_group": comparison_group,
+            "reference_n": int(reference.size),
+            "comparison_n": int(comparison.size),
+            "reference_mean": float(np.mean(reference)) if reference.size else np.nan,
+            "comparison_mean": float(np.mean(comparison)) if comparison.size else np.nan,
+            "reference_median": reference_median,
+            "comparison_median": comparison_median,
+            "median_difference_comparison_minus_reference": median_difference,
+            "median_percent_difference": (
+                float(100.0 * median_difference / reference_median)
+                if np.isfinite(reference_median) and reference_median != 0
+                else np.nan
+            ),
+            "cliffs_delta_comparison_minus_reference": _study_cliffs_delta(
+                reference, comparison
+            ),
+            "bootstrap_95ci_low": np.nan,
+            "bootstrap_95ci_high": np.nan,
+            "permutation_p_value": np.nan,
+            "inference_status": "insufficient_specimens",
+        }
+
+        if reference.size >= 3 and comparison.size >= 3:
+            rng = np.random.default_rng(random_seed + metric_index)
+            bootstrap_differences = np.empty(bootstrap_resamples, dtype=float)
+            for index in range(bootstrap_resamples):
+                reference_sample = rng.choice(reference, size=reference.size, replace=True)
+                comparison_sample = rng.choice(comparison, size=comparison.size, replace=True)
+                bootstrap_differences[index] = (
+                    np.median(comparison_sample) - np.median(reference_sample)
+                )
+            record["bootstrap_95ci_low"], record["bootstrap_95ci_high"] = [
+                float(value)
+                for value in np.quantile(bootstrap_differences, [0.025, 0.975])
+            ]
+            permutation = permutation_test(
+                (reference, comparison),
+                lambda ref, comp: np.median(comp) - np.median(ref),
+                permutation_type="independent",
+                vectorized=False,
+                n_resamples=permutation_resamples,
+                alternative="two-sided",
+                rng=np.random.default_rng(random_seed + 1000 + metric_index),
+            )
+            record["permutation_p_value"] = float(permutation.pvalue)
+            record["inference_status"] = (
+                "exploratory_small_sample"
+                if min(reference.size, comparison.size) < 5
+                else "exploratory"
+            )
+        records.append(record)
+
+    result = pd.DataFrame(records)
+    if not result.empty:
+        result["bh_fdr_q_value"] = _study_bh_qvalues(result["permutation_p_value"])
+    return result, qc
+
+
+def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, output_path):
+    """Plot every specimen; do not substitute pooled nucleus-level distributions."""
+    if comparison_frame.empty:
+        return False
+    metrics = comparison_frame["metric"].tolist()
+    groups = [
+        comparison_frame.iloc[0]["reference_group"],
+        comparison_frame.iloc[0]["comparison_group"],
+    ]
+    panel_count = len(metrics)
+    columns = 3
+    rows = int(math.ceil(panel_count / columns))
+    figure, axes = plt.subplots(rows, columns, figsize=(13.5, 3.8 * rows), squeeze=False)
+    rng = np.random.default_rng(57057)
+    colors = ["#2878B5", "#D1495B"]
+    for axis, metric in zip(axes.flat, metrics):
+        for group_index, group in enumerate(groups):
+            values = pd.to_numeric(
+                specimen_frame.loc[
+                    (specimen_frame["status"] == "complete")
+                    & (specimen_frame["group"].astype(str) == group),
+                    metric,
+                ],
+                errors="coerce",
+            ).dropna().to_numpy(dtype=float)
+            x_values = group_index + rng.uniform(-0.075, 0.075, size=values.size)
+            axis.scatter(
+                x_values,
+                values,
+                s=42,
+                color=colors[group_index],
+                edgecolor="white",
+                linewidth=0.6,
+                alpha=0.9,
+                zorder=3,
+            )
+            if values.size:
+                median_value = float(np.median(values))
+                axis.plot(
+                    [group_index - 0.18, group_index + 0.18],
+                    [median_value, median_value],
+                    color="#202020",
+                    linewidth=2.2,
+                    zorder=4,
+                )
+        label = _STUDY_COMPARISON_METRICS.get(metric, metric)
+        axis.set_title(label, fontsize=10)
+        axis.set_xticks([0, 1], groups)
+        axis.grid(axis="y", color="#D8D8D8", linewidth=0.7, alpha=0.8)
+        axis.spines[["top", "right"]].set_visible(False)
+    for axis in axes.flat[panel_count:]:
+        axis.set_visible(False)
+    figure.suptitle(
+        "Specimen-level group comparison\nEach point is one biological specimen; bars show medians",
+        fontsize=14,
+        fontweight="bold",
+    )
+    figure.tight_layout(rect=(0, 0, 1, 0.95))
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+    return True
 
 
 def _study_normalization_qc(specimen_frame):
@@ -8289,6 +8590,20 @@ def _write_study_aggregates(output_root, rows, state):
     specimen_frame.to_csv(output_root / "specimen_summary.csv", index=False)
     _study_group_summary(specimen_frame).to_csv(output_root / "group_summary.csv", index=False)
     _study_atomic_json(output_root / "normalization_qc.json", _study_normalization_qc(specimen_frame))
+    comparison_frame, comparison_qc = _study_specimen_group_comparisons(specimen_frame)
+    comparison_frame.to_csv(
+        output_root / "specimen_group_comparisons.csv",
+        index=False,
+    )
+    _study_atomic_json(
+        output_root / "specimen_group_comparison_qc.json",
+        comparison_qc,
+    )
+    _write_study_specimen_comparison_plot(
+        specimen_frame,
+        comparison_frame,
+        output_root / "specimen_group_comparison.pdf",
+    )
     if track_frames:
         pd.concat(track_frames, ignore_index=True).to_csv(output_root / "study_track_records.csv", index=False)
     return summaries
@@ -9642,7 +9957,8 @@ class SpermGUI:
                 if stopped
                 else "\n"
             )
-            + f"Aggregate table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}",
+            + f"Specimen analysis table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}\n\n"
+            + f"Two-group comparison:\n{pl.Path(self.study_output_dir) / 'specimen_group_comparisons.csv'}",
             parent=self.study_window,
         )
 
