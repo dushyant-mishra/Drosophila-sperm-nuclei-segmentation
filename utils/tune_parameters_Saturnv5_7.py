@@ -29,6 +29,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 
 VERSION = "v5.7-unet-ready"
+MIN_HYSTERESIS_PERCENTILE_SEPARATION = 4.0
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
@@ -53,14 +54,14 @@ UNET_CACHE_CONFIG_KEYS = (
 )
 
 SEGMENTATION_PARAM_SPACE = [
-    ("THRESHOLD_HI",              88.0, 94.0, False),
-    ("THRESHOLD_LO",              80.0, 87.0, False),
-    ("MIN_OBJ_PX",                 6,   12,   True),
-    ("MAX_BRIDGE_UM",              0.0,  2.0, False),
-    ("MIN_SKEL_LEN_UM",            5.5,  8.5, False),
+    ("THRESHOLD_HI",              82.0, 92.0, False),
+    ("THRESHOLD_LO",              70.0, 84.0, False),
+    ("MIN_OBJ_PX",                 3,   10,   True),
+    ("MAX_BRIDGE_UM",              0.0,  1.5, False),
+    ("MIN_SKEL_LEN_UM",            4.0,  7.0, False),
     ("MAX_WIDTH_UM",               3.0,  5.0, False),
     ("MIN_LENGTH_WIDTH_RATIO",     1.6,  3.0, False),
-    ("MAX_TORTUOSITY",             1.8,  3.0, False),
+    ("MAX_TORTUOSITY",             2.0,  3.2, False),
 ]
 
 TRACKING_PARAM_SPACE = [
@@ -146,7 +147,38 @@ def list_images(folder):
     files = []
     for pat in pats:
         files.extend(Path(folder).glob(pat))
-    return sorted([str(p) for p in files], key=segmentation.natural_sort_key)
+    files = sorted(set(files), key=lambda p: segmentation.natural_sort_key(str(p)))
+
+    # Prefer conservatively parsed source TIFFs when a specimen folder also
+    # contains generated masks, overlays, or other TIFF artifacts.
+    parsed_groups = {}
+    for path in files:
+        if path.suffix.lower() not in {".tif", ".tiff"}:
+            continue
+        parsed = segmentation._study_parse_source_name(path.name)
+        if parsed is None:
+            continue
+        parsed_groups.setdefault(parsed["stack_key"], []).append(
+            (int(parsed["z"]), path)
+        )
+    if parsed_groups:
+        if len(parsed_groups) != 1:
+            labels = [
+                f"{key}: {len(values)} files"
+                for key, values in parsed_groups.items()
+            ]
+            raise ValueError(
+                "Tuner input directory contains multiple source stacks; "
+                "select one specimen directory per tuner stratum. "
+                + "; ".join(labels)
+            )
+        entries = next(iter(parsed_groups.values()))
+        z_values = [z for z, _ in entries]
+        if len(z_values) != len(set(z_values)):
+            raise ValueError("Tuner input contains duplicate source Z indices")
+        return [str(path) for _, path in sorted(entries, key=lambda item: item[0])]
+
+    return [str(path) for path in files]
 
 
 def select_auto_slices(n, count=6):
@@ -319,8 +351,9 @@ def params_from_vector(x, space):
     for val, (key, lo, hi, is_int) in zip(x, space):
         val = min(max(float(val), lo), hi)
         out[key] = int(round(val)) if is_int else float(val)
-    if "THRESHOLD_HI" in out and "THRESHOLD_LO" in out and out["THRESHOLD_LO"] >= out["THRESHOLD_HI"]:
-        out["THRESHOLD_LO"] = out["THRESHOLD_HI"] - 1.0
+    if "THRESHOLD_HI" in out and "THRESHOLD_LO" in out:
+        max_lo = out["THRESHOLD_HI"] - MIN_HYSTERESIS_PERCENTILE_SEPARATION
+        out["THRESHOLD_LO"] = min(out["THRESHOLD_LO"], max_lo)
     if "UNET_SEED_THRESHOLD" in out and "UNET_CANDIDATE_THRESHOLD" in out and out["UNET_SEED_THRESHOLD"] <= out["UNET_CANDIDATE_THRESHOLD"]:
         out["UNET_SEED_THRESHOLD"] = min(0.95, out["UNET_CANDIDATE_THRESHOLD"] + 0.10)
     return out
@@ -362,9 +395,84 @@ def summarize_candidate(rows, segs, cfg):
     widths = np.array([r["width_px"] * cfg["UM_PER_PX_XY"] for r in rows], dtype=float)
     ratios = np.array([r["length_width_ratio"] for r in rows], dtype=float)
     count_cv = float(np.std(counts) / (np.mean(counts) + 1e-9)) if counts else 0.0
-    mask_occ = float(np.mean([np.count_nonzero(s["mask_clean"]) / max(np.count_nonzero(roi_mask_global) if roi_mask_global is not None else s["mask_clean"].size, 1) for s, _ in segs])) if segs else 0.0
-    bridge_infl = float(np.mean([s.get("bridge_stats", {}).get("skeleton_pixels_after", 0) - s.get("bridge_stats", {}).get("skeleton_pixels_before", 0) for s, _ in segs])) if segs else 0.0
-    exclusion_hits = int(sum(np.count_nonzero(meas["skel_label"] & exclusion_mask_global) for _, meas in segs)) if exclusion_mask_global is not None else 0
+    empty_slice_fraction = (
+        float(np.mean(np.asarray(counts) == 0)) if counts else 1.0
+    )
+
+    mask_occupancies = []
+    hyst_occupancies = []
+    bridge_inflations = []
+    outside_roi_by_stage = {
+        "mask_hyst": 0,
+        "mask_clean": 0,
+        "skel_pruned": 0,
+        "skel_label": 0,
+    }
+    exclusion_by_stage = {
+        "mask_hyst": 0,
+        "mask_clean": 0,
+        "skel_pruned": 0,
+        "skel_label": 0,
+    }
+    for seg, measurements in segs:
+        shape = np.asarray(seg["mask_clean"]).shape
+        roi = (
+            np.asarray(roi_mask_global, dtype=bool)
+            if roi_mask_global is not None
+            else np.ones(shape, dtype=bool)
+        )
+        exclusion = (
+            np.asarray(exclusion_mask_global, dtype=bool)
+            if exclusion_mask_global is not None
+            else np.zeros(shape, dtype=bool)
+        )
+        valid = roi & ~exclusion
+        valid_pixels = max(int(np.count_nonzero(valid)), 1)
+        stage_masks = {
+            "mask_hyst": np.asarray(seg["mask_hyst"], dtype=bool),
+            "mask_clean": np.asarray(seg["mask_clean"], dtype=bool),
+            "skel_pruned": np.asarray(
+                seg.get("skel_pruned", np.zeros(shape, dtype=bool)),
+                dtype=bool,
+            ),
+            "skel_label": np.asarray(
+                measurements.get("skel_label", np.zeros(shape, dtype=np.int32))
+            ) > 0,
+        }
+        mask_occupancies.append(
+            np.count_nonzero(stage_masks["mask_clean"] & valid) / valid_pixels
+        )
+        hyst_occupancies.append(
+            np.count_nonzero(stage_masks["mask_hyst"] & valid) / valid_pixels
+        )
+        for key, stage_mask in stage_masks.items():
+            outside_roi_by_stage[key] += int(
+                np.count_nonzero(stage_mask & ~roi)
+            )
+            exclusion_by_stage[key] += int(
+                np.count_nonzero(stage_mask & exclusion)
+            )
+
+        bridge_stats = seg.get("bridge_stats", {})
+        before = max(
+            0,
+            int(bridge_stats.get("skeleton_pixels_before", 0)),
+        )
+        after = max(
+            0,
+            int(bridge_stats.get("skeleton_pixels_after", before)),
+        )
+        bridge_inflations.append(
+            max(0, after - before) / max(before, 1)
+        )
+
+    mask_occ = float(np.mean(mask_occupancies)) if mask_occupancies else 0.0
+    hyst_occ = float(np.mean(hyst_occupancies)) if hyst_occupancies else 0.0
+    bridge_infl = (
+        float(np.mean(bridge_inflations)) if bridge_inflations else 0.0
+    )
+    outside_roi_hits = int(sum(outside_roi_by_stage.values()))
+    exclusion_hits = int(sum(exclusion_by_stage.values()))
     median_len = float(np.median(lengths)) if lengths.size else 0.0
     median_width = float(np.median(widths)) if widths.size else 0.0
     median_ratio = float(np.median(ratios)) if ratios.size else 0.0
@@ -418,10 +526,12 @@ def summarize_candidate(rows, segs, cfg):
         for s, _ in segs
     )) if roi_mask_global is not None else 0
     technical_score = (
-        count_cv * 20.0
+        count_cv * 5.0
         + max(0.0, mask_occ - 0.24) * 100.0
-        + bridge_infl * 0.05
-        + exclusion_hits * 100.0
+        + max(0.0, hyst_occ - 0.35) * 80.0
+        + max(0.0, bridge_infl - 0.20) * 20.0
+        + outside_roi_hits * 1000.0
+        + exclusion_hits * 1000.0
         + off_roi_prob_px * 100.0
     )
     morphology_prior_score = (
@@ -432,12 +542,14 @@ def summarize_candidate(rows, segs, cfg):
         + wide_frac * 12.0
         + max(0.0, 2.5 - median_ratio) * 6.0
     )
-    if str(cfg.get("ANALYSIS_MODE", "comparative")).lower() == "comparative":
-        score = technical_score
-    else:
-        score = technical_score + morphology_prior_score
     very_short_frac = float(np.mean(lengths < 4.0)) if lengths.size else 1.0
     very_long_frac = float(np.mean(lengths > 20.0)) if lengths.size else 0.0
+    segmentation_score = (
+        technical_score
+        + (1e6 if not rows else 0.0)
+        + very_short_frac * 25.0
+        + very_long_frac * 1000.0
+    )
     unet_rescue_score = (
         technical_score
         + severe_rejected_px * 0.0006
@@ -446,18 +558,25 @@ def summarize_candidate(rows, segs, cfg):
         + max(0.0, rescue_fraction - 0.42) * 35.0
         + split_ratio_penalty(total_unet_rescued, unet_rescued_split)
         + very_short_frac * 25.0
-        + long_frac * 4.0
         + very_long_frac * 1000.0
-        + wide_frac * 4.0
     )
-    if str(cfg.get("TUNING_OBJECTIVE", "")).lower() == "unet_rescue":
+    objective = str(cfg.get("TUNING_OBJECTIVE", "")).lower()
+    if objective == "unet_rescue":
         score = unet_rescue_score
+    elif objective in {"segmentation", "profile"}:
+        score = segmentation_score
+    elif str(cfg.get("ANALYSIS_MODE", "comparative")).lower() == "comparative":
+        score = technical_score
+    else:
+        score = technical_score + morphology_prior_score
     return {
         "score": float(score),
         "technical_score": float(technical_score),
+        "segmentation_score": float(segmentation_score),
         "unet_rescue_score": float(unet_rescue_score),
         "morphology_prior_score_reported_not_optimized": float(morphology_prior_score),
         "n_2d": int(len(rows)),
+        "empty_slice_fraction": empty_slice_fraction,
         "source_counts": source_counts,
         "unet_rescue_source_counts": unet_source_counts,
         "saturn_classical_count": int(source_counts.get("saturn_classical", 0)),
@@ -482,10 +601,13 @@ def summarize_candidate(rows, segs, cfg):
         "very_long_object_fraction": very_long_frac,
         "wide_object_fraction": wide_frac,
         "low_length_width_ratio_fraction": float(np.mean(ratios < 2.5)) if ratios.size else 1.0,
-        "hysteresis_occupancy": float(np.mean([np.count_nonzero(s["mask_hyst"]) / s["mask_hyst"].size for s, _ in segs])) if segs else 0.0,
+        "hysteresis_occupancy": hyst_occ,
         "clean_mask_occupancy": mask_occ,
         "bridge_inflation": bridge_infl,
+        "outside_roi_overlap_count": outside_roi_hits,
+        "outside_roi_overlap_by_stage": outside_roi_by_stage,
         "exclusion_mask_overlap_count": exclusion_hits,
+        "exclusion_mask_overlap_by_stage": exclusion_by_stage,
     }
 
 
@@ -499,6 +621,9 @@ def split_ratio_penalty(total_rescued, split_rescued):
 def evaluate_segmentation_candidate(params, base_cfg=None):
     cfg = (base_cfg or CONFIG).copy()
     cfg.update(params)
+    cfg["SEGMENTATION_ENGINE"] = "classical_saturn"
+    cfg["UNET_RESCUE_ENABLE"] = False
+    cfg["TUNING_OBJECTIVE"] = "segmentation"
     rows, segs = segment_eval_images(cfg)
     summary = summarize_candidate(rows, segs, cfg)
     summary.update({k: v for k, v in params.items() if not str(k).startswith("_")})
@@ -671,40 +796,83 @@ def evaluate_tracking_candidate(detections, params, base_cfg=None):
 def run_profile_mode(outdir, base_cfg):
     records = []
     review_images = []
-    for profile in ("no_clahe", "high_contrast", "standard", "low_signal", "auto"):
-        cfg = base_cfg.copy()
-        if profile == "auto":
-            ctx = preprocess_context_global
-        else:
-            prof, clip = PROFILE_DEFS[profile]
-            ctx = segmentation.StackPreprocessContext(
-                **{**segmentation.asdict(preprocess_context_global),
-                   "selected_clahe_profile": prof,
-                   "selected_clahe_clip": clip,
-                   "configuration_provenance": {**preprocess_context_global.configuration_provenance, "forced_profile": profile}}
+    original_context = preprocess_context_global
+    try:
+        for profile in (
+            "no_clahe",
+            "high_contrast",
+            "standard",
+            "low_signal",
+            "auto",
+        ):
+            cfg = base_cfg.copy()
+            cfg["SEGMENTATION_ENGINE"] = "classical_saturn"
+            cfg["UNET_RESCUE_ENABLE"] = False
+            cfg["TUNING_OBJECTIVE"] = "profile"
+            if profile == "auto":
+                ctx = original_context
+            else:
+                prof, clip = PROFILE_DEFS[profile]
+                ctx = segmentation.StackPreprocessContext(
+                    **{
+                        **segmentation.asdict(original_context),
+                        "selected_clahe_profile": prof,
+                        "selected_clahe_clip": clip,
+                        "configuration_provenance": {
+                            **original_context.configuration_provenance,
+                            "forced_profile": profile,
+                        },
+                    }
+                )
+            globals()["preprocess_context_global"] = ctx
+            rows, segs = segment_eval_images(cfg)
+            rec = summarize_candidate(rows, segs, cfg)
+            rec.update(
+                {
+                    "profile": profile,
+                    "selected_clahe_profile": ctx.selected_clahe_profile,
+                    "selected_clahe_clip": ctx.selected_clahe_clip,
+                }
             )
-        globals()["preprocess_context_global"] = ctx
-        rows, segs = segment_eval_images(cfg)
-        rec = summarize_candidate(rows, segs, cfg)
-        rec.update({"profile": profile, "selected_clahe_profile": ctx.selected_clahe_profile, "selected_clahe_clip": ctx.selected_clahe_clip})
-        records.append(rec)
-        review_images.append(
-            (
-                profile,
-                segmentation.make_overlay(
-                    images_to_eval[0],
-                    segs[0][1]["skel_label"],
-                ),
-                len(segs[0][1]["results"]),
+            records.append(rec)
+            review_images.append(
+                (
+                    profile,
+                    segmentation.make_overlay(
+                        images_to_eval[0],
+                        segs[0][1]["skel_label"],
+                    ),
+                    len(segs[0][1]["results"]),
+                )
             )
-        )
+    finally:
+        globals()["preprocess_context_global"] = original_context
+
     records.sort(key=lambda r: r["score"])
+    best = records[0]
     n = next_run_number(outdir, "profile_comparison_v5_7_*.csv")
     pd.DataFrame(records).to_csv(outdir / f"profile_comparison_v5_7_{n:03d}.csv", index=False)
     with open(outdir / f"profile_comparison_v5_7_{n:03d}.json", "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2)
+    best_cfg = base_cfg.copy()
+    best_cfg["CLAHE_MODE"] = (
+        base_cfg.get("CLAHE_MODE", "auto_stack")
+        if best["profile"] == "auto"
+        else best["profile"]
+    )
+    selected = {
+        **best,
+        "mode": "profile",
+        "numerical_rank": 1,
+        "selection_status": "first_candidate_for_visual_inspection",
+    }
+    preset = loadable_parameter_preset(best_cfg, selected)
+    preset["CLAHE_MODE"] = best_cfg["CLAHE_MODE"]
+    preset["_TUNING_METADATA"]["preprocessing_profile"] = best[
+        "selected_clahe_profile"
+    ]
     with open(outdir / f"best_preprocessing_profile_v5_7_{n:03d}.json", "w", encoding="utf-8") as f:
-        json.dump(records[0], f, indent=2)
+        json.dump(preset, f, indent=2)
     with PdfPages(outdir / f"profile_review_v5_7_{n:03d}.pdf") as pdf:
         fig, axes = plt.subplots(
             len(review_images),
@@ -722,7 +890,7 @@ def run_profile_mode(outdir, base_cfg):
         fig.suptitle("Saturn v5.7 preprocessing profile review")
         pdf.savefig(fig, dpi=180)
         plt.close(fig)
-    return records[0]
+    return best
 
 
 def sample_candidates(space, maxiter, seed):
@@ -734,6 +902,33 @@ def sample_candidates(space, maxiter, seed):
     for _ in range(count - 1):
         x = [rng.uniform(lo, hi) for _, lo, hi, _ in space]
         candidates.append(params_from_vector(x, space))
+    return candidates
+
+
+def sample_segmentation_candidates(space, maxiter, seed, base_cfg):
+    count = max(1, int(maxiter))
+    prioritized = [
+        ("reviewed_base", candidate_from_config(space, base_cfg)),
+        ("space_midpoint", sample_candidates(space, 1, seed)[0]),
+    ]
+    random_candidates = sample_candidates(
+        space,
+        count + len(prioritized),
+        seed,
+    )[1:]
+    candidates = []
+    seen = set()
+    for role, candidate in prioritized + [
+        (f"deterministic_random_{idx:03d}", candidate)
+        for idx, candidate in enumerate(random_candidates, start=1)
+    ]:
+        signature = tuple(candidate[key] for key, *_ in space)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append((role, candidate))
+        if len(candidates) == count:
+            break
     return candidates
 
 
@@ -854,6 +1049,14 @@ def generate_candidate_review_pdf(outdir, mode, records, base_cfg, review_candid
                     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
                     "UNET_INSTANCE_SPLIT_ENABLE": True,
                     "TUNING_OBJECTIVE": "unet_rescue",
+                }
+            )
+        else:
+            cfg.update(
+                {
+                    "SEGMENTATION_ENGINE": "classical_saturn",
+                    "UNET_RESCUE_ENABLE": False,
+                    "TUNING_OBJECTIVE": "segmentation",
                 }
             )
         _, segs = segment_eval_images(cfg)
@@ -1104,7 +1307,18 @@ def run_self_check():
         ({"mask_clean": np.zeros((5, 5), dtype=bool), "mask_hyst": np.zeros((5, 5), dtype=bool), "bridge_stats": {"skeleton_pixels_before": 1, "skeleton_pixels_after": 1}}, {"results": [fake_rows[1]]}),
     ]
     checks.append(("comparative score excludes morphology prior", summarize_candidate(fake_rows, fake_segs, cfg)["morphology_prior_score_reported_not_optimized"] > 0))
-    checks.append(("threshold ordering", cfg["THRESHOLD_LO"] < cfg["THRESHOLD_HI"]))
+    constrained_thresholds = params_from_vector(
+        [88.0, 87.0, 8, 1.0, 6.0, 4.0, 2.0, 2.5],
+        SEGMENTATION_PARAM_SPACE,
+    )
+    checks.append(
+        (
+            "minimum hysteresis percentile separation",
+            constrained_thresholds["THRESHOLD_HI"]
+            - constrained_thresholds["THRESHOLD_LO"]
+            >= MIN_HYSTERESIS_PERCENTILE_SEPARATION,
+        )
+    )
     checks.append(("automatic slice selection", select_auto_slices(20, 6) == [0, 4, 8, 11, 15, 19]))
     tmp = Path(os.environ.get("TEMP", ".")) / f"saturnv56_selfcheck_{os.getpid()}"
     tmp.mkdir(exist_ok=True)
@@ -1148,6 +1362,18 @@ def run_self_check():
     checks.append(("exclusion mask honored", calls and calls[0]["exclusion_mask"] is exclusion_mask_global))
     checks.append(("profile output naming", "profile_comparison_v5_7_001.csv".startswith("profile_comparison_v5_7_")))
     checks.append(("segmentation output naming", "best_segmentation_params_v5_7_001.json".startswith("best_segmentation_params_v5_7_")))
+    segmentation_candidates = sample_segmentation_candidates(
+        SEGMENTATION_PARAM_SPACE,
+        2,
+        1,
+        CONFIG,
+    )
+    checks.append(
+        (
+            "segmentation reviewed baseline first",
+            segmentation_candidates[0][0] == "reviewed_base",
+        )
+    )
     checks.append(("U-Net rescue mode available", "unet_rescue" in ("profile", "segmentation", "tracking", "unet_rescue")))
     unet_candidates = sample_unet_rescue_candidates(
         UNET_RESCUE_PARAM_SPACE, 2, 1, CONFIG
@@ -1320,8 +1546,15 @@ def main(argv=None):
             rec["candidate_role"] = role
             records.append(rec)
     else:
-        for cand in sample_candidates(space, args.maxiter, args.seed):
-            records.append(evaluate_segmentation_candidate(cand, base_cfg=cfg))
+        for role, cand in sample_segmentation_candidates(
+            space,
+            args.maxiter,
+            args.seed,
+            cfg,
+        ):
+            rec = evaluate_segmentation_candidate(cand, base_cfg=cfg)
+            rec["candidate_role"] = role
+            records.append(rec)
     records.sort(key=lambda r: r["score"])
     best = records[0] if records else {}
     review_path = generate_candidate_review_pdf(

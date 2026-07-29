@@ -3,7 +3,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -170,6 +172,217 @@ def test_segmentation_evaluator_preserves_reviewed_base_configuration(monkeypatc
 
     assert observed["CLAHE_MODE"] == "low_signal"
     assert observed["THRESHOLD_HI"] == 90.0
+    assert observed["SEGMENTATION_ENGINE"] == "classical_saturn"
+    assert observed["UNET_RESCUE_ENABLE"] is False
+    assert observed["TUNING_OBJECTIVE"] == "segmentation"
+
+
+def test_segmentation_sampling_includes_reviewed_base_first():
+    tuner = load_tuner()
+    cfg = tuner.CONFIG.copy()
+    cfg["THRESHOLD_HI"] = 91.0
+    cfg["THRESHOLD_LO"] = 83.0
+
+    candidates = tuner.sample_segmentation_candidates(
+        tuner.SEGMENTATION_PARAM_SPACE,
+        4,
+        12345,
+        cfg,
+    )
+
+    assert len(candidates) == 4
+    assert candidates[0][0] == "reviewed_base"
+    assert candidates[0][1]["THRESHOLD_HI"] == 91.0
+    assert candidates[0][1]["THRESHOLD_LO"] == 83.0
+
+
+def test_segmentation_thresholds_keep_four_percentile_point_gap():
+    tuner = load_tuner()
+    params = tuner.params_from_vector(
+        [88.0, 87.0, 8, 1.0, 6.0, 4.0, 2.0, 2.5],
+        tuner.SEGMENTATION_PARAM_SPACE,
+    )
+
+    assert params["THRESHOLD_HI"] - params["THRESHOLD_LO"] >= 4.0
+
+
+def test_segmentation_search_bounds_cover_approved_recall_range():
+    tuner = load_tuner()
+    bounds = {
+        key: (lo, hi)
+        for key, lo, hi, _is_int in tuner.SEGMENTATION_PARAM_SPACE
+    }
+
+    assert bounds["THRESHOLD_HI"] == (82.0, 92.0)
+    assert bounds["THRESHOLD_LO"] == (70.0, 84.0)
+    assert bounds["MIN_OBJ_PX"] == (3, 10)
+    assert bounds["MIN_SKEL_LEN_UM"] == (4.0, 7.0)
+
+
+def test_segmentation_score_rejects_empty_output():
+    tuner = load_tuner()
+    cfg = tuner.CONFIG.copy()
+    cfg["TUNING_OBJECTIVE"] = "segmentation"
+    tuner.roi_mask_global = np.ones((4, 4), dtype=bool)
+    tuner.exclusion_mask_global = None
+    empty = np.zeros((4, 4), dtype=bool)
+    segs = [
+        (
+            {
+                "mask_hyst": empty,
+                "mask_clean": empty,
+                "skel_pruned": empty,
+                "bridge_stats": {
+                    "skeleton_pixels_before": 0,
+                    "skeleton_pixels_after": 0,
+                },
+            },
+            {
+                "results": [],
+                "skel_label": np.zeros((4, 4), dtype=np.int32),
+            },
+        )
+    ]
+
+    summary = tuner.summarize_candidate([], segs, cfg)
+
+    assert summary["n_2d"] == 0
+    assert summary["empty_slice_fraction"] == 1.0
+    assert summary["score"] >= 1e6
+
+
+def test_roi_metrics_use_valid_roi_and_count_integer_label_leakage():
+    tuner = load_tuner()
+    cfg = tuner.CONFIG.copy()
+    cfg.update({"TUNING_OBJECTIVE": "segmentation", "UM_PER_PX_XY": 1.0})
+    roi = np.ones((4, 4), dtype=bool)
+    roi[0, 0] = False
+    exclusion = np.zeros((4, 4), dtype=bool)
+    exclusion[0, 1] = True
+    tuner.roi_mask_global = roi
+    tuner.exclusion_mask_global = exclusion
+
+    mask_hyst = np.zeros((4, 4), dtype=bool)
+    mask_hyst[1, 1] = True
+    mask_clean = mask_hyst.copy()
+    skel_pruned = mask_hyst.copy()
+    labels = np.zeros((4, 4), dtype=np.int32)
+    labels[1, 1] = 1
+    labels[0, 0] = 2
+    labels[0, 1] = 2
+    rows = [
+        {
+            "length_px_geodesic": 9.0,
+            "width_px": 2.0,
+            "length_width_ratio": 4.5,
+            "detection_source": "saturn_classical",
+        }
+    ]
+    segs = [
+        (
+            {
+                "mask_hyst": mask_hyst,
+                "mask_clean": mask_clean,
+                "skel_pruned": skel_pruned,
+                "bridge_stats": {
+                    "skeleton_pixels_before": 10,
+                    "skeleton_pixels_after": 12,
+                },
+            },
+            {"results": rows, "skel_label": labels},
+        )
+    ]
+
+    summary = tuner.summarize_candidate(rows, segs, cfg)
+
+    assert summary["clean_mask_occupancy"] == pytest.approx(1 / 14)
+    assert summary["hysteresis_occupancy"] == pytest.approx(1 / 14)
+    assert summary["bridge_inflation"] == pytest.approx(0.2)
+    assert summary["outside_roi_overlap_by_stage"]["skel_label"] == 1
+    assert summary["exclusion_mask_overlap_by_stage"]["skel_label"] == 1
+    assert summary["outside_roi_overlap_count"] == 1
+    assert summary["exclusion_mask_overlap_count"] == 1
+
+
+def test_source_discovery_ignores_unrecognized_tiff_artifacts(tmp_path):
+    tuner = load_tuner()
+    source_0 = tmp_path / "Project001_Series002_z00_ch00.tif"
+    source_1 = tmp_path / "Project001_Series002_z01_ch00.tif"
+    overlay = tmp_path / "final_overlay.tif"
+    for path in (source_0, source_1, overlay):
+        path.touch()
+
+    files = tuner.list_images(tmp_path)
+
+    assert files == [str(source_0), str(source_1)]
+
+
+def test_profile_mode_restores_auto_context_and_writes_complete_preset(
+    monkeypatch,
+    tmp_path,
+):
+    tuner = load_tuner()
+    ctx = tuner.segmentation.StackPreprocessContext(
+        normalization_low=0.0,
+        normalization_high=1.0,
+        selected_clahe_clip=0.02,
+        selected_clahe_profile="auto_original",
+        contrast_score=0.3,
+        sampled_z_indices=[0],
+        roi_percentiles={},
+        saturation_fraction=0.0,
+        slice_brightness_statistics=[],
+        source_dtype="uint8",
+        inferred_bit_depth=8,
+        resolved_pixel_parameters={},
+        configuration_provenance={},
+        image_shape=(4, 4),
+        roi_pixel_count=16,
+        excluded_pixel_count=0,
+    )
+    tuner.preprocess_context_global = ctx
+    tuner.images_to_eval = [np.zeros((4, 4), dtype=np.uint8)]
+    tuner.z_values_eval = [0]
+    seen_profiles = []
+    empty_labels = np.zeros((4, 4), dtype=np.int32)
+
+    def fake_segment(_cfg):
+        seen_profiles.append(
+            tuner.preprocess_context_global.selected_clahe_profile
+        )
+        return [], [
+            (
+                {},
+                {"skel_label": empty_labels, "results": []},
+            )
+        ]
+
+    monkeypatch.setattr(tuner, "segment_eval_images", fake_segment)
+    monkeypatch.setattr(
+        tuner,
+        "summarize_candidate",
+        lambda rows, segs, cfg: {"score": float(len(seen_profiles))},
+    )
+    monkeypatch.setattr(
+        tuner.segmentation,
+        "make_overlay",
+        lambda image, labels: np.zeros((4, 4, 3), dtype=np.uint8),
+    )
+
+    tuner.run_profile_mode(tmp_path, tuner.CONFIG.copy())
+
+    assert seen_profiles == [
+        "no_clahe",
+        "high_contrast",
+        "standard",
+        "low_signal",
+        "auto_original",
+    ]
+    assert tuner.preprocess_context_global is ctx
+    preset_path = next(tmp_path.glob("best_preprocessing_profile_v5_7_*.json"))
+    preset = json.loads(preset_path.read_text(encoding="utf-8"))
+    assert all(key in preset for key in tuner.CONFIG)
+    assert preset["CLAHE_MODE"] == "no_clahe"
 
 
 def test_tracking_evaluator_runs_production_tracker_with_all_base_params(
