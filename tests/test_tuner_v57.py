@@ -531,3 +531,61 @@ def test_stratum_aggregation_writes_one_shared_unchanged_preset(tmp_path):
         preset["_TUNING_METADATA"]["candidate_role"]
         == "evidence_0.05_0.30"
     )
+
+
+def test_segmentation_stratum_aggregation_writes_shared_2d_preset(tmp_path):
+    tuner = load_tuner()
+    parameter_values = tuner.candidate_from_config(
+        tuner.SEGMENTATION_PARAM_SPACE,
+        tuner.CONFIG,
+    )
+    paths = []
+    for idx, score in enumerate((1.0, 2.0, 1.5, 2.5), start=1):
+        path = tmp_path / f"segmentation_stratum_{idx}.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "candidate_role": "reviewed_base",
+                        "score": score,
+                        "n_2d": 200 + idx,
+                        "count_cv": 0.1,
+                        "empty_slice_fraction": 0.0,
+                        "very_short_object_fraction": 0.01,
+                        "very_long_object_fraction": 0.0,
+                        "outside_roi_overlap_count": 0,
+                        "exclusion_mask_overlap_count": 0,
+                        **parameter_values,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        paths.append(path)
+
+    cfg = tuner.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UNET_MODEL_PATH": "epoch_003.pt",
+        }
+    )
+    preset_path, summaries = tuner.aggregate_stratum_results(
+        paths,
+        tmp_path / "shared_2d",
+        cfg,
+        "reviewed_base",
+        mode="segmentation",
+    )
+    preset = json.loads(preset_path.read_text(encoding="utf-8"))
+
+    assert preset_path.name == "shared_segmentation_params_v5_7_001.json"
+    assert len(summaries) == 1
+    assert summaries[0]["stratum_count"] == 4
+    assert summaries[0]["max_empty_slice_fraction"] == 0.0
+    assert preset["SEGMENTATION_ENGINE"] == "hybrid"
+    assert preset["UNET_MODEL_PATH"] == "epoch_003.pt"
+    assert (
+        preset["_TUNING_METADATA"]["aggregation_mode"]
+        == "segmentation"
+    )

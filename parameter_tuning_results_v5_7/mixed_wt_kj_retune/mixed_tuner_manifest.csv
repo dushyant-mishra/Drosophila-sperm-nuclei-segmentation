@@ -1,0 +1,5 @@
+specimen_id,group,image_dir,roi_path,selected_z_indices,source_slice_count,role
+KJ_01,KJ,"C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\kj sv feb\kj sv 40xx0.75-1","C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\kj sv feb\kj sv 40xx0.75-1\analysis_roi_v5_7.npy","0,17,35,52,70,87",88,continuity_baseline
+KJ_13,KJ,"C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\kj sv feb\kj sv 40xx0.75-13","C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\kj sv feb\kj sv 40xx0.75-13\analysis_roi_v5_7.npy","0,17,34,50,67,84",85,acquisition_variability
+WT_01,WT,"C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\w1118 sv feb\w1118 sv feb 40xx0.75-1","C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\w1118 sv feb\w1118 sv feb 40xx0.75-1\analysis_roi_v5_7.npy","0,13,26,40,53,66",67,continuity_baseline
+WT_13,WT,"C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\w1118 sv feb\w1118 sv feb 40xx0.75-13","C:\Users\dmishra\Desktop\KJ Images and mutant-Grace\w1118 sv feb\w1118 sv feb 40xx0.75-13\analysis_roi_v5_7.npy","0,9,18,26,35,44",45,overlapping_tissue_context

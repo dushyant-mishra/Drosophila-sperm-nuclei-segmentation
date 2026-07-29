@@ -1137,10 +1137,25 @@ def loadable_parameter_preset(cfg, selected):
     return preset
 
 
-def aggregate_stratum_results(paths, outdir, cfg, selected_role):
+def aggregate_stratum_results(
+    paths,
+    outdir,
+    cfg,
+    selected_role,
+    mode="unet_rescue",
+):
+    if mode == "unet_rescue":
+        parameter_space = UNET_RESCUE_PARAM_SPACE
+    elif mode == "segmentation":
+        parameter_space = SEGMENTATION_PARAM_SPACE
+    else:
+        raise ValueError(
+            "Shared stratum aggregation supports segmentation or unet_rescue"
+        )
+
     by_role = {}
     source_paths = []
-    parameter_keys = [key for key, *_ in UNET_RESCUE_PARAM_SPACE]
+    parameter_keys = [key for key, *_ in parameter_space]
     for path in paths:
         source = Path(path)
         with open(source, "r", encoding="utf-8") as f:
@@ -1189,13 +1204,46 @@ def aggregate_stratum_results(paths, outdir, cfg, selected_role):
                 "min_rank": int(min(entry["stratum_rank"] for entry in entries)),
                 "max_rank": int(max(entry["stratum_rank"] for entry in entries)),
                 "mean_n_2d": float(np.mean([entry["n_2d"] for entry in entries])),
-                "mean_unet_rescue_fraction": float(
-                    np.mean(
-                        [entry["unet_rescue_fraction"] for entry in entries]
+                "mean_count_cv": float(
+                    np.mean([entry.get("count_cv", 0.0) for entry in entries])
+                ),
+                "max_empty_slice_fraction": float(
+                    max(
+                        entry.get("empty_slice_fraction", 0.0)
+                        for entry in entries
+                    )
+                ),
+                "max_very_short_object_fraction": float(
+                    max(
+                        entry.get("very_short_object_fraction", 0.0)
+                        for entry in entries
                     )
                 ),
                 "max_very_long_object_fraction": float(
-                    max(entry["very_long_object_fraction"] for entry in entries)
+                    max(
+                        entry.get("very_long_object_fraction", 0.0)
+                        for entry in entries
+                    )
+                ),
+                "max_outside_roi_overlap_count": int(
+                    max(
+                        entry.get("outside_roi_overlap_count", 0)
+                        for entry in entries
+                    )
+                ),
+                "max_exclusion_mask_overlap_count": int(
+                    max(
+                        entry.get("exclusion_mask_overlap_count", 0)
+                        for entry in entries
+                    )
+                ),
+                "mean_unet_rescue_fraction": float(
+                    np.mean(
+                        [
+                            entry.get("unet_rescue_fraction", 0.0)
+                            for entry in entries
+                        ]
+                    )
                 ),
                 **{
                     key: entries[0][key]
@@ -1209,7 +1257,7 @@ def aggregate_stratum_results(paths, outdir, cfg, selected_role):
     selected = dict(selected_entries[0])
     selected.update(
         {
-            "mode": "unet_rescue_shared",
+            "mode": f"{mode}_shared",
             "numerical_rank": next(
                 idx
                 for idx, item in enumerate(summaries, start=1)
@@ -1227,20 +1275,21 @@ def aggregate_stratum_results(paths, outdir, cfg, selected_role):
                 "One unchanged candidate across all biological strata; "
                 "selected explicitly after cross-stratum review."
             ),
+            "aggregation_mode": mode,
         }
     )
 
     outdir.mkdir(parents=True, exist_ok=True)
-    n = next_run_number(outdir, "shared_unet_rescue_params_v5_7_*.json")
-    preset_path = outdir / f"shared_unet_rescue_params_v5_7_{n:03d}.json"
+    n = next_run_number(outdir, f"shared_{mode}_params_v5_7_*.json")
+    preset_path = outdir / f"shared_{mode}_params_v5_7_{n:03d}.json"
     with open(preset_path, "w", encoding="utf-8") as f:
         json.dump(preset, f, indent=2)
     pd.DataFrame(summaries).to_csv(
-        outdir / f"shared_candidate_comparison_v5_7_{n:03d}.csv",
+        outdir / f"shared_{mode}_candidate_comparison_v5_7_{n:03d}.csv",
         index=False,
     )
     with open(
-        outdir / f"shared_candidate_comparison_v5_7_{n:03d}.json",
+        outdir / f"shared_{mode}_candidate_comparison_v5_7_{n:03d}.json",
         "w",
         encoding="utf-8",
     ) as f:
@@ -1429,7 +1478,7 @@ def main(argv=None):
     parser.add_argument("--aggregate-stratum-results", action="append", default=[])
     parser.add_argument(
         "--shared-candidate-role",
-        default="evidence_0.05_0.30",
+        default=None,
     )
     parser.add_argument("--outdir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--maxiter", type=int, default=6)
@@ -1452,13 +1501,24 @@ def main(argv=None):
     segmentation.validate_config(cfg)
 
     if args.aggregate_stratum_results:
+        if args.mode not in {"segmentation", "unet_rescue"}:
+            raise SystemExit(
+                "--aggregate-stratum-results supports --mode segmentation "
+                "or --mode unet_rescue"
+            )
         if args.unet_model:
             cfg["UNET_MODEL_PATH"] = args.unet_model
+        selected_role = args.shared_candidate_role or (
+            "evidence_0.05_0.30"
+            if args.mode == "unet_rescue"
+            else "reviewed_base"
+        )
         preset_path, summaries = aggregate_stratum_results(
             args.aggregate_stratum_results,
             outdir,
             cfg,
-            args.shared_candidate_role,
+            selected_role,
+            mode=args.mode,
         )
         print(f"Shared preset: {preset_path}")
         print(
