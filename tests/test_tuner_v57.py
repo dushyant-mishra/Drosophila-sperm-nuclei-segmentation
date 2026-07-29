@@ -36,6 +36,8 @@ def test_unet_candidate_sampling_starts_with_evidence_thresholds():
     assert first[0][1]["UNET_RESCUE_THRESHOLD"] == 0.30
     assert first[0][1]["UNET_RESCUE_MIN_SKEL_LEN_UM"] == 2.0
     assert first[0][1]["UNET_SHORT_RESCUE_MIN_MEAN_PROB"] == 0.35
+    assert first[1][0] == "balanced_recall_review"
+    assert first[1][1]["UNET_RESCUE_THRESHOLD"] == 0.20
 
 
 def test_tracking_sampling_includes_reviewed_base_first():
@@ -89,8 +91,60 @@ def test_unet_evaluator_preserves_reviewed_base_configuration(monkeypatch):
     assert observed["_UNET_PROBABILITY_CACHE"] == {"z": "cached"}
     assert observed["_UNET_PROBABILITY_CACHE_DIR"] == "new_model_cache"
     assert observed["SEGMENTATION_ENGINE"] == "hybrid"
+    assert observed["UNET_FAIL_HARD"] is True
     assert observed["UNET_THRESHOLD_MODE"] == "soft"
     assert observed["UNET_RESCUE_ENABLE"] is True
+
+
+def test_unet_summary_counts_all_rescue_subtypes_and_penalizes_extremes():
+    tuner = load_tuner()
+    cfg = tuner.CONFIG.copy()
+    cfg.update(
+        {
+            "UM_PER_PX_XY": 1.0,
+            "TUNING_OBJECTIVE": "unet_rescue",
+            "ANALYSIS_MODE": "comparative",
+        }
+    )
+    rows = [
+        {
+            "length_px_geodesic": 3.0,
+            "width_px": 1.0,
+            "length_width_ratio": 3.0,
+            "detection_source": "unet_rescued_short_high_confidence",
+            "unet_mean_probability": 0.9,
+        },
+        {
+            "length_px_geodesic": 9.0,
+            "width_px": 2.0,
+            "length_width_ratio": 4.5,
+            "detection_source": "unet_rescued_low_ratio_high_confidence",
+            "unet_mean_probability": 0.8,
+        },
+        {
+            "length_px_geodesic": 10.0,
+            "width_px": 2.0,
+            "length_width_ratio": 5.0,
+            "detection_source": "unet_rescued_split",
+            "unet_mean_probability": 0.8,
+        },
+        {
+            "length_px_geodesic": 21.0,
+            "width_px": 2.0,
+            "length_width_ratio": 10.5,
+            "detection_source": "saturn_classical",
+            "unet_mean_probability": 0.0,
+        },
+    ]
+
+    summary = tuner.summarize_candidate(rows, [], cfg)
+
+    assert summary["unet_total_rescued_count"] == 3
+    assert summary["unet_rescued_split_count"] == 1
+    assert summary["unet_rescue_fraction"] == 0.75
+    assert summary["very_short_object_fraction"] == 0.25
+    assert summary["very_long_object_fraction"] == 0.25
+    assert summary["unet_rescue_score"] > 250.0
 
 
 def test_segmentation_evaluator_preserves_reviewed_base_configuration(monkeypatch):

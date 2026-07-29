@@ -59,7 +59,7 @@ SEGMENTATION_PARAM_SPACE = [
     ("MAX_BRIDGE_UM",              0.0,  2.0, False),
     ("MIN_SKEL_LEN_UM",            5.5,  8.5, False),
     ("MAX_WIDTH_UM",               3.0,  5.0, False),
-    ("MIN_LENGTH_WIDTH_RATIO",     2.2,  3.2, False),
+    ("MIN_LENGTH_WIDTH_RATIO",     1.6,  3.0, False),
     ("MAX_TORTUOSITY",             1.8,  3.0, False),
 ]
 
@@ -376,9 +376,20 @@ def summarize_candidate(rows, segs, cfg):
         for r in rows:
             source = str(r.get("detection_source", "saturn_classical"))
             source_counts[source] = source_counts.get(source, 0) + 1
-    unet_rescued = int(source_counts.get("unet_rescued", 0))
-    unet_rescued_split = int(source_counts.get("unet_rescued_split", 0))
-    total_unet_rescued = unet_rescued + unet_rescued_split
+    unet_source_counts = {
+        source: int(count)
+        for source, count in source_counts.items()
+        if source.startswith("unet_rescued")
+    }
+    total_unet_rescued = int(sum(unet_source_counts.values()))
+    unet_rescued_split = int(
+        sum(
+            count
+            for source, count in unet_source_counts.items()
+            if "split" in source
+        )
+    )
+    unet_rescued = int(total_unet_rescued - unet_rescued_split)
     total_detections = max(len(rows), 1)
     rescue_fraction = float(total_unet_rescued / total_detections)
     unet_means = np.array([
@@ -425,6 +436,8 @@ def summarize_candidate(rows, segs, cfg):
         score = technical_score
     else:
         score = technical_score + morphology_prior_score
+    very_short_frac = float(np.mean(lengths < 4.0)) if lengths.size else 1.0
+    very_long_frac = float(np.mean(lengths > 20.0)) if lengths.size else 0.0
     unet_rescue_score = (
         technical_score
         + severe_rejected_px * 0.0006
@@ -432,7 +445,9 @@ def summarize_candidate(rows, segs, cfg):
         + max(0.0, 0.08 - rescue_fraction) * 30.0
         + max(0.0, rescue_fraction - 0.42) * 35.0
         + split_ratio_penalty(total_unet_rescued, unet_rescued_split)
+        + very_short_frac * 25.0
         + long_frac * 4.0
+        + very_long_frac * 1000.0
         + wide_frac * 4.0
     )
     if str(cfg.get("TUNING_OBJECTIVE", "")).lower() == "unet_rescue":
@@ -444,6 +459,7 @@ def summarize_candidate(rows, segs, cfg):
         "morphology_prior_score_reported_not_optimized": float(morphology_prior_score),
         "n_2d": int(len(rows)),
         "source_counts": source_counts,
+        "unet_rescue_source_counts": unet_source_counts,
         "saturn_classical_count": int(source_counts.get("saturn_classical", 0)),
         "unet_rescued_count": unet_rescued,
         "unet_rescued_split_count": unet_rescued_split,
@@ -462,7 +478,8 @@ def summarize_candidate(rows, segs, cfg):
         "median_length_width_ratio": median_ratio,
         "short_length_fraction_reported_not_optimized": short_frac,
         "long_object_fraction": long_frac,
-        "very_long_object_fraction": float(np.mean(lengths > 20.0)) if lengths.size else 0.0,
+        "very_short_object_fraction": very_short_frac,
+        "very_long_object_fraction": very_long_frac,
         "wide_object_fraction": wide_frac,
         "low_length_width_ratio_fraction": float(np.mean(ratios < 2.5)) if ratios.size else 1.0,
         "hysteresis_occupancy": float(np.mean([np.count_nonzero(s["mask_hyst"]) / s["mask_hyst"].size for s, _ in segs])) if segs else 0.0,
@@ -493,6 +510,7 @@ def evaluate_unet_rescue_candidate(params, base_cfg=None):
     cfg = (base_cfg or CONFIG).copy()
     cfg.update(params)
     cfg["SEGMENTATION_ENGINE"] = "hybrid"
+    cfg["UNET_FAIL_HARD"] = True
     cfg["UNET_THRESHOLD_MODE"] = "soft"
     cfg["UNET_RESCUE_ENABLE"] = True
     cfg["UNET_RESCUE_SPLIT_RETRY_ENABLE"] = True
@@ -750,6 +768,24 @@ def sample_unet_rescue_candidates(space, maxiter, seed, base_cfg):
                 },
             ),
         ),
+        (
+            "balanced_recall_review",
+            candidate_from_config(
+                space,
+                base_cfg,
+                {
+                    "UNET_CANDIDATE_THRESHOLD": 0.05,
+                    "UNET_SEED_THRESHOLD": 0.30,
+                    "UNET_RESCUE_THRESHOLD": 0.20,
+                    "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+                    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": 0.30,
+                    "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": 0.30,
+                    "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": 0.55,
+                    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": 3.0,
+                    "UNET_INSTANCE_SEED_THRESHOLD": 0.50,
+                },
+            ),
+        ),
         ("reviewed_base", candidate_from_config(space, base_cfg)),
         ("space_midpoint", sample_candidates(space, 1, seed)[0]),
     ]
@@ -812,6 +848,7 @@ def generate_candidate_review_pdf(outdir, mode, records, base_cfg, review_candid
             cfg.update(
                 {
                     "SEGMENTATION_ENGINE": "hybrid",
+                    "UNET_FAIL_HARD": True,
                     "UNET_THRESHOLD_MODE": "soft",
                     "UNET_RESCUE_ENABLE": True,
                     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
@@ -1249,6 +1286,8 @@ def main(argv=None):
     if args.mode == "unet_rescue" and not Path(cfg["UNET_MODEL_PATH"]).is_file():
         raise SystemExit(f"U-Net checkpoint not found: {cfg['UNET_MODEL_PATH']}")
     if args.mode == "unet_rescue":
+        cfg["SEGMENTATION_ENGINE"] = "hybrid"
+        cfg["UNET_FAIL_HARD"] = True
         cache_dir = Path(args.unet_cache_dir) if args.unet_cache_dir else outdir / "unet_probability_cache"
         cfg["_UNET_PROBABILITY_CACHE"] = build_unet_probability_cache(
             cfg,
