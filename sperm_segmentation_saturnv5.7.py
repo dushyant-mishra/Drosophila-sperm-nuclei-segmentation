@@ -4536,19 +4536,67 @@ def export_analysis_summary(
             ]
         )
     summary["saved_unet_probability_map_count"] = int(probability_map_count)
+
+    primary_keys = [
+        "run_scope",
+        "analysis_population",
+        "biological_count_available",
+        "estimated_unique_nuclei",
+    ]
+    if summary.get("run_scope") == "single_slice_preview":
+        primary_keys.extend(
+            [
+                "z_index",
+                "candidate_2d_detection_count",
+                "median_2d_length_um",
+                "median_2d_width_um",
+            ]
+        )
+    else:
+        primary_keys.extend(
+            [
+                "median_3d_length_um",
+                "median_maximum_2d_length_um",
+                "median_effective_thickness_um_psf_sensitive",
+                "median_3d_tortuosity",
+                "median_z_span_um",
+            ]
+        )
+    primary_keys.append("interpretation")
+    primary_summary = {
+        key: summary.get(key)
+        for key in primary_keys
+        if key in summary
+    }
+
     csv_path = os.path.join(out_dir, "analysis_summary.csv")
     json_path = os.path.join(out_dir, "analysis_summary.json")
-    pd.DataFrame([summary]).to_csv(csv_path, index=False)
+    pd.DataFrame([primary_summary]).to_csv(csv_path, index=False)
+    pd.DataFrame([summary]).to_csv(
+        os.path.join(out_dir, "technical_qc_summary.csv"),
+        index=False,
+    )
 
-    json_summary = {}
-    for key, value in summary.items():
-        if isinstance(value, (np.integer, np.floating)):
-            value = value.item()
-        if isinstance(value, float) and not np.isfinite(value):
-            value = None
-        json_summary[key] = value
+    def json_safe(payload):
+        cleaned = {}
+        for key, value in payload.items():
+            if isinstance(value, (np.integer, np.floating)):
+                value = value.item()
+            if isinstance(value, float) and not np.isfinite(value):
+                value = None
+            cleaned[key] = value
+        return cleaned
+
+    json_summary = json_safe(primary_summary)
+    technical_json_summary = json_safe(summary)
     with open(json_path, "w", encoding="utf-8") as handle:
         json.dump(json_summary, handle, indent=2)
+    with open(
+        os.path.join(out_dir, "technical_qc_summary.json"),
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        json.dump(technical_json_summary, handle, indent=2)
     return summary
 
 
@@ -5274,15 +5322,9 @@ def process_batch(cfg):
         )
     else:
         print("No biological nucleus count was produced because 3D tracking was unavailable.")
-    print(
-        "Model contribution QC | U-Net rescued 2D candidates: "
-        f"{analysis_summary['unet_rescued_2d_count']} | "
-        "probability-supported accepted detections: "
-        f"{analysis_summary['unet_probability_supported_2d_count']}"
-    )
     print(f"Saved to: {cfg['OUTPUT_DIR']}")
     print("Concise result: analysis_summary.csv")
-    print("Per-slice 2D counts remain available in slice_summary for technical review.")
+    print("Technical diagnostics: technical_qc_summary.csv")
 
 
 def write_error_log(out_dir, component, message):
@@ -5815,12 +5857,12 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 pdf.savefig(fig_dyn, dpi=300, bbox_inches='tight')
                 plt.close(fig_dyn)
 
-            # Write the global summary after the tracking/audit page so the PDF opens
-            # on the population-quality overview when tracking results are available.
-            pdf.savefig(fig_sum, dpi=300, bbox_inches='tight')
+            # Keep detection/tracking provenance as a standalone technical-QC
+            # image. It is intentionally excluded from the biologist-facing PDF.
             plt.close(fig_sum)
 
-            # --- PAGE 1.6: v5.7 U-NET RESCUE AUDIT ---
+            # Save the detailed U-Net audit as a standalone technical-QC image,
+            # not as another competing population in the final PDF.
             if unet_report and unet_report["enabled"]:
                 fig_unet = plt.figure(figsize=(11, 8.5))
                 fig_unet.suptitle("Saturn v5.7 U-Net Rescue Audit", fontsize=15, fontweight='bold')
@@ -5879,7 +5921,6 @@ def generate_batch_report(out_dir, df, df_summary, um, df_tracks=None, gui_callb
                 tab.scale(1, 1.35)
                 fig_unet.tight_layout(rect=[0, 0.03, 1, 0.93])
                 fig_unet.savefig(os.path.join(plot_dir, "unet_rescue_audit.png"), dpi=300, bbox_inches='tight')
-                pdf.savefig(fig_unet, dpi=300, bbox_inches='tight')
                 plt.close(fig_unet)
 
             # --- PAGE 2: PRIMARY 3D MORPHOMETRICS SUMMARY ---
@@ -8472,11 +8513,6 @@ def _study_group_summary(specimen_frame):
         return pd.DataFrame()
     metrics = [
         "estimated_unique_nuclei",
-        "estimated_unique_nuclei_classical_only",
-        "estimated_unique_nuclei_with_unet_evidence",
-        "estimated_unique_nuclei_unet_fraction",
-        "unet_rescued_2d_count",
-        "unet_rescue_fraction_of_2d_detections",
         "estimated_nuclei_per_1000_um2",
         "estimated_nuclei_per_100000_um3",
         "median_2d_length_um",
@@ -8855,7 +8891,34 @@ def _write_study_aggregates(output_root, rows, state):
                 track_frames.append(tracks)
 
     specimen_frame = pd.DataFrame(summaries)
-    specimen_frame.to_csv(output_root / "specimen_summary.csv", index=False)
+    biological_columns = [
+        "sample_id",
+        "group",
+        "status",
+        "input_dir",
+        "output_dir",
+        "acquisition_class",
+        "slice_count",
+        "xy_um_per_pixel",
+        "z_um_per_slice",
+        "roi_area_um2",
+        "sampled_roi_volume_um3",
+        "estimated_unique_nuclei",
+        "estimated_nuclei_per_1000_um2",
+        "estimated_nuclei_per_100000_um3",
+        "median_2d_length_um",
+        "median_2d_width_um",
+        "median_3d_length_um",
+        "median_3d_tortuosity",
+        "median_3d_thickness_um",
+        "median_3d_volume_um3",
+        "median_3d_z_span_um",
+        "normalization_warning",
+    ]
+    specimen_frame[
+        [column for column in biological_columns if column in specimen_frame.columns]
+    ].to_csv(output_root / "specimen_summary.csv", index=False)
+    specimen_frame.to_csv(output_root / "specimen_technical_qc.csv", index=False)
     _study_group_summary(specimen_frame).to_csv(output_root / "group_summary.csv", index=False)
     _study_atomic_json(output_root / "normalization_qc.json", _study_normalization_qc(specimen_frame))
     comparison_frame, comparison_qc = _study_specimen_group_comparisons(specimen_frame)
@@ -11136,8 +11199,6 @@ class SpermGUI:
                     f"Batch complete in {elapsed:.1f}s.\n\n"
                     f"Estimated unique nuclei: {analysis_summary['estimated_unique_nuclei']}\n"
                     f"Median 3D length: {analysis_summary['median_3d_length_um']:.2f} um\n\n"
-                    f"U-Net rescued 2D candidates: {analysis_summary['unet_rescued_2d_count']}\n"
-                    f"Probability-supported accepted detections: {analysis_summary['unet_probability_supported_2d_count']}\n\n"
                     f"Primary sample summary:\n"
                     f"{os.path.join(out_dir, 'biologist_results', 'sample_summary.csv')}\n\n"
                     f"Saved to:\n{out_dir}"

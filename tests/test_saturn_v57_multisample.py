@@ -386,6 +386,12 @@ def test_analysis_summary_uses_only_technical_valid_tracks(tmp_path):
         payload = json.load(handle)
     assert payload["estimated_unique_nuclei"] == 2
     assert payload["median_3d_length_um"] == 11.0
+    assert "unet_rescued_2d_count" not in payload
+    with (tmp_path / "technical_qc_summary.json").open("r", encoding="utf-8") as handle:
+        technical_payload = json.load(handle)
+    assert technical_payload["unet_rescued_2d_count"] == 2
+    assert technical_payload["unet_rescued_split_2d_count"] == 1
+    assert technical_payload["unet_rescued_low_ratio_high_confidence_2d_count"] == 1
 
 
 def test_single_slice_summary_cannot_be_mistaken_for_unique_nuclei(tmp_path):
@@ -422,6 +428,10 @@ def test_single_slice_summary_cannot_be_mistaken_for_unique_nuclei(tmp_path):
         payload = json.load(handle)
     assert payload["estimated_unique_nuclei"] is None
     assert "not unique nuclei" in payload["interpretation"].lower()
+    assert "unet_rescued_2d_count" not in payload
+    with (tmp_path / "technical_qc_summary.json").open("r", encoding="utf-8") as handle:
+        technical_payload = json.load(handle)
+    assert technical_payload["unet_rescued_2d_count"] == 1
 
 
 def test_completed_tracking_with_no_detections_reports_zero_not_missing():
@@ -917,6 +927,7 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert set(summary["z_boundary_track_fraction"]) == {1.0}
     assert (output_root / "study_manifest.csv").exists()
     assert (output_root / "specimen_summary.csv").exists()
+    assert (output_root / "specimen_technical_qc.csv").exists()
     assert (output_root / "group_summary.csv").exists()
     assert (output_root / "specimen_group_comparisons.csv").exists()
     assert (output_root / "specimen_group_comparison_qc.json").exists()
@@ -934,6 +945,11 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert all(":" in value for value in tracks["study_track_id"])
     assert all(record["status"] == "complete" for record in state["samples"].values())
     assert all((Path(record["output_dir"]) / "sample_complete.json").exists() for record in state["samples"].values())
+    specimen_primary = pd.read_csv(output_root / "specimen_summary.csv")
+    assert "estimated_unique_nuclei" in specimen_primary.columns
+    assert "unet_rescued_2d_count" not in specimen_primary.columns
+    specimen_qc = pd.read_csv(output_root / "specimen_technical_qc.csv")
+    assert "unet_rescued_2d_count" in specimen_qc.columns
 
     saturn.run_multisample_study(
         rows,
