@@ -208,6 +208,68 @@ def test_unet_rescue_confidence_exception_keeps_nucleus_below_resolution_floor()
     assert result["detection_source"] == "unet_rescued_short_high_confidence"
 
 
+def test_unet_rescue_confidence_exception_keeps_low_ratio_nucleus():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UM_PER_PX_XY": 0.3,
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_RESCUE_THRESHOLD": 0.3,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+            "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+            "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": 0.75,
+            "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": 4.0,
+            "MIN_LENGTH_WIDTH_RATIO": 3.0,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (64, 64)
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[25:32, 15:37] = 0.95
+    empty = np.zeros(shape, dtype=bool)
+    seg = {
+        "skel_pruned": empty.copy(),
+        "dist_clean": np.zeros(shape, dtype=float),
+        "skel_labeled": np.zeros(shape, dtype=np.int32),
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": empty.copy(),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert len(measured["results"]) == 1
+    assert (
+        measured["results"][0]["detection_source"]
+        == "unet_rescued_low_ratio_high_confidence"
+    )
+
+
+def test_unet_report_counts_confidence_exception_sources():
+    saturn = load_saturn_v57()
+    frame = pd.DataFrame(
+        {
+            "detection_source": [
+                "saturn_classical",
+                "unet_rescued",
+                "unet_rescued_split",
+                "unet_rescued_short_high_confidence",
+                "unet_rescued_low_ratio_high_confidence",
+            ],
+            "unet_mean_probability": [0.8, 0.9, 0.85, 0.95, 0.92],
+        }
+    )
+
+    summary = saturn.summarize_unet_rescue_for_reports(frame)
+
+    assert summary["unet_rescued"] == 3
+    assert summary["unet_rescued_split"] == 1
+    assert summary["unet_total_rescued"] == 4
+
+
 def test_unet_instance_already_represented_by_saturn_is_not_fragmented():
     saturn = load_saturn_v57()
     cfg = saturn.CONFIG.copy()

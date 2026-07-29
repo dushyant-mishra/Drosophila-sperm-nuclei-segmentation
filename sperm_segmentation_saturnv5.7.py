@@ -252,6 +252,8 @@ CONFIG = {
     "UNET_RESCUE_SPLIT_THRESHOLDS": [0.70, 0.80, 0.90],
     "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": True,
     "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": 0.85,
+    "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": 0.75,
+    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": 4.0,
     "UNET_INSTANCE_SPLIT_ENABLE": True,
     "UNET_INSTANCE_SEED_THRESHOLD": 0.75,
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
@@ -417,6 +419,8 @@ _REQUIRED = {
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": bool, "UNET_RESCUE_SPLIT_THRESHOLDS": list,
     "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": bool,
     "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": (int, float),
+    "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": (int, float),
+    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": (int, float),
     "UNET_INSTANCE_SPLIT_ENABLE": bool, "UNET_INSTANCE_SEED_THRESHOLD": (int, float),
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": int, "UNET_INSTANCE_WATERSHED_COMPACTNESS": (int, float),
     "UNET_TRACKING_SUPPORT": bool,
@@ -2292,6 +2296,12 @@ def measure_spermatids(seg, cfg):
         ]
         centerline_salvage = bool(cfg.get("UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE", True))
         centerline_min_prob = float(cfg.get("UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB", 0.85))
+        low_ratio_min_prob = float(
+            cfg.get("UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB", 0.75)
+        )
+        low_ratio_min_length_px = float(
+            cfg.get("UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM", 4.0)
+        ) / max(float(cfg.get("UM_PER_PX_XY", 1.0)), 1e-9)
         instance_split = bool(cfg.get("UNET_INSTANCE_SPLIT_ENABLE", True))
         instance_seed_thr = float(cfg.get("UNET_INSTANCE_SEED_THRESHOLD", max(rescue_thr, 0.75)))
         peak_min_distance = max(1, int(cfg.get("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 6)))
@@ -2345,7 +2355,16 @@ def measure_spermatids(seg, cfg):
             width = float(np.median(2.0 * dist_map[coords[:, 0], coords[:, 1]]))
             if width > cfg["MAX_WIDTH_PX"]:
                 return None, "wide"
-            if gl / (width + 1e-9) < cfg["MIN_LENGTH_WIDTH_RATIO"]:
+            length_width_ratio = gl / (width + 1e-9)
+            high_confidence_low_ratio = (
+                length_width_ratio < cfg["MIN_LENGTH_WIDTH_RATIO"]
+                and gl >= low_ratio_min_length_px
+                and mean_unet_prob >= low_ratio_min_prob
+            )
+            if (
+                length_width_ratio < cfg["MIN_LENGTH_WIDTH_RATIO"]
+                and not high_confidence_low_ratio
+            ):
                 return None, "ratio"
             if n_br > cfg["MAX_BRANCH_NODES"]:
                 return None, "branches"
@@ -2358,6 +2377,8 @@ def measure_spermatids(seg, cfg):
             resolved_source = source
             if gl < rescue_min_skel_px and high_confidence_short:
                 resolved_source = "unet_rescued_short_high_confidence"
+            elif high_confidence_low_ratio:
+                resolved_source = "unet_rescued_low_ratio_high_confidence"
             return {
                 "coords": coords,
                 "score": mean_unet_prob,
@@ -2454,8 +2475,10 @@ def measure_spermatids(seg, cfg):
                         continue
 
                 if split_retry and reason in {"long", "branches", "loop", "tortuous", "endpoints"}:
-                    component_mask = instance_skel_lab == skel_sp.label
-                    split_hits = split_and_retry_component(component_mask)
+                    # Retry against the complete probability-supported instance.
+                    # Thresholding only the one-pixel skeleton cannot separate a
+                    # merged U-Net region into distinct nuclei.
+                    split_hits = split_and_retry_component(instance_mask)
                     if split_hits:
                         rescue_candidates.extend(split_hits)
                         accepted_any = True
@@ -5210,9 +5233,11 @@ def summarize_unet_rescue_for_reports(df, out_dir=None):
     source = df["detection_source"].fillna("saturn_classical").astype(str)
     total = int(len(df))
     classical = int((source == "saturn_classical").sum())
-    unet_direct = int((source == "unet_rescued").sum())
+    unet_mask = source.str.startswith("unet_rescued")
+    unet_split_mask = source == "unet_rescued_split"
+    unet_direct = int((unet_mask & ~unet_split_mask).sum())
     unet_split = int((source == "unet_rescued_split").sum())
-    unet_total = unet_direct + unet_split
+    unet_total = int(unet_mask.sum())
 
     def pct(n):
         return 100.0 * float(n) / max(total, 1)
@@ -5231,7 +5256,7 @@ def summarize_unet_rescue_for_reports(df, out_dir=None):
             if row["Population"] == "Saturn classical":
                 mask = source == "saturn_classical"
             elif row["Population"] == "U-Net rescued":
-                mask = source == "unet_rescued"
+                mask = unet_mask & ~unet_split_mask
             elif row["Population"] == "U-Net rescued after split/centerline":
                 mask = source == "unet_rescued_split"
             elif row["Population"] == "All U-Net rescued":
@@ -6639,6 +6664,7 @@ PARAM_SECTIONS = {
         "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
         "UNET_RESCUE_SPLIT_RETRY_ENABLE", "UNET_RESCUE_SPLIT_THRESHOLDS",
         "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE", "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB",
+        "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB", "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM",
         "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
         "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
@@ -6763,6 +6789,8 @@ PARAM_TITLES = {
     "UNET_RESCUE_SPLIT_THRESHOLDS": "U-Net split retry thresholds",
     "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": "Salvage red U-Net centerlines",
     "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": "Minimum salvage mean probability",
+    "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": "Low-ratio rescue confidence",
+    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": "Low-ratio rescue minimum length (um)",
     "UNET_INSTANCE_SPLIT_ENABLE": "Split U-Net probability instances first",
     "UNET_INSTANCE_SEED_THRESHOLD": "U-Net instance seed threshold",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum seed peak spacing (px)",
@@ -6858,6 +6886,8 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
     "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": "If enabled, high-confidence red U-Net candidates rejected for topology are reduced to their longest simple centerline and measured once more.",
     "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": "Minimum mean U-Net probability required before topology-rejected red candidates can be centerline-salvaged.",
+    "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": "Allows a low length-to-width U-Net candidate only when its mean model probability reaches this value. This avoids globally weakening the morphology rule.",
+    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": "Technical minimum centerline length for the high-confidence low-ratio exception. The default 4 um excludes tiny fragments while remaining below expected WT and mutant nucleus lengths.",
     "UNET_INSTANCE_SPLIT_ENABLE": "If enabled, connected U-Net rescue probability regions are split into putative instances before skeletonization and measurement.",
     "UNET_INSTANCE_SEED_THRESHOLD": "Probability threshold for watershed/core seeds used to split connected U-Net rescue regions. Higher values create cleaner but fewer seeds.",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum distance between fallback U-Net probability peaks used as instance seeds. Lower values can split crowded regions more aggressively.",
