@@ -522,7 +522,12 @@ def main():
         ),
     }
     write_json(output / "combined_package_summary.json", summary)
-    archive = shutil.make_archive(str(output), "zip", output)
+    archive = shutil.make_archive(
+        str(output),
+        "zip",
+        root_dir=output.parent,
+        base_dir=output.name,
+    )
     print(json.dumps({**summary, "package": str(output), "archive": archive}, indent=2))
 
 
