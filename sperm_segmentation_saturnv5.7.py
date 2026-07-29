@@ -2675,7 +2675,7 @@ _QUALITY_OVERLAY_LEGEND = {
     "candidate": ("#00d940", "Included estimated nucleus"),
     "warning": ("#ffbf0d", "Included; morphology warning"),
     "hard_fail": ("#ff2e0d", "Excluded technical failure"),
-    "unmapped": ("#a6a6a6", "Unmapped 2D candidate"),
+    "unmapped": ("#a6a6a6", "Detected candidate without track assignment"),
 }
 
 
@@ -2812,7 +2812,8 @@ def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
     legend_ax.text(
         0.5,
         0.02,
-        "Biological summaries include green + amber tracks. Overlay thickness is display-only.",
+        "Green + amber are included. Uncolored image structures were not detected. "
+        "Overlay thickness is display-only.",
         transform=legend_ax.transAxes,
         ha="center",
         va="bottom",
