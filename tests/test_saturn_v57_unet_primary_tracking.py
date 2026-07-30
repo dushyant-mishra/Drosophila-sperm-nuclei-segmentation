@@ -144,3 +144,228 @@ def test_audit_counter_accepted_count():
 # 20. Same root skip count functions correctly.
 def test_audit_counter_same_root_count():
     pass
+
+def _unet_tracking_test_row(
+    *,
+    key,
+    z_slice,
+    x,
+    y,
+    area=50.0,
+    orientation=0.0,
+    probability=0.9,
+):
+    return {
+        "source_instance_key": key,
+        "z_slice": z_slice,
+        "sperm_id": int(
+            "".join(character for character in key if character.isdigit())
+            or 1
+        ),
+        "centroid_x": float(x),
+        "centroid_y": float(y),
+        "length_px_geodesic": 10.0,
+        "length_um_geodesic": 5.0,
+        "width_px": 2.0,
+        "width_um": 1.0,
+        "area_px": float(area),
+        "instance_mask_area_px": float(area),
+        "estimated_slender_area_px": 20.0,
+        "orientation": float(orientation),
+        "n_endpoints": 2,
+        "tortuosity": 1.0,
+        "unet_mean_probability": float(probability),
+        "unet_max_probability": float(probability),
+        "detection_source": "unet_primary",
+    }
+
+
+def _unet_tracking_test_config():
+    return {
+        "UM_PER_PX_XY": 0.5,
+        "UM_PER_SLICE_Z": 1.0,
+        "UNET_TRACK_MAX_CENTROID_DIST_UM": 3.0,
+        "UNET_TRACK_MAX_COST": 1.35,
+        "UNET_TRACK_CENTROID_WEIGHT": 0.70,
+        "UNET_TRACK_BBOX_IOU_WEIGHT": 0.20,
+        "UNET_TRACK_ORIENTATION_WEIGHT": 0.05,
+        "UNET_TRACK_AREA_WEIGHT": 0.03,
+        "UNET_TRACK_PROBABILITY_WEIGHT": 0.02,
+        "UNET_TRACK_MIN_BBOX_IOU": 0.0,
+        "UNET_TRACK_MAX_AREA_LOG_RATIO": 1.60,
+        "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 20.0,
+    }
+
+
+def test_unet_tracker_links_nearby_adjacent_observations():
+    frame = pd.DataFrame(
+        [
+            _unet_tracking_test_row(
+                key="z001_i00001",
+                z_slice=1,
+                x=10,
+                y=10,
+            ),
+            _unet_tracking_test_row(
+                key="z002_i00001",
+                z_slice=2,
+                x=11,
+                y=10,
+            ),
+        ]
+    )
+
+    tracked, summary = (
+        sperm_seg.track_across_slices_unet_primary(
+            frame,
+            _unet_tracking_test_config(),
+        )
+    )
+
+    assert tracked["track_id"].nunique() == 1
+    assert len(summary) == 1
+    assert (
+        tracked[
+            "track_unet_accepted_link_count"
+        ].iloc[0]
+        == 1
+    )
+
+
+def test_unet_tracker_keeps_distant_observations_separate():
+    frame = pd.DataFrame(
+        [
+            _unet_tracking_test_row(
+                key="z001_i00001",
+                z_slice=1,
+                x=0,
+                y=0,
+            ),
+            _unet_tracking_test_row(
+                key="z002_i00001",
+                z_slice=2,
+                x=100,
+                y=100,
+            ),
+        ]
+    )
+
+    tracked, _ = (
+        sperm_seg.track_across_slices_unet_primary(
+            frame,
+            _unet_tracking_test_config(),
+        )
+    )
+
+    assert tracked["track_id"].nunique() == 2
+
+
+def test_unet_tracker_is_one_to_one_within_each_z_pair():
+    frame = pd.DataFrame(
+        [
+            _unet_tracking_test_row(
+                key="z001_i00001",
+                z_slice=1,
+                x=10,
+                y=10,
+            ),
+            _unet_tracking_test_row(
+                key="z001_i00002",
+                z_slice=1,
+                x=12,
+                y=10,
+            ),
+            _unet_tracking_test_row(
+                key="z002_i00001",
+                z_slice=2,
+                x=11,
+                y=10,
+            ),
+        ]
+    )
+
+    tracked, _ = (
+        sperm_seg.track_across_slices_unet_primary(
+            frame,
+            _unet_tracking_test_config(),
+        )
+    )
+
+    duplicate_same_z = (
+        tracked.groupby(["track_id", "z_slice"])
+        .size()
+    )
+
+    assert not (duplicate_same_z > 1).any()
+    assert tracked["track_id"].nunique() == 2
+
+
+def test_unet_tracker_does_not_reject_morphology_warning():
+    frame = pd.DataFrame(
+        [
+            {
+                **_unet_tracking_test_row(
+                    key="z001_i00001",
+                    z_slice=1,
+                    x=10,
+                    y=10,
+                ),
+                "morphology_warning": True,
+                "morphology_warning_reasons": "short|blob",
+            },
+            {
+                **_unet_tracking_test_row(
+                    key="z002_i00001",
+                    z_slice=2,
+                    x=10.5,
+                    y=10,
+                ),
+                "morphology_warning": True,
+                "morphology_warning_reasons": "short|blob",
+            },
+        ]
+    )
+
+    tracked, _ = (
+        sperm_seg.track_across_slices_unet_primary(
+            frame,
+            _unet_tracking_test_config(),
+        )
+    )
+
+    assert tracked["track_id"].nunique() == 1
+
+
+def test_unet_tracker_rejects_duplicate_source_keys():
+    frame = pd.DataFrame(
+        [
+            _unet_tracking_test_row(
+                key="duplicate",
+                z_slice=1,
+                x=10,
+                y=10,
+            ),
+            _unet_tracking_test_row(
+                key="duplicate",
+                z_slice=2,
+                x=11,
+                y=10,
+            ),
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="unique source_instance_key",
+    ):
+        sperm_seg.track_across_slices_unet_primary(
+            frame,
+            _unet_tracking_test_config(),
+        )
+
+
+def test_runner_accepts_unet_primary_assignment_backend():
+    runner.validate_run_options(
+        repeat=1,
+        tracking_backend="unet_primary_assignment",
+    )

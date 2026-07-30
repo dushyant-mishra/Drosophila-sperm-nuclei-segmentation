@@ -74,6 +74,7 @@ SUPPORTED_TRACKING_BACKENDS = {
     "legacy",
     "global_assignment",
     "hybrid_repair",
+    "unet_primary_assignment",
 }
 
 
@@ -506,6 +507,7 @@ def run(args):
         "engines": ["unet_primary"],
         "repeat": args.repeat,
         "tracking_enabled": True,
+        "tracking_backend": args.tracking_backend,
         "base_parameters": str(Path(args.base_params).resolve()),
         "unet_model": str(Path(args.unet_model).resolve()),
         "total_2d_instances": len(detections_df),

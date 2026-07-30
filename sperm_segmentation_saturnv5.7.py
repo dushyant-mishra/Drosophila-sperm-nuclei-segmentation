@@ -374,6 +374,19 @@ CONFIG = {
     "HYBRID_REPAIR_MIN_OVERLAP":    0.05,
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": 15.0,
 
+    # ------ U-Net-primary assignment tracking parameters -----------------------------------------------------------------------------------------------------------------------------------------------------------------
+    "UNET_TRACK_MAX_CENTROID_DIST_UM": 3.0,
+    "UNET_TRACK_MAX_GAP_SLICES": 1,
+    "UNET_TRACK_MAX_COST": 1.35,
+    "UNET_TRACK_CENTROID_WEIGHT": 0.70,
+    "UNET_TRACK_BBOX_IOU_WEIGHT": 0.20,
+    "UNET_TRACK_ORIENTATION_WEIGHT": 0.05,
+    "UNET_TRACK_AREA_WEIGHT": 0.03,
+    "UNET_TRACK_PROBABILITY_WEIGHT": 0.02,
+    "UNET_TRACK_MIN_BBOX_IOU": 0.0,
+    "UNET_TRACK_MAX_AREA_LOG_RATIO": 1.60,
+    "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 20.0,
+
     # ------ quality audit thresholds (for automated outlier filtering) ---------------------------------
     "AUDIT_MAX_LENGTH_UM":     15.0,    # Flag tracks longer than this (um)
     "AUDIT_MAX_TORTUOSITY":    1.5,     # Flag tracks more tortuous than this
@@ -5013,6 +5026,676 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
         final_ts[column] = int(value)
 
     return final_df, final_ts
+
+def _finite_float(value, default=np.nan):
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+    if not np.isfinite(converted):
+        return float(default)
+
+    return converted
+
+
+def _orientation_difference_degrees(first, second):
+    first_value = _finite_float(first)
+    second_value = _finite_float(second)
+
+    if not np.isfinite(first_value) or not np.isfinite(second_value):
+        return 0.0
+
+    raw_difference = abs(first_value - second_value) % 180.0
+    return min(raw_difference, 180.0 - raw_difference)
+
+
+def _first_available_value(row, names, default=np.nan):
+    for name in names:
+        if name in row.index:
+            value = _finite_float(row.get(name))
+            if np.isfinite(value):
+                return value
+
+    return float(default)
+
+
+def _row_bbox_xyxy(row):
+    candidate_sets = (
+        (
+            ("bbox_min_x", "bbox_x_min", "min_x", "x_min"),
+            ("bbox_min_y", "bbox_y_min", "min_y", "y_min"),
+            ("bbox_max_x", "bbox_x_max", "max_x", "x_max"),
+            ("bbox_max_y", "bbox_y_max", "max_y", "y_max"),
+        ),
+        (
+            ("bbox_x",),
+            ("bbox_y",),
+            ("bbox_x2",),
+            ("bbox_y2",),
+        ),
+    )
+
+    for x1_names, y1_names, x2_names, y2_names in candidate_sets:
+        x1 = _first_available_value(row, x1_names)
+        y1 = _first_available_value(row, y1_names)
+        x2 = _first_available_value(row, x2_names)
+        y2 = _first_available_value(row, y2_names)
+
+        if all(np.isfinite(value) for value in (x1, y1, x2, y2)):
+            if x2 > x1 and y2 > y1:
+                return x1, y1, x2, y2
+
+    center_x = _finite_float(row.get("centroid_x"))
+    center_y = _finite_float(row.get("centroid_y"))
+
+    width_px = _first_available_value(
+        row,
+        (
+            "bbox_width_px",
+            "major_axis_length_px",
+            "length_px_geodesic",
+            "length_px_count",
+        ),
+    )
+    height_px = _first_available_value(
+        row,
+        (
+            "bbox_height_px",
+            "minor_axis_length_px",
+            "width_px",
+        ),
+    )
+
+    if (
+        np.isfinite(center_x)
+        and np.isfinite(center_y)
+        and np.isfinite(width_px)
+        and np.isfinite(height_px)
+        and width_px > 0.0
+        and height_px > 0.0
+    ):
+        half_width = width_px / 2.0
+        half_height = height_px / 2.0
+        return (
+            center_x - half_width,
+            center_y - half_height,
+            center_x + half_width,
+            center_y + half_height,
+        )
+
+    return None
+
+
+def _bbox_iou(first_bbox, second_bbox):
+    if first_bbox is None or second_bbox is None:
+        return np.nan
+
+    first_x1, first_y1, first_x2, first_y2 = first_bbox
+    second_x1, second_y1, second_x2, second_y2 = second_bbox
+
+    intersection_width = max(
+        0.0,
+        min(first_x2, second_x2) - max(first_x1, second_x1),
+    )
+    intersection_height = max(
+        0.0,
+        min(first_y2, second_y2) - max(first_y1, second_y1),
+    )
+    intersection = intersection_width * intersection_height
+
+    first_area = max(0.0, first_x2 - first_x1) * max(
+        0.0,
+        first_y2 - first_y1,
+    )
+    second_area = max(0.0, second_x2 - second_x1) * max(
+        0.0,
+        second_y2 - second_y1,
+    )
+
+    union = first_area + second_area - intersection
+
+    if union <= 0.0:
+        return np.nan
+
+    return float(intersection / union)
+
+
+def _unet_tracking_area(row):
+    for column in (
+        "instance_mask_area_px",
+        "area_px",
+        "estimated_slender_area_px",
+    ):
+        value = _finite_float(row.get(column))
+
+        if np.isfinite(value) and value > 0.0:
+            return value
+
+    return np.nan
+
+
+def _unet_tracking_probability(row):
+    mean_probability = _finite_float(
+        row.get("unet_mean_probability")
+    )
+    max_probability = _finite_float(
+        row.get("unet_max_probability")
+    )
+
+    values = [
+        value
+        for value in (mean_probability, max_probability)
+        if np.isfinite(value)
+    ]
+
+    if not values:
+        return np.nan
+
+    return float(np.mean(values))
+
+
+def _unet_tracking_pair_metrics(source_row, target_row, cfg):
+    um_per_px = float(cfg.get("UM_PER_PX_XY", 1.0))
+    max_distance_um = float(
+        cfg.get("UNET_TRACK_MAX_CENTROID_DIST_UM", 3.0)
+    )
+
+    source_x = _finite_float(source_row.get("centroid_x"))
+    source_y = _finite_float(source_row.get("centroid_y"))
+    target_x = _finite_float(target_row.get("centroid_x"))
+    target_y = _finite_float(target_row.get("centroid_y"))
+
+    if not all(
+        np.isfinite(value)
+        for value in (source_x, source_y, target_x, target_y)
+    ):
+        return {
+            "valid": False,
+            "reason": "nonfinite_centroid",
+            "cost": np.inf,
+        }
+
+    centroid_distance_px = math.hypot(
+        target_x - source_x,
+        target_y - source_y,
+    )
+    centroid_distance_um = centroid_distance_px * um_per_px
+
+    if centroid_distance_um > max_distance_um:
+        return {
+            "valid": False,
+            "reason": "centroid_distance",
+            "cost": np.inf,
+            "centroid_distance_um": centroid_distance_um,
+        }
+
+    centroid_component = (
+        centroid_distance_um / max(max_distance_um, 1e-12)
+    )
+
+    source_bbox = _row_bbox_xyxy(source_row)
+    target_bbox = _row_bbox_xyxy(target_row)
+    bbox_iou = _bbox_iou(source_bbox, target_bbox)
+
+    if np.isfinite(bbox_iou):
+        bbox_component = 1.0 - bbox_iou
+    else:
+        bbox_component = 0.5
+
+    minimum_bbox_iou = float(
+        cfg.get("UNET_TRACK_MIN_BBOX_IOU", 0.0)
+    )
+
+    if (
+        np.isfinite(bbox_iou)
+        and bbox_iou < minimum_bbox_iou
+    ):
+        return {
+            "valid": False,
+            "reason": "bbox_iou",
+            "cost": np.inf,
+            "centroid_distance_um": centroid_distance_um,
+            "bbox_iou": bbox_iou,
+        }
+
+    orientation_difference = _orientation_difference_degrees(
+        source_row.get("orientation"),
+        target_row.get("orientation"),
+    )
+    orientation_component = orientation_difference / 90.0
+
+    source_area = _unet_tracking_area(source_row)
+    target_area = _unet_tracking_area(target_row)
+
+    if (
+        np.isfinite(source_area)
+        and np.isfinite(target_area)
+        and source_area > 0.0
+        and target_area > 0.0
+    ):
+        area_log_ratio = abs(math.log(target_area / source_area))
+    else:
+        area_log_ratio = 0.0
+
+    maximum_area_log_ratio = float(
+        cfg.get("UNET_TRACK_MAX_AREA_LOG_RATIO", 1.60)
+    )
+
+    if area_log_ratio > maximum_area_log_ratio:
+        return {
+            "valid": False,
+            "reason": "area_change",
+            "cost": np.inf,
+            "centroid_distance_um": centroid_distance_um,
+            "bbox_iou": bbox_iou,
+            "area_log_ratio": area_log_ratio,
+        }
+
+    area_component = (
+        area_log_ratio / max(maximum_area_log_ratio, 1e-12)
+    )
+
+    source_probability = _unet_tracking_probability(source_row)
+    target_probability = _unet_tracking_probability(target_row)
+
+    valid_probabilities = [
+        value
+        for value in (source_probability, target_probability)
+        if np.isfinite(value)
+    ]
+
+    if valid_probabilities:
+        probability_component = 1.0 - float(
+            np.clip(np.mean(valid_probabilities), 0.0, 1.0)
+        )
+    else:
+        probability_component = 0.5
+
+    cost = (
+        float(cfg.get("UNET_TRACK_CENTROID_WEIGHT", 0.70))
+        * centroid_component
+        + float(cfg.get("UNET_TRACK_BBOX_IOU_WEIGHT", 0.20))
+        * bbox_component
+        + float(cfg.get("UNET_TRACK_ORIENTATION_WEIGHT", 0.05))
+        * orientation_component
+        + float(cfg.get("UNET_TRACK_AREA_WEIGHT", 0.03))
+        * area_component
+        + float(cfg.get("UNET_TRACK_PROBABILITY_WEIGHT", 0.02))
+        * probability_component
+    )
+
+    return {
+        "valid": True,
+        "reason": "",
+        "cost": float(cost),
+        "centroid_distance_um": float(centroid_distance_um),
+        "bbox_iou": (
+            float(bbox_iou)
+            if np.isfinite(bbox_iou)
+            else np.nan
+        ),
+        "orientation_difference_deg": float(
+            orientation_difference
+        ),
+        "area_log_ratio": float(area_log_ratio),
+        "probability_component": float(probability_component),
+    }
+
+
+def _unet_track_estimated_length_um(
+    track_rows,
+    um_per_px,
+):
+    if track_rows.empty:
+        return 0.0
+
+    observed_lengths = pd.to_numeric(
+        track_rows.get(
+            "length_um_geodesic",
+            pd.Series(dtype=float),
+        ),
+        errors="coerce",
+    )
+
+    maximum_observed_length = (
+        float(observed_lengths.max())
+        if observed_lengths.notna().any()
+        else 0.0
+    )
+
+    ordered = (
+        track_rows.sort_values("z_slice")
+        .drop_duplicates("z_slice")
+    )
+
+    if len(ordered) < 2:
+        return maximum_observed_length
+
+    x_values = pd.to_numeric(
+        ordered["centroid_x"],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    y_values = pd.to_numeric(
+        ordered["centroid_y"],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    finite = np.isfinite(x_values) & np.isfinite(y_values)
+    x_values = x_values[finite]
+    y_values = y_values[finite]
+
+    if len(x_values) < 2:
+        return maximum_observed_length
+
+    centroid_path_px = np.hypot(
+        np.diff(x_values),
+        np.diff(y_values),
+    ).sum()
+
+    return (
+        maximum_observed_length
+        + float(centroid_path_px) * float(um_per_px)
+    )
+
+
+def track_across_slices_unet_primary(
+    detections_df,
+    cfg,
+):
+    if detections_df is None or detections_df.empty:
+        empty_df = (
+            detections_df.copy()
+            if isinstance(detections_df, pd.DataFrame)
+            else pd.DataFrame()
+        )
+        return empty_df, pd.DataFrame()
+
+    required_columns = {
+        "z_slice",
+        "centroid_x",
+        "centroid_y",
+        "source_instance_key",
+    }
+    missing_columns = required_columns - set(
+        detections_df.columns
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "U-Net-primary tracking is missing columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    working = detections_df.copy().reset_index(drop=True)
+
+    if working["source_instance_key"].duplicated().any():
+        duplicate_keys = sorted(
+            working.loc[
+                working["source_instance_key"].duplicated(False),
+                "source_instance_key",
+            ]
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        raise ValueError(
+            "U-Net-primary tracking requires unique "
+            f"source_instance_key values: {duplicate_keys}"
+        )
+
+    working["track_id"] = -1
+    working["track_link_type"] = "track_start"
+    working["track_link_cost"] = np.nan
+    working["track_link_distance_um"] = np.nan
+    working["track_link_bbox_iou"] = np.nan
+    working["track_link_orientation_difference_deg"] = np.nan
+    working["track_link_area_log_ratio"] = np.nan
+    working["track_link_gap_slices"] = 0
+
+    z_values = sorted(
+        int(value)
+        for value in working["z_slice"].unique()
+    )
+
+    next_track_id = 1
+
+    first_indices = working.index[
+        working["z_slice"] == z_values[0]
+    ].tolist()
+
+    for index in first_indices:
+        working.at[index, "track_id"] = next_track_id
+        next_track_id += 1
+
+    accepted_link_count = 0
+    rejected_cost_count = 0
+    rejected_length_count = 0
+    candidate_count = 0
+
+    max_cost = float(
+        cfg.get("UNET_TRACK_MAX_COST", 1.35)
+    )
+    max_length_um = float(
+        cfg.get(
+            "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM",
+            20.0,
+        )
+    )
+
+    for previous_z, current_z in zip(
+        z_values,
+        z_values[1:],
+    ):
+        previous_indices = working.index[
+            working["z_slice"] == previous_z
+        ].tolist()
+        current_indices = working.index[
+            working["z_slice"] == current_z
+        ].tolist()
+
+        if not current_indices:
+            continue
+
+        if not previous_indices:
+            for current_index in current_indices:
+                working.at[
+                    current_index,
+                    "track_id",
+                ] = next_track_id
+                next_track_id += 1
+            continue
+
+        large_cost = 1e9
+        cost_matrix = np.full(
+            (
+                len(previous_indices),
+                len(current_indices),
+            ),
+            large_cost,
+            dtype=float,
+        )
+        metric_lookup = {}
+
+        for source_position, source_index in enumerate(
+            previous_indices
+        ):
+            source_row = working.loc[source_index]
+
+            for target_position, target_index in enumerate(
+                current_indices
+            ):
+                target_row = working.loc[target_index]
+                metrics = _unet_tracking_pair_metrics(
+                    source_row,
+                    target_row,
+                    cfg,
+                )
+
+                metric_lookup[
+                    (source_position, target_position)
+                ] = metrics
+
+                if metrics.get("valid", False):
+                    candidate_count += 1
+                    cost_matrix[
+                        source_position,
+                        target_position,
+                    ] = float(metrics["cost"])
+
+        row_indices, column_indices = linear_sum_assignment(
+            cost_matrix
+        )
+
+        assigned_current_indices = set()
+
+        for source_position, target_position in zip(
+            row_indices,
+            column_indices,
+        ):
+            source_index = previous_indices[source_position]
+            target_index = current_indices[target_position]
+            metrics = metric_lookup[
+                (source_position, target_position)
+            ]
+            assigned_cost = float(
+                cost_matrix[
+                    source_position,
+                    target_position,
+                ]
+            )
+
+            if (
+                not metrics.get("valid", False)
+                or not np.isfinite(assigned_cost)
+                or assigned_cost >= large_cost
+                or assigned_cost > max_cost
+            ):
+                rejected_cost_count += 1
+                continue
+
+            proposed_track_id = int(
+                working.at[source_index, "track_id"]
+            )
+
+            proposed_rows = pd.concat(
+                [
+                    working[
+                        working["track_id"]
+                        == proposed_track_id
+                    ],
+                    working.loc[[target_index]],
+                ],
+                ignore_index=True,
+            )
+
+            estimated_length_um = _unet_track_estimated_length_um(
+                proposed_rows,
+                cfg.get("UM_PER_PX_XY", 1.0),
+            )
+
+            if estimated_length_um > max_length_um:
+                rejected_length_count += 1
+                continue
+
+            working.at[
+                target_index,
+                "track_id",
+            ] = proposed_track_id
+            working.at[
+                target_index,
+                "track_link_type",
+            ] = "unet_primary_adjacent"
+            working.at[
+                target_index,
+                "track_link_cost",
+            ] = assigned_cost
+            working.at[
+                target_index,
+                "track_link_distance_um",
+            ] = metrics.get(
+                "centroid_distance_um",
+                np.nan,
+            )
+            working.at[
+                target_index,
+                "track_link_bbox_iou",
+            ] = metrics.get("bbox_iou", np.nan)
+            working.at[
+                target_index,
+                "track_link_orientation_difference_deg",
+            ] = metrics.get(
+                "orientation_difference_deg",
+                np.nan,
+            )
+            working.at[
+                target_index,
+                "track_link_area_log_ratio",
+            ] = metrics.get(
+                "area_log_ratio",
+                np.nan,
+            )
+            working.at[
+                target_index,
+                "track_link_gap_slices",
+            ] = int(current_z - previous_z)
+
+            assigned_current_indices.add(target_index)
+            accepted_link_count += 1
+
+        for current_index in current_indices:
+            if current_index in assigned_current_indices:
+                continue
+
+            working.at[
+                current_index,
+                "track_id",
+            ] = next_track_id
+            next_track_id += 1
+
+    duplicate_same_z = (
+        working.groupby(["track_id", "z_slice"])
+        .size()
+    )
+
+    if (duplicate_same_z > 1).any():
+        raise RuntimeError(
+            "U-Net-primary tracking produced multiple "
+            "observations from the same Z plane in one track."
+        )
+
+    if (working["track_id"] < 0).any():
+        raise RuntimeError(
+            "U-Net-primary tracking left observations "
+            "without a track ID."
+        )
+
+    rejected_extensions = {}
+    final_df, final_summary = (
+        _summarize_tracked_detections(
+            working,
+            rejected_extensions,
+            cfg,
+        )
+    )
+
+    audit_values = {
+        "track_unet_candidate_count":
+            int(candidate_count),
+        "track_unet_accepted_link_count":
+            int(accepted_link_count),
+        "track_unet_rejected_cost_count":
+            int(rejected_cost_count),
+        "track_unet_rejected_length_count":
+            int(rejected_length_count),
+    }
+
+    for column, value in audit_values.items():
+        final_df[column] = value
+        final_summary[column] = value
+
+    return final_df, final_summary
+
 
 def track_across_slices(detections_df, cfg):
     backend = str(cfg.get("TRACKING_BACKEND", "legacy")).strip().lower()
