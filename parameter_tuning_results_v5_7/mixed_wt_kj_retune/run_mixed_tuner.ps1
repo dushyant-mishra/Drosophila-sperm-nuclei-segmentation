@@ -5,6 +5,7 @@ param(
     [string]$SegmentationCandidateRole = "reviewed_base",
     [string]$UnetCandidateRole = "evidence_0.05_0.30",
     [string]$RunId = "",
+    [switch]$Resume,
     [switch]$ValidateOnly
 )
 
@@ -80,24 +81,54 @@ if (-not $RunId) {
 }
 $RunRoot = Join-Path $ResultsRoot $RunId
 if (Test-Path -LiteralPath $RunRoot) {
-    throw "Run directory already exists; choose another -RunId: $RunRoot"
-}
-New-Item -ItemType Directory -Force -Path $RunRoot | Out-Null
+    if (-not $Resume) {
+        throw (
+            "Run directory already exists. Use -RunId $RunId -Resume to continue it, " +
+            "or choose another -RunId: $RunRoot"
+        )
+    }
+    $metadataPath = Join-Path $RunRoot "run_metadata.json"
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+        throw "Cannot resume because run_metadata.json is missing: $metadataPath"
+    }
+    $existingMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    $resumeChecks = [ordered]@{
+        seed = $Seed
+        segmentation_candidate_count = $SegmentationCandidateCount
+        unet_candidate_count = $UnetCandidateCount
+        segmentation_candidate_role = $SegmentationCandidateRole
+        unet_candidate_role = $UnetCandidateRole
+    }
+    foreach ($key in $resumeChecks.Keys) {
+        if ([string]$existingMetadata.$key -ne [string]$resumeChecks[$key]) {
+            throw (
+                "Resume setting mismatch for ${key}: existing=$($existingMetadata.$key), " +
+                "requested=$($resumeChecks[$key])"
+            )
+        }
+    }
+    Write-Host "Resuming staged tuner run: $RunRoot"
+} else {
+    if ($Resume) {
+        throw "Cannot resume because the run directory does not exist: $RunRoot"
+    }
+    New-Item -ItemType Directory -Force -Path $RunRoot | Out-Null
 
-$metadata = [ordered]@{
-    run_id = $RunId
-    created_at = (Get-Date).ToString("o")
-    seed = $Seed
-    segmentation_candidate_count = $SegmentationCandidateCount
-    unet_candidate_count = $UnetCandidateCount
-    segmentation_candidate_role = $SegmentationCandidateRole
-    unet_candidate_role = $UnetCandidateRole
-    checkpoint = $Checkpoint
-    starting_preset = $StartingPreset
-    manifest = $ManifestPath
+    $metadata = [ordered]@{
+        run_id = $RunId
+        created_at = (Get-Date).ToString("o")
+        seed = $Seed
+        segmentation_candidate_count = $SegmentationCandidateCount
+        unet_candidate_count = $UnetCandidateCount
+        segmentation_candidate_role = $SegmentationCandidateRole
+        unet_candidate_role = $UnetCandidateRole
+        checkpoint = $Checkpoint
+        starting_preset = $StartingPreset
+        manifest = $ManifestPath
+    }
+    $metadata | ConvertTo-Json -Depth 4 |
+        Set-Content -LiteralPath (Join-Path $RunRoot "run_metadata.json") -Encoding UTF8
 }
-$metadata | ConvertTo-Json -Depth 4 |
-    Set-Content -LiteralPath (Join-Path $RunRoot "run_metadata.json") -Encoding UTF8
 
 function Invoke-StratumTuning {
     param(
@@ -107,6 +138,13 @@ function Invoke-StratumTuning {
         [string]$OutputDirectory,
         [int]$CandidateCount
     )
+
+    $resultPath = Join-Path $OutputDirectory "tuning_results_saturnv5_7_$Mode.json"
+    if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+        Write-Host ""
+        Write-Host "=== Reusing completed $Mode result: $($Row.specimen_id) ==="
+        return $resultPath
+    }
 
     $arguments = @(
         $Tuner,
@@ -126,12 +164,11 @@ function Invoke-StratumTuning {
 
     Write-Host ""
     Write-Host "=== $Mode tuning: $($Row.specimen_id) [$($Row.group)] ==="
-    & $Python @arguments
+    & $Python @arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "$Mode tuner failed for $($Row.specimen_id)"
     }
 
-    $resultPath = Join-Path $OutputDirectory "tuning_results_saturnv5_7_$Mode.json"
     if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
         throw "Missing $Mode result for $($Row.specimen_id): $resultPath"
     }
@@ -163,7 +200,7 @@ function Invoke-SharedAggregation {
 
     Write-Host ""
     Write-Host "=== Aggregating shared $Mode candidate: $SelectedRole ==="
-    & $Python @arguments
+    & $Python @arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "Shared $Mode aggregation failed"
     }

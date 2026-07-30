@@ -36,6 +36,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
   ".\parameter_tuning_results_v5_7\mixed_wt_kj_retune\run_mixed_tuner.ps1"
 ```
 
+Resume an interrupted run with the same settings and its timestamped run ID:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  ".\parameter_tuning_results_v5_7\mixed_wt_kj_retune\run_mixed_tuner.ps1" `
+  -RunId 20260729_195815 `
+  -Resume `
+  -SegmentationCandidateCount 12 `
+  -UnetCandidateCount 12 `
+  -Seed 12345
+```
+
+Completed specimen-level results are reused. A resume is rejected if its seed,
+candidate counts, or selected candidate roles differ from the original run.
+
 Outputs are written beneath:
 
 ```text
