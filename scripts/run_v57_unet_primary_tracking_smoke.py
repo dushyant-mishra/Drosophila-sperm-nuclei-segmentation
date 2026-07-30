@@ -70,21 +70,319 @@ def write_csv(path, df):
     else:
         path.write_text("", encoding="utf-8")
 
-def compute_membership_hash(df):
-    if df.empty or "track_id" not in df.columns:
-        return ""
-    grouped = df.groupby("track_id")["source_instance_key"].apply(lambda x: tuple(sorted(x)))
-    canonical_groups = tuple(sorted(grouped.values))
-    digest = hashlib.sha256(str(canonical_groups).encode("utf-8")).hexdigest()
-    return digest
+SUPPORTED_TRACKING_BACKENDS = {
+    "legacy",
+    "global_assignment",
+    "hybrid_repair",
+}
 
-def run(args):
-    if args.repeat < 1:
+
+def validate_run_options(
+    *,
+    repeat: int,
+    tracking_backend: str,
+) -> None:
+    if int(repeat) < 1:
         raise ValueError("--repeat must be >= 1")
 
-    valid_backends = {"legacy", "global_assignment", "hybrid_repair"}
-    if args.tracking_backend not in valid_backends:
-        raise ValueError(f"Invalid tracking backend. Must be one of {valid_backends}")
+    if tracking_backend not in SUPPORTED_TRACKING_BACKENDS:
+        allowed = ", ".join(sorted(SUPPORTED_TRACKING_BACKENDS))
+        raise ValueError(
+            "Invalid tracking backend "
+            f"{tracking_backend!r}. Expected one of: {allowed}"
+        )
+
+
+def compute_membership_hash(
+    tracked_df: pd.DataFrame,
+) -> str:
+    required = {"track_id", "source_instance_key"}
+    missing = required - set(tracked_df.columns)
+
+    if missing:
+        raise ValueError(
+            "Cannot compute membership hash; missing columns: "
+            f"{sorted(missing)}"
+        )
+
+    if tracked_df.empty:
+        canonical_groups = ()
+    else:
+        grouped_memberships = []
+
+        for _, group in tracked_df.groupby(
+            "track_id",
+            sort=False,
+            dropna=False,
+        ):
+            members = tuple(
+                sorted(
+                    str(value)
+                    for value in group[
+                        "source_instance_key"
+                    ].tolist()
+                )
+            )
+            grouped_memberships.append(members)
+
+        canonical_groups = tuple(sorted(grouped_memberships))
+
+    serialized = json.dumps(
+        canonical_groups,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()
+
+
+def compute_track_span_metrics(
+    tracked_df: pd.DataFrame,
+    requested_z_values: list[int],
+) -> dict:
+    metrics = {
+        "total_tracks": 0,
+        "tracks_with_1_slice": 0,
+        "tracks_with_2_slices": 0,
+        "tracks_with_3_slices": 0,
+        "tracks_with_4_slices": 0,
+        "tracks_with_5_slices": 0,
+        "tracks_with_6_slices": 0,
+        "tracks_with_7_slices": 0,
+        "boundary_single_slice_tracks": 0,
+        "interior_single_slice_tracks": 0,
+    }
+
+    if tracked_df.empty:
+        return metrics
+
+    required = {"track_id", "z_slice"}
+    missing = required - set(tracked_df.columns)
+
+    if missing:
+        raise ValueError(
+            "Cannot compute track spans; missing columns: "
+            f"{sorted(missing)}"
+        )
+
+    requested = sorted(int(z) for z in requested_z_values)
+
+    track_spans = (
+        tracked_df.groupby("track_id", dropna=False)["z_slice"]
+        .nunique()
+        .astype(int)
+    )
+
+    metrics["total_tracks"] = int(len(track_spans))
+
+    for span in range(1, 8):
+        metrics[f"tracks_with_{span}_slices"] = int(
+            (track_spans == span).sum()
+        )
+
+    single_track_ids = track_spans[
+        track_spans == 1
+    ].index.tolist()
+
+    if not single_track_ids:
+        return metrics
+
+    single_track_z = (
+        tracked_df[
+            tracked_df["track_id"].isin(single_track_ids)
+        ]
+        .groupby("track_id", dropna=False)["z_slice"]
+        .first()
+    )
+
+    if requested:
+        lower_boundary = requested[0]
+        upper_boundary = requested[-1]
+
+        boundary_mask = single_track_z.isin(
+            [lower_boundary, upper_boundary]
+        )
+
+        metrics["boundary_single_slice_tracks"] = int(
+            boundary_mask.sum()
+        )
+        metrics["interior_single_slice_tracks"] = int(
+            (~boundary_mask).sum()
+        )
+
+    return metrics
+
+
+def evaluate_tracking_integrity(
+    *,
+    pretracking_df: pd.DataFrame,
+    tracked_df: pd.DataFrame,
+    requested_z_values: list[int],
+) -> dict:
+    failures = []
+
+    result = {
+        "duplicate_same_z_group_count": 0,
+        "duplicate_same_z_excess_observation_count": 0,
+        "dropped_instance_count": 0,
+        "duplicated_source_instance_count": 0,
+        "multiply_assigned_instance_count": 0,
+        "missing_track_id_count": 0,
+        "unexpected_z_observation_count": 0,
+        "quality_gates_passed": True,
+        "integrity_failures": failures,
+    }
+
+    required_pre = {
+        "source_instance_key",
+        "z_slice",
+    }
+    required_post = {
+        "source_instance_key",
+        "z_slice",
+        "track_id",
+    }
+
+    missing_pre = required_pre - set(pretracking_df.columns)
+    missing_post = required_post - set(tracked_df.columns)
+
+    if missing_pre:
+        failures.append(
+            "Pretracking dataframe missing columns: "
+            f"{sorted(missing_pre)}"
+        )
+
+    if missing_post:
+        failures.append(
+            "Tracked dataframe missing columns: "
+            f"{sorted(missing_post)}"
+        )
+
+    if missing_pre or missing_post:
+        result["quality_gates_passed"] = False
+        return result
+
+    pre_keys = pretracking_df[
+        "source_instance_key"
+    ].astype(str)
+
+    post_keys = tracked_df[
+        "source_instance_key"
+    ].astype(str)
+
+    pre_key_set = set(pre_keys)
+    post_key_set = set(post_keys)
+
+    dropped_keys = pre_key_set - post_key_set
+    result["dropped_instance_count"] = len(dropped_keys)
+
+    if dropped_keys:
+        failures.append(
+            "Tracked output is missing source instances: "
+            f"{sorted(dropped_keys)}"
+        )
+
+    post_key_counts = post_keys.value_counts()
+    duplicated_keys = post_key_counts[
+        post_key_counts > 1
+    ].index.tolist()
+
+    result["duplicated_source_instance_count"] = len(
+        duplicated_keys
+    )
+
+    if duplicated_keys:
+        failures.append(
+            "Tracked output contains duplicated source instances: "
+            f"{sorted(duplicated_keys)}"
+        )
+
+    track_counts_per_source = (
+        tracked_df.assign(
+            source_instance_key=post_keys
+        )
+        .groupby("source_instance_key")["track_id"]
+        .nunique(dropna=True)
+    )
+
+    multiply_assigned_keys = track_counts_per_source[
+        track_counts_per_source > 1
+    ].index.tolist()
+
+    result["multiply_assigned_instance_count"] = len(
+        multiply_assigned_keys
+    )
+
+    if multiply_assigned_keys:
+        failures.append(
+            "Source instances belong to multiple track IDs: "
+            f"{sorted(multiply_assigned_keys)}"
+        )
+
+    result["missing_track_id_count"] = int(
+        tracked_df["track_id"].isna().sum()
+    )
+
+    if result["missing_track_id_count"]:
+        failures.append(
+            "Tracked output contains observations without track_id"
+        )
+
+    same_z_sizes = (
+        tracked_df.groupby(
+            ["track_id", "z_slice"],
+            dropna=False,
+        )
+        .size()
+    )
+
+    duplicate_same_z_groups = same_z_sizes[
+        same_z_sizes > 1
+    ]
+
+    result["duplicate_same_z_group_count"] = int(
+        len(duplicate_same_z_groups)
+    )
+
+    result[
+        "duplicate_same_z_excess_observation_count"
+    ] = int(
+        (duplicate_same_z_groups - 1).sum()
+    )
+
+    if result["duplicate_same_z_group_count"]:
+        failures.append(
+            "Final tracks contain multiple observations "
+            "from the same Z plane"
+        )
+
+    requested_z = {
+        int(value)
+        for value in requested_z_values
+    }
+    observed_z = tracked_df["z_slice"].astype(int)
+
+    unexpected_z_mask = ~observed_z.isin(requested_z)
+
+    result["unexpected_z_observation_count"] = int(
+        unexpected_z_mask.sum()
+    )
+
+    if result["unexpected_z_observation_count"]:
+        failures.append(
+            "Tracked output contains observations from "
+            "unrequested Z planes"
+        )
+
+    result["quality_gates_passed"] = not failures
+    return result
+
+def run(args):
+    validate_run_options(
+        repeat=args.repeat,
+        tracking_backend=args.tracking_backend,
+    )
 
     saturn = load_saturn()
     targets = validate_target_values(parse_csv_values(args.z_values, int))
@@ -171,63 +469,29 @@ def run(args):
         final_df_tracked = df_tracked
         final_track_summary = track_summary
 
-    if len(set(repeat_hashes)) > 1:
-        integrity_failures.append("Repeat membership hashes differ")
+    span_metrics = compute_track_span_metrics(
+        final_df_tracked,
+        requested_z_values=targets,
+    )
 
-    final_hash = repeat_hashes[-1] if repeat_hashes else ""
+    integrity = evaluate_tracking_integrity(
+        pretracking_df=detections_df,
+        tracked_df=final_df_tracked,
+        requested_z_values=targets,
+    )
 
-    total_tracks = 0
-    tracks_with_n_slices = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-    boundary_single_slice_tracks = 0
-    interior_single_slice_tracks = 0
-    duplicate_same_z_count = 0
-    dropped_instance_count = 0
-    multiply_assigned_instance_count = 0
+    failure_rows = pd.DataFrame(
+        {
+            "integrity_failure_reason": integrity[
+                "integrity_failures"
+            ]
+        }
+    )
 
-    if not final_df_tracked.empty:
-        total_tracks = final_df_tracked["track_id"].nunique()
-        track_counts = final_df_tracked.groupby("track_id")["z_slice"].nunique()
-        for i in range(1, 6):
-            tracks_with_n_slices[i] = int((track_counts == i).sum())
-
-        single_tracks = track_counts[track_counts == 1].index
-        if len(single_tracks) > 0:
-            single_df = final_df_tracked[final_df_tracked["track_id"].isin(single_tracks)]
-            if len(processed_z_values) > 2:
-                interior = single_df["z_slice"].isin(processed_z_values[1:-1])
-                interior_single_slice_tracks = int(interior.sum())
-                boundary_single_slice_tracks = int((~interior).sum())
-            else:
-                boundary_single_slice_tracks = len(single_tracks)
-
-        dup_z = final_df_tracked.groupby(["track_id", "z_slice"]).size()
-        duplicate_same_z_count = int((dup_z > 1).sum())
-        if duplicate_same_z_count > 0:
-            integrity_failures.append("Final track contains duplicate observations at the same z_slice")
-
-        pre_keys = set(detections_df["source_instance_key"])
-        post_keys = final_df_tracked["source_instance_key"].tolist()
-
-        missing_keys = pre_keys - set(post_keys)
-        if missing_keys:
-            dropped_instance_count = len(missing_keys)
-            integrity_failures.append("source_instance_key is missing after tracking")
-
-        dup_keys = [k for k, v in pd.Series(post_keys).value_counts().items() if v > 1]
-        if dup_keys:
-            integrity_failures.append("source_instance_key occurs more than once")
-
-        if final_df_tracked.groupby("source_instance_key")["track_id"].nunique().max() > 1:
-            multiply_assigned_instance_count = len(final_df_tracked[final_df_tracked.groupby("source_instance_key")["track_id"].transform('nunique') > 1])
-            integrity_failures.append("source_instance_key belongs to multiple track IDs")
-
-        if final_df_tracked["track_id"].isnull().any():
-            integrity_failures.append("Missing track_id in tracked df")
-
-    if integrity_failures:
-        pd.DataFrame({"integrity_failure_reason": integrity_failures}).to_csv(outdir / "tracking_integrity_failures_v5_7.csv", index=False)
-    else:
-        write_csv(outdir / "tracking_integrity_failures_v5_7.csv", pd.DataFrame(columns=["integrity_failure_reason"]))
+    write_csv(
+        outdir / "tracking_integrity_failures_v5_7.csv",
+        failure_rows,
+    )
 
     write_csv(outdir / "tracked_observations_v5_7.csv", final_df_tracked)
     write_csv(outdir / "track_summary_v5_7.csv", final_track_summary)
@@ -245,22 +509,43 @@ def run(args):
         "base_parameters": str(Path(args.base_params).resolve()),
         "unet_model": str(Path(args.unet_model).resolve()),
         "total_2d_instances": len(detections_df),
-        "total_tracks": total_tracks,
-        "tracks_with_1_slice": tracks_with_n_slices[1],
-        "tracks_with_2_slices": tracks_with_n_slices[2],
-        "tracks_with_3_slices": tracks_with_n_slices[3],
-        "tracks_with_4_slices": tracks_with_n_slices[4],
-        "tracks_with_5_slices": tracks_with_n_slices[5],
-        "boundary_single_slice_tracks": boundary_single_slice_tracks,
-        "interior_single_slice_tracks": interior_single_slice_tracks,
-        "duplicate_same_z_count": duplicate_same_z_count,
-        "dropped_instance_count": dropped_instance_count,
-        "multiply_assigned_instance_count": multiply_assigned_instance_count,
-        "deterministic_membership_hash": final_hash,
-        "quality_gates_passed": len(integrity_failures) == 0,
     }
-    with (outdir / "tracking_smoke_summary_v5_7.json").open("w", encoding="utf-8") as handle:
+
+    payload["repeat_membership_hashes"] = repeat_hashes
+    payload["deterministic_membership_hash"] = (
+        repeat_hashes[-1] if repeat_hashes else ""
+    )
+    payload["deterministic_repeats_passed"] = (
+        len(set(repeat_hashes)) <= 1
+    )
+
+    payload.update(span_metrics)
+
+    payload.update(
+        {
+            key: value
+            for key, value in integrity.items()
+            if key != "integrity_failures"
+        }
+    )
+
+    payload["quality_gates_passed"] = bool(
+        integrity["quality_gates_passed"]
+        and payload["deterministic_repeats_passed"]
+    )
+
+    with (
+        outdir / "tracking_smoke_summary_v5_7.json"
+    ).open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
+
+    pd.DataFrame([payload]).drop(
+        columns=["repeat_membership_hashes"],
+        errors="ignore",
+    ).to_csv(
+        outdir / "tracking_smoke_summary_v5_7.csv",
+        index=False,
+    )
 
     return payload
 

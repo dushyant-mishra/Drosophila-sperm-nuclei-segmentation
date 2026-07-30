@@ -4902,16 +4902,33 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
             tid = parent[tid]
         return tid
 
-    repair_attempt_count = 0
+    repair_candidate_count = len(candidates)
+    repair_evaluated_count = 0
     repair_accepted_count = 0
     repair_rejected_same_z_count = 0
+    repair_rejected_length_count = 0
+    repair_skipped_same_root_count = 0
+    repair_skipped_target_repaired_count = 0
     repaired_targets = set()
-    for cost, dist_um, overlap, src_tid, dst_tid in sorted(candidates, key=lambda x: x[0]):
-        repair_attempt_count += 1
+    for (
+        cost,
+        dist_um,
+        overlap,
+        src_tid,
+        dst_tid,
+    ) in sorted(candidates, key=lambda item: item[0]):
         src_root = find(src_tid)
         dst_root = find(dst_tid)
-        if src_root == dst_root or dst_root in repaired_targets:
+
+        if src_root == dst_root:
+            repair_skipped_same_root_count += 1
             continue
+
+        if dst_root in repaired_targets:
+            repair_skipped_target_repaired_count += 1
+            continue
+
+        repair_evaluated_count += 1
 
         src_members = [tid for tid in tids if find(tid) == src_root]
         dst_members = [tid for tid in tids if find(tid) == dst_root]
@@ -4925,6 +4942,7 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
 
         merged_members = src_members + dst_members
         if _estimated_merged_length_um(df, merged_members, cfg) > max_final_length:
+            repair_rejected_length_count += 1
             continue
         parent[dst_root] = src_root
         repaired_targets.add(dst_root)
@@ -4973,13 +4991,26 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
         final_df["track_id"].map(repair_merges).fillna(0).astype(int)
     )
 
-    final_ts["track_hybrid_repair_attempt_count"] = repair_attempt_count
-    final_ts["track_hybrid_repair_accepted_count"] = repair_accepted_count
-    final_ts["track_hybrid_repair_rejected_same_z_count"] = repair_rejected_same_z_count
+    audit_columns = {
+        "track_hybrid_repair_candidate_count":
+            repair_candidate_count,
+        "track_hybrid_repair_evaluated_count":
+            repair_evaluated_count,
+        "track_hybrid_repair_accepted_count":
+            repair_accepted_count,
+        "track_hybrid_repair_rejected_same_z_count":
+            repair_rejected_same_z_count,
+        "track_hybrid_repair_rejected_length_count":
+            repair_rejected_length_count,
+        "track_hybrid_repair_skipped_same_root_count":
+            repair_skipped_same_root_count,
+        "track_hybrid_repair_skipped_target_repaired_count":
+            repair_skipped_target_repaired_count,
+    }
 
-    final_df["track_hybrid_repair_attempt_count"] = repair_attempt_count
-    final_df["track_hybrid_repair_accepted_count"] = repair_accepted_count
-    final_df["track_hybrid_repair_rejected_same_z_count"] = repair_rejected_same_z_count
+    for column, value in audit_columns.items():
+        final_df[column] = int(value)
+        final_ts[column] = int(value)
 
     return final_df, final_ts
 
