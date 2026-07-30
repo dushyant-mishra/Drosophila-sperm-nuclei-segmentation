@@ -1,4 +1,4 @@
-﻿# --- ROBUST LOGGING SYSTEM (macOS STABILITY PATCH) ---
+# --- ROBUST LOGGING SYSTEM (macOS STABILITY PATCH) ---
 import os
 import sys
 
@@ -3838,52 +3838,65 @@ def rows_from_results(results, z_idx, um):
     Returns:
         list[dict]: One flat dictionary per detected spermatid.
     """
-    return [{
-        "pipeline_version":    _VERSION,
-        "z_slice":             z_idx,
-        "sperm_id":            int(r.get("label", i)),
-        "length_px_geodesic":  round(r["length_px_geodesic"], 3),
-        "length_um_geodesic":  round(r["length_px_geodesic"] * um, 3),
-        "length_px_count":     round(r["length_px_count"], 1),
-        "length_um_count":     round(r["length_px_count"]  * um, 3),
-        "width_px":            round(r["width_px"], 2),
-        "width_um":            round(r["width_px"]          * um, 3),
-        "length_width_ratio":  round(r["length_width_ratio"], 3),
-        "tortuosity":          round(r["tortuosity"], 3),
-        "n_endpoints":         r["n_endpoints"],
-        "n_branch_nodes":      r["n_branch_nodes"],
-        "centroid_x":          round(r["centroid_x"], 1),
-        "centroid_y":          round(r["centroid_y"], 1),
-        "area_px":             round(r["area_px"], 1),
-        "skeleton_area_px":    round(r.get("skeleton_area_px", 0.0), 1),
-        "instance_mask_area_px": round(
-            r.get("instance_mask_area_px", np.nan), 1
-        ) if np.isfinite(r.get("instance_mask_area_px", np.nan)) else np.nan,
-        "bbox_min_y":          r.get("bbox_min_y"),
-        "bbox_min_x":          r.get("bbox_min_x"),
-        "bbox_max_y":          r.get("bbox_max_y"),
-        "bbox_max_x":          r.get("bbox_max_x"),
-        "orientation":         round(r.get("orientation", 0.0), 3),
-        "detection_source":    r.get("detection_source", "saturn_classical"),
-        "unet_mean_probability": round(float(r.get("unet_mean_probability", np.nan)), 4) if np.isfinite(r.get("unet_mean_probability", np.nan)) else np.nan,
-        "unet_max_probability":  round(float(r.get("unet_max_probability", np.nan)), 4) if np.isfinite(r.get("unet_max_probability", np.nan)) else np.nan,
-        "unet_rescue_morphology_warning": bool(
-            r.get("unet_rescue_morphology_warning", False)
-        ),
-        "unet_rescue_morphology_warning_reasons": r.get(
-            "unet_rescue_morphology_warning_reasons",
-            "",
-        ),
-        "morphology_warning": bool(r.get("morphology_warning", False)),
-        "morphology_warning_reasons": r.get(
-            "morphology_warning_reasons", ""
-        ),
-        "technical_failure": bool(r.get("technical_failure", False)),
-        "technical_failure_reason": r.get("technical_failure_reason", ""),
-        "parent_hysteresis_component_id": int(
-            r.get("parent_hysteresis_component_id", 0)
-        ),
-    } for i, r in enumerate(results, start=1)]
+    out_rows = []
+    for i, r in enumerate(results, start=1):
+        historical_area = round(float(r.get("area_px", 0.0)), 1)
+        estimated_slender_area = round(float(r["length_px_geodesic"]) * float(r["width_px"]), 1)
+        instance_mask_area = round(r.get("instance_mask_area_px", np.nan), 1) if np.isfinite(r.get("instance_mask_area_px", np.nan)) else np.nan
+        detection_source = r.get("detection_source", "saturn_classical")
+
+        if detection_source == "unet_primary" and np.isfinite(instance_mask_area) and instance_mask_area > 0:
+            final_area = instance_mask_area
+        else:
+            final_area = historical_area
+
+        out_rows.append({
+            "pipeline_version":    _VERSION,
+            "z_slice":             z_idx,
+            "sperm_id":            int(r.get("label", i)),
+            "source_instance_key": r.get("source_instance_key", ""),
+            "length_px_geodesic":  round(r["length_px_geodesic"], 3),
+            "length_um_geodesic":  round(r["length_px_geodesic"] * um, 3),
+            "length_px_count":     round(r["length_px_count"], 1),
+            "length_um_count":     round(r["length_px_count"]  * um, 3),
+            "width_px":            round(r["width_px"], 2),
+            "width_um":            round(r["width_px"]          * um, 3),
+            "length_width_ratio":  round(r["length_width_ratio"], 3),
+            "tortuosity":          round(r["tortuosity"], 3),
+            "n_endpoints":         r["n_endpoints"],
+            "n_branch_nodes":      r["n_branch_nodes"],
+            "centroid_x":          round(r["centroid_x"], 1),
+            "centroid_y":          round(r["centroid_y"], 1),
+            "area_px":             final_area,
+            "estimated_slender_area_px": estimated_slender_area,
+            "skeleton_area_px":    round(r.get("skeleton_area_px", 0.0), 1),
+            "instance_mask_area_px": instance_mask_area,
+            "bbox_min_y":          r.get("bbox_min_y"),
+            "bbox_min_x":          r.get("bbox_min_x"),
+            "bbox_max_y":          r.get("bbox_max_y"),
+            "bbox_max_x":          r.get("bbox_max_x"),
+            "orientation":         round(r.get("orientation", 0.0), 3),
+            "detection_source":    detection_source,
+            "unet_mean_probability": round(float(r.get("unet_mean_probability", np.nan)), 4) if np.isfinite(r.get("unet_mean_probability", np.nan)) else np.nan,
+            "unet_max_probability":  round(float(r.get("unet_max_probability", np.nan)), 4) if np.isfinite(r.get("unet_max_probability", np.nan)) else np.nan,
+            "unet_rescue_morphology_warning": bool(
+                r.get("unet_rescue_morphology_warning", False)
+            ),
+            "unet_rescue_morphology_warning_reasons": r.get(
+                "unet_rescue_morphology_warning_reasons",
+                "",
+            ),
+            "morphology_warning": bool(r.get("morphology_warning", False)),
+            "morphology_warning_reasons": r.get(
+                "morphology_warning_reasons", ""
+            ),
+            "technical_failure": bool(r.get("technical_failure", False)),
+            "technical_failure_reason": r.get("technical_failure_reason", ""),
+            "parent_hysteresis_component_id": int(
+                r.get("parent_hysteresis_component_id", 0)
+            ),
+        })
+    return out_rows
 
 
 # =============================================================================
