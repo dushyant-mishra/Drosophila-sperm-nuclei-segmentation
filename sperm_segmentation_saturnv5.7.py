@@ -4902,19 +4902,33 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
             tid = parent[tid]
         return tid
 
-    repair_count = 0
+    repair_attempt_count = 0
+    repair_accepted_count = 0
+    repair_rejected_same_z_count = 0
     repaired_targets = set()
     for cost, dist_um, overlap, src_tid, dst_tid in sorted(candidates, key=lambda x: x[0]):
+        repair_attempt_count += 1
         src_root = find(src_tid)
         dst_root = find(dst_tid)
         if src_root == dst_root or dst_root in repaired_targets:
             continue
-        merged_members = [tid for tid in tids if find(tid) in (src_root, dst_root)]
+
+        src_members = [tid for tid in tids if find(tid) == src_root]
+        dst_members = [tid for tid in tids if find(tid) == dst_root]
+
+        src_z = set(df[df["track_id"].isin(src_members)]["z_slice"])
+        dst_z = set(df[df["track_id"].isin(dst_members)]["z_slice"])
+
+        if src_z & dst_z:
+            repair_rejected_same_z_count += 1
+            continue
+
+        merged_members = src_members + dst_members
         if _estimated_merged_length_um(df, merged_members, cfg) > max_final_length:
             continue
         parent[dst_root] = src_root
         repaired_targets.add(dst_root)
-        repair_count += 1
+        repair_accepted_count += 1
 
         dst_start_z = endpoints[dst_tid]["first"]["z"]
         first_dst_mask = (df["track_id"] == dst_tid) & (df["z_slice"] == dst_start_z)
@@ -4925,7 +4939,7 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
             df.loc[idx, "track_link_distance_um"] = round(float(dist_um), 3)
             df.loc[idx, "track_link_gap_slices"] = int(endpoints[dst_tid]["first"]["z"] - endpoints[src_tid]["last"]["z"])
 
-    if repair_count:
+    if repair_accepted_count:
         df["track_id"] = df["track_id"].map(lambda tid: find(int(tid)))
 
     rejected_extensions = {}
@@ -4937,7 +4951,11 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
         events = [value for value in raw_reasons.split(" | ") if value]
         rejected_extensions.setdefault(final_track_id, []).extend(events)
 
-    print(f"  Hybrid repair tracking: {repair_count} conservative fragment merges accepted")
+    print(f"  Hybrid repair tracking: {repair_accepted_count} conservative fragment merges accepted")
+
+    if not df.empty and df.groupby(["track_id", "z_slice"]).size().max() > 1:
+        raise RuntimeError("Final track contains duplicate observations at the same z_slice.")
+
     final_df, final_ts = _summarize_tracked_detections(df, rejected_extensions, cfg)
 
     members_per_final = {}
@@ -4954,8 +4972,16 @@ def track_across_slices_hybrid_repair(detections_df, cfg):
     final_df["track_hybrid_repair_merge_count"] = (
         final_df["track_id"].map(repair_merges).fillna(0).astype(int)
     )
-    return final_df, final_ts
 
+    final_ts["track_hybrid_repair_attempt_count"] = repair_attempt_count
+    final_ts["track_hybrid_repair_accepted_count"] = repair_accepted_count
+    final_ts["track_hybrid_repair_rejected_same_z_count"] = repair_rejected_same_z_count
+
+    final_df["track_hybrid_repair_attempt_count"] = repair_attempt_count
+    final_df["track_hybrid_repair_accepted_count"] = repair_accepted_count
+    final_df["track_hybrid_repair_rejected_same_z_count"] = repair_rejected_same_z_count
+
+    return final_df, final_ts
 
 def track_across_slices(detections_df, cfg):
     backend = str(cfg.get("TRACKING_BACKEND", "legacy")).strip().lower()
