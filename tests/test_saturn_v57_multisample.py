@@ -870,6 +870,7 @@ def test_parameter_editor_exposes_v57_hybrid_configuration():
         "classical_saturn",
         "hybrid",
         "unet_assisted",
+        "unet_primary",
     )
     assert saturn._coerce_parameter_editor_value("hybrid", str) == "hybrid"
     assert saturn._coerce_parameter_editor_value(True, bool) is True

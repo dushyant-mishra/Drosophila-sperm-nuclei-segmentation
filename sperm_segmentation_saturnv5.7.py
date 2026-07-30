@@ -221,7 +221,7 @@ CONFIG = {
     # ------ optional U-Net 2.5D integration scaffold ---------------------------------------------------------------------------------------------------------------------------------------
     # COCO is training-only and is never read by Saturn during inference.
     # Runtime U-Net inference uses a trained checkpoint plus [z-1, z, z+1] raw planes.
-    "SEGMENTATION_ENGINE": "classical_saturn",  # "classical_saturn" | "unet_assisted" | "hybrid"
+    "SEGMENTATION_ENGINE": "classical_saturn",  # classical_saturn | unet_assisted | hybrid | unet_primary
     "UNET_MODEL_PATH": "",
     "UNET_THRESHOLD": 0.10,
     "UNET_THRESHOLD_MODE": "soft",
@@ -261,6 +261,12 @@ CONFIG = {
     "UNET_INSTANCE_SEED_THRESHOLD": 0.75,
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": 0.001,
+    "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
+    "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": False,
+    "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": 2,
+    "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": True,
+    "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY": True,
+    "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY": True,
     "UNET_TRACKING_SUPPORT": True,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": 0.6,
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": 0.25,
@@ -428,6 +434,12 @@ _REQUIRED = {
     "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": (int, float),
     "UNET_INSTANCE_SPLIT_ENABLE": bool, "UNET_INSTANCE_SEED_THRESHOLD": (int, float),
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": int, "UNET_INSTANCE_WATERSHED_COMPACTNESS": (int, float),
+    "UNET_PRIMARY_MIN_COMPONENT_PX": int,
+    "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": bool,
+    "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": int,
+    "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": bool,
+    "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY": bool,
+    "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY": bool,
     "UNET_TRACKING_SUPPORT": bool,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": (int, float),
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": (int, float),
@@ -524,6 +536,15 @@ def validate_config(cfg):
                           f"got {type(cfg[key]).__name__}, want {expected}")
     if cfg.get("THRESHOLD_LO", 0) >= cfg.get("THRESHOLD_HI", 100):
         errors.append("  THRESHOLD_LO must be < THRESHOLD_HI")
+    engine = str(cfg.get("SEGMENTATION_ENGINE", "")).strip().lower()
+    supported_engines = {
+        "classical_saturn", "unet_assisted", "hybrid", "unet_primary"
+    }
+    if engine not in supported_engines:
+        errors.append(
+            "  SEGMENTATION_ENGINE must be classical_saturn, unet_assisted, "
+            "hybrid, or unet_primary"
+        )
     if cfg.get("UM_PER_PX_XY", 0) <= 0 or cfg.get("UM_PER_SLICE_Z", 0) <= 0:
         errors.append("  UM_PER_PX_XY and UM_PER_SLICE_Z must be positive")
     if not (0 <= cfg.get("NORM_LOW_PERCENTILE", -1) < cfg.get("NORM_HIGH_PERCENTILE", -1) <= 100):
@@ -539,6 +560,22 @@ def validate_config(cfg):
         errors.append(
             "  UNET_CANDIDATE_THRESHOLD must be < "
             "UNET_RESCUE_THRESHOLD within [0, 1]"
+        )
+    if engine == "unet_primary" and not (
+        0
+        <= cfg.get("UNET_CANDIDATE_THRESHOLD", -1)
+        < cfg.get("UNET_SEED_THRESHOLD", -1)
+        <= 1
+    ):
+        errors.append(
+            "  unet_primary requires UNET_CANDIDATE_THRESHOLD < "
+            "UNET_SEED_THRESHOLD within [0, 1]"
+        )
+    if cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 0) < 1:
+        errors.append("  UNET_PRIMARY_MIN_COMPONENT_PX must be at least 1")
+    if cfg.get("UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX", -1) < 0:
+        errors.append(
+            "  UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX must be nonnegative"
         )
     if cfg.get("CLAHE_MODE") not in ("auto_stack", "auto", "no_clahe", "high_contrast", "standard", "low_signal"):
         errors.append("  CLAHE_MODE must be auto_stack/auto/no_clahe/high_contrast/standard/low_signal")
@@ -1644,18 +1681,18 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
     has_cached_map = cache is not None and z_idx is not None and any(
         key in cache for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}")
     )
-    if engine not in {"unet_assisted", "hybrid"}:
+    if engine not in {"unet_assisted", "hybrid", "unet_primary"}:
         return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
             "unet_enabled": False,
             "unet_reason": "classical_engine_selected",
         }
     if not has_cached_map and not model_path:
         raise RuntimeError(
-            "Hybrid/U-Net segmentation requires UNET_MODEL_PATH; refusing classical-only fallback"
+            "U-Net segmentation requires UNET_MODEL_PATH; refusing classical-only fallback"
         )
     if not has_cached_map and unet_context_stack is None:
         raise RuntimeError(
-            "Hybrid/U-Net segmentation requires a 2.5D context stack; refusing classical-only fallback"
+            "U-Net segmentation requires a 2.5D context stack; refusing classical-only fallback"
         )
     if not has_cached_map and not os.path.isfile(model_path):
         raise FileNotFoundError(f"U-Net checkpoint not found: {model_path}")
@@ -1705,7 +1742,10 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
             mask_hyst = (mask_hyst | candidate_crop) & valid_crop
             mask_action = "union_unet_candidate"
 
+        full_valid = np.zeros(full_shape, dtype=bool)
+        full_valid[y0:y1, x0:x1] = valid_crop
         full_prob = unet_prob.astype(np.float32)
+        full_prob[~full_valid] = 0.0
         full_candidate = np.zeros(full_shape, dtype=bool)
         full_seed = np.zeros(full_shape, dtype=bool)
         full_candidate[y0:y1, x0:x1] = candidate_crop
@@ -1836,6 +1876,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
     norm_record["threshold_lo"] = th_lo
     mask_hyst = apply_hysteresis_threshold(ridge, th_lo, th_hi)
     mask_hyst &= valid_crop
+    classical_mask_hyst = mask_hyst.copy()
     mask_hyst, ridge, unet_prob, unet_candidate, unet_seed, unet_record = _apply_unet_candidate_support(
         mask_hyst,
         ridge,
@@ -1847,6 +1888,63 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
         unet_context_stack,
         z_idx=z_idx,
     )
+
+    engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
+    if engine == "unet_primary":
+        full = lambda crop, dtype=None: _full_like(
+            full_shape, crop, bbox, dtype=(dtype or crop.dtype)
+        )
+        primary = _build_unet_primary_segmentation(
+            unet_prob,
+            valid_full,
+            cfg,
+            classical_mask=full(classical_mask_hyst, bool),
+        )
+        primary.update({
+            "img_norm": full(img_norm, np.float32),
+            "img_denoised": full(img_denoised, np.float32),
+            "img_eq": full(img_eq, np.float32),
+            "background": full(bg, np.float32),
+            "foreground": full(fgn, np.float32),
+            "ridge": full(ridge, np.float32),
+            "roi_mask": roi_mask_full,
+            "exclusion_mask": exclusion_full,
+            "unet_probability": unet_prob,
+            "unet_candidate_mask": unet_candidate,
+            "unet_seed_mask": unet_seed,
+            "unet_debug": unet_record,
+            "preprocess_context": preprocess_context,
+            "preprocess_debug": norm_record,
+            "bridge_stats": {
+                "skeleton_pixels_before": int(np.count_nonzero(
+                    primary["skel_clean"]
+                )),
+                "skeleton_pixels_after": int(np.count_nonzero(
+                    primary["skel_pruned"]
+                )),
+                "bridges_added": 0,
+            },
+            "bbox": bbox,
+        })
+        if cfg["SAVE_DEBUG_IMAGES"] and debug_dir and z_idx is not None:
+            _save_v56_debug(
+                debug_dir,
+                z_idx,
+                primary,
+                {
+                    "z_index": int(z_idx),
+                    "segmentation_engine": "unet_primary",
+                    "unet_debug": unet_record,
+                    "unet_primary_debug": primary["unet_primary_debug"],
+                    "outside_roi_skeleton_occupancy": int(np.count_nonzero(
+                        primary["skel_pruned"] & ~roi_mask_full
+                    )),
+                    "exclusion_mask_skeleton_occupancy": int(np.count_nonzero(
+                        primary["skel_pruned"] & exclusion_full
+                    )),
+                },
+            )
+        return primary
 
     if mask_hyst.ndim != 2:
         raise ValueError(f"mask_hyst must be 2D, got shape {mask_hyst.shape}")
@@ -2063,6 +2161,361 @@ def _distance_transform_component(mask, bbox=None):
     return out
 
 
+_UNET_PRIMARY_REASON_CODES = {
+    "tiny_isolated_noise": 1,
+    "no_high_confidence_seed": 2,
+    "no_valid_centerline": 3,
+    "invalid_geometry": 4,
+    "unresolved_multi_instance_merge": 5,
+}
+
+
+def _build_unet_primary_foreground(probability, valid_mask, cfg):
+    """Build seed-connected U-Net foreground without biological shape gates."""
+    probability = np.asarray(probability, dtype=np.float32)
+    valid_mask = np.asarray(valid_mask, dtype=bool)
+    if probability.shape != valid_mask.shape:
+        raise ValueError("U-Net probability and valid-mask shapes must match")
+    if not np.all(np.isfinite(probability)):
+        raise ValueError("U-Net probability map contains non-finite values")
+    if float(np.min(probability)) < 0.0 or float(np.max(probability)) > 1.0:
+        raise ValueError("U-Net probability map values must be within [0, 1]")
+
+    low = float(cfg["UNET_CANDIDATE_THRESHOLD"])
+    high = float(cfg["UNET_SEED_THRESHOLD"])
+    if not 0.0 <= low < high <= 1.0:
+        raise ValueError(
+            "unet_primary requires candidate threshold < seed threshold in [0, 1]"
+        )
+    min_area = max(1, int(cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 3)))
+    probability = probability.copy()
+    probability[~valid_mask] = 0.0
+    low_mask = (probability >= low) & valid_mask
+    seed_mask = (probability >= high) & valid_mask
+    hysteresis = apply_hysteresis_threshold(probability, low, high) & valid_mask
+
+    retained = np.zeros_like(valid_mask)
+    rejected = np.zeros(valid_mask.shape, dtype=np.uint8)
+    audit = []
+    low_labels = measure.label(low_mask)
+    for prop in measure.regionprops(low_labels):
+        component = np.zeros_like(valid_mask)
+        component[prop.coords[:, 0], prop.coords[:, 1]] = True
+        contains_seed = bool(np.any(seed_mask & component))
+        if int(prop.area) < min_area:
+            reason = "tiny_isolated_noise"
+        elif not contains_seed:
+            reason = "no_high_confidence_seed"
+        else:
+            reason = ""
+            retained |= component & hysteresis
+        if reason:
+            rejected[component] = _UNET_PRIMARY_REASON_CODES[reason]
+        audit.append({
+            "parent_component_id": int(prop.label),
+            "marker_count": 0,
+            "child_instance_count": 0,
+            "child_instance_id": 0,
+            "child_area": int(prop.area),
+            "maximum_probability": float(np.max(probability[component])),
+            "mean_probability": float(np.mean(probability[component])),
+            "contains_seed": contains_seed,
+            "disposition": "rejected" if reason else "foreground_retained",
+            "technical_reason": reason,
+        })
+    retained &= valid_mask
+    return retained, seed_mask, rejected, audit
+
+
+def _split_unet_probability_instances(
+    probability,
+    foreground,
+    seed_mask,
+    min_component_px,
+    compactness=0.0,
+):
+    """Split each hysteresis component with connected high-seed markers."""
+    probability = np.asarray(probability, dtype=np.float32)
+    foreground = np.asarray(foreground, dtype=bool)
+    seed_mask = np.asarray(seed_mask, dtype=bool)
+    min_area = max(1, int(min_component_px))
+    output = np.zeros(foreground.shape, dtype=np.int32)
+    rejected = np.zeros(foreground.shape, dtype=np.uint8)
+    parent_by_instance = {}
+    audit = []
+    next_label = 1
+    parents = measure.label(foreground)
+
+    for parent_prop in measure.regionprops(parents):
+        y0, x0, y1, x1 = _expanded_component_bbox(
+            foreground, bbox=parent_prop.bbox, padding=1
+        )
+        component = parents[y0:y1, x0:x1] == parent_prop.label
+        prob_crop = probability[y0:y1, x0:x1]
+        seed_crop = seed_mask[y0:y1, x0:x1] & component
+        seed_labels = measure.label(seed_crop)
+        valid_markers = np.zeros(component.shape, dtype=np.int32)
+        marker_count = 0
+        for seed_prop in measure.regionprops(seed_labels):
+            if int(seed_prop.area) < min_area:
+                continue
+            marker_count += 1
+            valid_markers[seed_labels == seed_prop.label] = marker_count
+
+        if marker_count == 0:
+            rejected_crop = rejected[y0:y1, x0:x1]
+            rejected_crop[component] = _UNET_PRIMARY_REASON_CODES[
+                "no_high_confidence_seed"
+            ]
+            audit.append({
+                "parent_component_id": int(parent_prop.label),
+                "marker_count": 0,
+                "child_instance_count": 0,
+                "child_instance_id": 0,
+                "child_area": int(parent_prop.area),
+                "maximum_probability": float(np.max(prob_crop[component])),
+                "mean_probability": float(np.mean(prob_crop[component])),
+                "contains_seed": False,
+                "disposition": "rejected",
+                "technical_reason": "no_high_confidence_seed",
+            })
+            continue
+
+        if marker_count == 1:
+            local_labels = component.astype(np.int32)
+        else:
+            local_labels = skseg.watershed(
+                -prob_crop,
+                markers=valid_markers,
+                mask=component,
+                compactness=max(0.0, float(compactness)),
+            ).astype(np.int32)
+
+        accepted_children = []
+        for local_id in sorted(int(v) for v in np.unique(local_labels) if v > 0):
+            child = local_labels == local_id
+            area = int(np.count_nonzero(child))
+            contains_seed = bool(np.any(seed_crop & child))
+            reason = ""
+            if area < min_area:
+                reason = "tiny_isolated_noise"
+            elif not contains_seed:
+                reason = "no_high_confidence_seed"
+            if reason:
+                rejected_crop = rejected[y0:y1, x0:x1]
+                rejected_crop[child] = _UNET_PRIMARY_REASON_CODES[reason]
+                disposition = "rejected"
+                child_id = 0
+            else:
+                output_crop = output[y0:y1, x0:x1]
+                output_crop[child] = next_label
+                child_id = next_label
+                parent_by_instance[next_label] = int(parent_prop.label)
+                accepted_children.append(next_label)
+                next_label += 1
+                disposition = "accepted"
+            audit.append({
+                "parent_component_id": int(parent_prop.label),
+                "marker_count": int(marker_count),
+                "child_instance_count": 0,
+                "child_instance_id": int(child_id),
+                "child_area": area,
+                "maximum_probability": float(np.max(prob_crop[child])),
+                "mean_probability": float(np.mean(prob_crop[child])),
+                "contains_seed": contains_seed,
+                "disposition": disposition,
+                "technical_reason": reason,
+            })
+        for row in audit:
+            if row["parent_component_id"] == int(parent_prop.label):
+                row["child_instance_count"] = len(accepted_children)
+
+    return output, rejected, audit, parent_by_instance
+
+
+def _centerline_unet_primary_instances(instance_labels):
+    """Create one deterministic longest-geodesic centerline per instance."""
+    instance_labels = np.asarray(instance_labels, dtype=np.int32)
+    centerlines = np.zeros_like(instance_labels, dtype=np.int32)
+    metadata = {}
+    failures = []
+    width = instance_labels.shape[1]
+    for prop in measure.regionprops(instance_labels):
+        instance_id = int(prop.label)
+        mask = instance_labels == instance_id
+        skeleton = skeletonize(mask)
+        coords = np.argwhere(skeleton)
+        if coords.size == 0:
+            failures.append({
+                "instance_id": instance_id,
+                "technical_reason": "no_valid_centerline",
+            })
+            continue
+        raw_adj = _build_adj(coords, width)
+        raw_degrees = [len(neighbors) for neighbors in raw_adj]
+        raw_branch_count = sum(degree > 2 for degree in raw_degrees)
+        raw_endpoint_count = sum(degree == 1 for degree in raw_degrees)
+        candidates = []
+        for skel_prop in measure.regionprops(measure.label(skeleton)):
+            component_coords = skel_prop.coords
+            path_coords = extract_geodesic_centerline_coords(
+                component_coords, width
+            )
+            path_topology = measure_topology(
+                path_coords, width, allow_loops=True
+            )
+            path_length = (
+                float(path_topology["geo_len"]) if path_topology else 0.0
+            )
+            first_coord = tuple(
+                int(v) for v in np.min(path_coords, axis=0).tolist()
+            )
+            candidates.append((
+                path_length,
+                int(path_coords.shape[0]),
+                tuple(-value for value in first_coord),
+                path_coords,
+            ))
+        center_coords = max(candidates, key=lambda item: item[:3])[3]
+        if center_coords.size == 0:
+            failures.append({
+                "instance_id": instance_id,
+                "technical_reason": "no_valid_centerline",
+            })
+            continue
+        centerlines[center_coords[:, 0], center_coords[:, 1]] = instance_id
+        metadata[instance_id] = {
+            "raw_skeleton_pixels": int(coords.shape[0]),
+            "centerline_pixels": int(center_coords.shape[0]),
+            "raw_branch_count": int(raw_branch_count),
+            "raw_endpoint_count": int(raw_endpoint_count),
+            "centerline_salvaged": bool(center_coords.shape[0] < coords.shape[0]),
+        }
+    return centerlines, metadata, failures
+
+
+def _build_unet_primary_segmentation(
+    probability,
+    valid_mask,
+    cfg,
+    classical_mask=None,
+):
+    """Build filled U-Net instances and mapped centerlines for unet_primary."""
+    foreground, seed_mask, rejected, foreground_audit = (
+        _build_unet_primary_foreground(probability, valid_mask, cfg)
+    )
+    instances, split_rejected, split_audit, parent_map = (
+        _split_unet_probability_instances(
+            probability,
+            foreground,
+            seed_mask,
+            cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 3),
+            compactness=cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0),
+        )
+    )
+    rejected = np.maximum(rejected, split_rejected)
+    centerlines, centerline_meta, failures = (
+        _centerline_unet_primary_instances(instances)
+    )
+
+    for failure in failures:
+        instance_id = int(failure["instance_id"])
+        mask = instances == instance_id
+        rejected[mask] = _UNET_PRIMARY_REASON_CODES["no_valid_centerline"]
+        instances[mask] = 0
+        centerlines[centerlines == instance_id] = 0
+        parent_map.pop(instance_id, None)
+
+    instance_sources = {int(v): "unet_primary" for v in np.unique(instances) if v}
+    additions = 0
+    if bool(cfg.get("UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE", False)):
+        if classical_mask is None:
+            raise ValueError(
+                "classical_mask is required when U-Net-primary additions are enabled"
+            )
+        occupied = instances > 0
+        dilation_px = max(
+            0, int(cfg.get("UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX", 2))
+        )
+        if dilation_px:
+            occupied = morphology.binary_dilation(
+                occupied, morphology.disk(dilation_px)
+            )
+        residual = np.asarray(classical_mask, dtype=bool) & valid_mask & ~occupied
+        residual = remove_objects_smaller_than(
+            residual, max(1, int(cfg.get("MIN_OBJ_PX", 3)))
+        )
+        next_id = int(instances.max()) + 1
+        residual_labels = measure.label(residual)
+        for prop in measure.regionprops(residual_labels):
+            mask = residual_labels == prop.label
+            skeleton = skeletonize(mask)
+            coords = np.argwhere(skeleton)
+            if coords.size == 0:
+                continue
+            center_coords = extract_geodesic_centerline_coords(
+                coords, instances.shape[1]
+            )
+            if center_coords.size == 0:
+                continue
+            instances[mask] = next_id
+            centerlines[
+                center_coords[:, 0], center_coords[:, 1]
+            ] = next_id
+            instance_sources[next_id] = "saturn_only_addition"
+            parent_map[next_id] = 0
+            centerline_meta[next_id] = {
+                "raw_skeleton_pixels": int(coords.shape[0]),
+                "centerline_pixels": int(center_coords.shape[0]),
+                "raw_branch_count": 0,
+                "raw_endpoint_count": 0,
+                "centerline_salvaged": False,
+            }
+            additions += 1
+            next_id += 1
+
+    distance = np.zeros(instances.shape, dtype=np.float32)
+    for prop in measure.regionprops(instances):
+        mask = instances == prop.label
+        local_distance = _distance_transform_component(mask, bbox=prop.bbox)
+        distance[mask] = local_distance[mask]
+    component_audit = foreground_audit + split_audit
+    return {
+        "mask_hyst": foreground,
+        "mask_clean": instances > 0,
+        "skel_clean": centerlines > 0,
+        "skel_bridged": centerlines > 0,
+        "skel_pruned": centerlines > 0,
+        "skel_labeled": centerlines,
+        "dist_clean": distance,
+        "unet_primary_hysteresis_mask": foreground,
+        "unet_primary_instance_labels": instances,
+        "unet_primary_centerline_labels": centerlines,
+        "unet_probability": np.asarray(probability, dtype=np.float32),
+        "unet_seed_mask": seed_mask,
+        "unet_primary_rejected_reason": rejected,
+        "unet_primary_component_audit": component_audit,
+        "unet_primary_debug": {
+            "candidate_pixels": int(np.count_nonzero(
+                (probability >= float(cfg["UNET_CANDIDATE_THRESHOLD"]))
+                & valid_mask
+            )),
+            "seed_pixels": int(np.count_nonzero(seed_mask)),
+            "hysteresis_component_count": int(measure.label(foreground).max()),
+            "split_instance_count": int(
+                np.count_nonzero(np.unique(instances) > 0)
+            ),
+            "technical_failure_count": len(failures),
+            "saturn_only_additions": int(additions),
+            "reason_codes": dict(_UNET_PRIMARY_REASON_CODES),
+        },
+        "unet_primary_parent_by_instance": parent_map,
+        "unet_primary_centerline_metadata": centerline_meta,
+        "unet_primary_instance_sources": instance_sources,
+        "unet_primary_technical_failures": failures,
+    }
+
+
 def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, peak_min_distance, compactness):
     """
     Split a connected U-Net probability mask into putative nucleus instances.
@@ -2113,7 +2566,6 @@ def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, p
             mask=comp_mask,
             compactness=max(0.0, float(compactness)),
         )
-        labels = measure.label(labels > 0)
         for sub in measure.regionprops(labels):
             sub_mask = labels == sub.label
             if np.count_nonzero(sub_mask) < min_component_px:
@@ -2122,6 +2574,148 @@ def _split_unet_rescue_instances(prob, mask, min_component_px, seed_threshold, p
             final_crop[sub_mask] = next_label
             next_label += 1
     return final.astype(np.int32)
+
+
+def _measure_unet_primary_instances(seg, cfg):
+    """Measure mapped U-Net instances; morphology is warning-only."""
+    instance_labels = np.asarray(
+        seg["unet_primary_instance_labels"], dtype=np.int32
+    )
+    centerline_labels = np.asarray(
+        seg["unet_primary_centerline_labels"], dtype=np.int32
+    )
+    probability = np.asarray(seg["unet_probability"], dtype=np.float32)
+    parent_map = seg.get("unet_primary_parent_by_instance", {})
+    source_map = seg.get("unet_primary_instance_sources", {})
+    centerline_meta = seg.get("unet_primary_centerline_metadata", {})
+    record_morphology_warnings = bool(
+        cfg.get("UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS", True)
+    )
+    results = []
+    technical_failures = list(seg.get("unet_primary_technical_failures", []))
+    width_px = instance_labels.shape[1]
+
+    for prop in measure.regionprops(instance_labels):
+        instance_id = int(prop.label)
+        instance_mask = instance_labels == instance_id
+        center_coords = np.argwhere(centerline_labels == instance_id)
+        if center_coords.size == 0:
+            technical_failures.append({
+                "instance_id": instance_id,
+                "technical_reason": "no_valid_centerline",
+            })
+            continue
+        topology = measure_topology(center_coords, width_px, allow_loops=True)
+        if topology is None:
+            technical_failures.append({
+                "instance_id": instance_id,
+                "technical_reason": "invalid_geometry",
+            })
+            continue
+        distance = _distance_transform_component(instance_mask, bbox=prop.bbox)
+        widths = 2.0 * distance[
+            center_coords[:, 0], center_coords[:, 1]
+        ]
+        probability_values = probability[instance_mask]
+        finite_prob = probability_values[np.isfinite(probability_values)]
+        values = [
+            topology["geo_len"],
+            topology["tortuosity"],
+            *widths.tolist(),
+        ]
+        if not widths.size or not np.all(np.isfinite(values)):
+            technical_failures.append({
+                "instance_id": instance_id,
+                "technical_reason": "invalid_geometry",
+            })
+            continue
+
+        geodesic = float(topology["geo_len"])
+        median_width = float(np.median(widths))
+        ratio = geodesic / (median_width + 1e-9)
+        metadata = centerline_meta.get(instance_id, {})
+        warning_reasons = []
+        if geodesic < float(cfg["MIN_SKEL_LEN_PX"]):
+            warning_reasons.append("short")
+        if geodesic > float(cfg["MAX_GEODESIC_LEN_PX"]):
+            warning_reasons.append("long_merge_review")
+        if median_width > float(cfg["MAX_WIDTH_PX"]):
+            warning_reasons.append("wide")
+        if ratio < float(cfg["MIN_LENGTH_WIDTH_RATIO"]):
+            warning_reasons.append("low_length_width_ratio")
+        if (
+            int(topology["n_endpoints"]) >= 2
+            and float(topology["tortuosity"]) > float(cfg["MAX_TORTUOSITY"])
+        ):
+            warning_reasons.append("tortuous")
+        if int(metadata.get("raw_branch_count", 0)) > 0:
+            warning_reasons.append("branched_centerline_reduced")
+        if int(topology["n_endpoints"]) > int(cfg["MAX_ENDPOINT_COUNT"]):
+            warning_reasons.append("excess_endpoints")
+        if not record_morphology_warnings:
+            warning_reasons = []
+
+        cy, cx = prop.centroid
+        results.append({
+            "label": instance_id,
+            "length_px_geodesic": geodesic,
+            "length_px_count": float(center_coords.shape[0]),
+            "width_px": median_width,
+            "length_width_ratio": ratio,
+            "tortuosity": float(topology["tortuosity"]),
+            "n_endpoints": int(topology["n_endpoints"]),
+            "n_branch_nodes": int(metadata.get(
+                "raw_branch_count", topology["n_branch_nodes"]
+            )),
+            "centroid_x": float(cx),
+            "centroid_y": float(cy),
+            "area_px": float(geodesic * median_width),
+            "skeleton_area_px": float(center_coords.shape[0]),
+            "instance_mask_area_px": float(prop.area),
+            "bbox_min_y": float(prop.bbox[0]),
+            "bbox_min_x": float(prop.bbox[1]),
+            "bbox_max_y": float(prop.bbox[2]),
+            "bbox_max_x": float(prop.bbox[3]),
+            "orientation": float(prop.orientation),
+            "unet_mean_probability": (
+                float(np.mean(finite_prob)) if finite_prob.size else np.nan
+            ),
+            "unet_max_probability": (
+                float(np.max(finite_prob)) if finite_prob.size else np.nan
+            ),
+            "detection_source": source_map.get(instance_id, "unet_primary"),
+            "morphology_warning": bool(warning_reasons),
+            "morphology_warning_reasons": ";".join(warning_reasons),
+            "technical_failure": False,
+            "technical_failure_reason": "",
+            "parent_hysteresis_component_id": int(
+                parent_map.get(instance_id, 0)
+            ),
+        })
+
+    return {
+        "skel_label": centerline_labels,
+        "results": results,
+        "unet_rescue_accepted_label": np.zeros_like(
+            centerline_labels, dtype=np.int32
+        ),
+        "unet_rescue_rejected_reason": np.asarray(
+            seg.get(
+                "unet_primary_rejected_reason",
+                np.zeros_like(centerline_labels, dtype=np.uint8),
+            ),
+            dtype=np.uint8,
+        ),
+        "unet_rescue_reason_codes": dict(_UNET_PRIMARY_REASON_CODES),
+        "unet_rescue_rejected_counts": {},
+        "unet_rescue_candidate_threshold": float(
+            cfg.get("UNET_CANDIDATE_THRESHOLD", 0.0)
+        ),
+        "unet_rescue_seed_threshold": float(
+            cfg.get("UNET_SEED_THRESHOLD", 0.0)
+        ),
+        "unet_primary_technical_failures": technical_failures,
+    }
 
 
 def measure_spermatids(seg, cfg):
@@ -2138,6 +2732,11 @@ def measure_spermatids(seg, cfg):
                       orientation, and geodesic structural lengths via binary skeleton processing.
     """
     cfg = cfg_with_resolved_pixels(cfg)
+    if (
+        str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
+        == "unet_primary"
+    ):
+        return _measure_unet_primary_instances(seg, cfg)
     skel     = seg["skel_pruned"]
     dist     = seg["dist_clean"]
     skel_lab = seg["skel_labeled"]
@@ -3257,6 +3856,9 @@ def rows_from_results(results, z_idx, um):
         "centroid_y":          round(r["centroid_y"], 1),
         "area_px":             round(r["area_px"], 1),
         "skeleton_area_px":    round(r.get("skeleton_area_px", 0.0), 1),
+        "instance_mask_area_px": round(
+            r.get("instance_mask_area_px", np.nan), 1
+        ) if np.isfinite(r.get("instance_mask_area_px", np.nan)) else np.nan,
         "bbox_min_y":          r.get("bbox_min_y"),
         "bbox_min_x":          r.get("bbox_min_x"),
         "bbox_max_y":          r.get("bbox_max_y"),
@@ -3271,6 +3873,15 @@ def rows_from_results(results, z_idx, um):
         "unet_rescue_morphology_warning_reasons": r.get(
             "unet_rescue_morphology_warning_reasons",
             "",
+        ),
+        "morphology_warning": bool(r.get("morphology_warning", False)),
+        "morphology_warning_reasons": r.get(
+            "morphology_warning_reasons", ""
+        ),
+        "technical_failure": bool(r.get("technical_failure", False)),
+        "technical_failure_reason": r.get("technical_failure_reason", ""),
+        "parent_hysteresis_component_id": int(
+            r.get("parent_hysteresis_component_id", 0)
         ),
     } for i, r in enumerate(results, start=1)]
 
@@ -3813,7 +4424,9 @@ def _read_unet_probability(row):
 
 def _unet_tracking_enabled(cfg):
     engine = str(cfg.get("SEGMENTATION_ENGINE", "classical_saturn")).strip().lower()
-    return bool(cfg.get("UNET_TRACKING_SUPPORT", True)) and engine in ("unet_assisted", "hybrid")
+    return bool(cfg.get("UNET_TRACKING_SUPPORT", True)) and engine in (
+        "unet_assisted", "hybrid", "unet_primary"
+    )
 
 
 def _unet_link_cost_terms(det_prob, prev_prob, cfg, repair=False):
@@ -7300,6 +7913,12 @@ PARAM_SECTIONS = {
         "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB", "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM",
         "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
         "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
+        "UNET_PRIMARY_MIN_COMPONENT_PX",
+        "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE",
+        "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX",
+        "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS",
+        "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY",
+        "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
         "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
     ],
@@ -7430,6 +8049,12 @@ PARAM_TITLES = {
     "UNET_INSTANCE_SEED_THRESHOLD": "U-Net instance seed threshold",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum seed peak spacing (px)",
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Watershed compactness",
+    "UNET_PRIMARY_MIN_COMPONENT_PX": "U-Net-primary minimum component size (px)",
+    "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": "Add residual Saturn-only detections",
+    "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": "Saturn residual exclusion dilation (px)",
+    "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": "Retain U-Net-primary morphology warnings",
+    "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY": "Save U-Net-primary filled-mask overlay",
+    "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY": "Save U-Net-primary instance overlay",
     "UNET_TRACKING_SUPPORT": "Use U-Net evidence for 3D linking",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Assignment U-Net support penalty",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Assignment U-Net continuity penalty",
@@ -7498,7 +8123,7 @@ PARAM_DESCRIPTIONS = {
     "HYBRID_REPAIR_MIN_OVERLAP": "V5.6 ROI-ADAPTIVE repair only. Preferred minimum bounding-box overlap for a repair link. Very close non-overlap links can still pass if the total cost is low.",
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": "V5.6 ROI-ADAPTIVE repair only. Rejects a proposed merge if the estimated merged 3D length would exceed this value.",
     "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": "Hard physical guard used by every tracking backend. A proposed cross-slice link is rejected when it would create a reconstructed nucleus longer than this value; individual long observations remain visible for review.",
-    "SEGMENTATION_ENGINE": "v5.7 scaffold. classical_saturn keeps the existing pipeline. hybrid or unet_assisted allows optional U-Net probability evidence to support candidate detection and 3D linking.",
+    "SEGMENTATION_ENGINE": "classical_saturn preserves Saturn segmentation; hybrid and unet_assisted add U-Net support; unet_primary makes seed-connected U-Net probability instances authoritative.",
     "UNET_MODEL_PATH": "Path to a trained 2.5D U-Net checkpoint. Leave blank to keep Saturn fully classical.",
     "UNET_THRESHOLD_MODE": "soft keeps U-Net output as probability evidence; hard turns the probability map into a binary candidate mask. Soft is safer while the model is still being validated.",
     "UNET_CANDIDATE_THRESHOLD": "Low probability cutoff for inclusive U-Net candidate support. Lower values recover faint nuclei but produce more candidates for downstream biological QC.",
@@ -7529,6 +8154,12 @@ PARAM_DESCRIPTIONS = {
     "UNET_INSTANCE_SEED_THRESHOLD": "Probability threshold for watershed/core seeds used to split connected U-Net rescue regions. Higher values create cleaner but fewer seeds.",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum distance between fallback U-Net probability peaks used as instance seeds. Lower values can split crowded regions more aggressively.",
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Compactness term for watershed instance splitting. Larger values favor compact regions; near-zero follows probability topology more closely.",
+    "UNET_PRIMARY_MIN_COMPONENT_PX": "Technical pixel-noise floor used before U-Net-primary instance measurement. It is not a biological length or shape gate.",
+    "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": "When enabled, Saturn may add detections only in residual space outside accepted U-Net-primary masks. It cannot remove or alter U-Net instances.",
+    "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": "Display-independent exclusion margin around accepted U-Net-primary masks before optional Saturn-only additions are searched.",
+    "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": "Keep short, wide, low-ratio, curved, or tortuous U-Net-primary instances and report those properties as warnings.",
+    "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY": "Save a filled-mask review overlay for U-Net-primary output.",
+    "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY": "Save a uniquely colored filled-instance review overlay for U-Net-primary output.",
     "UNET_TRACKING_SUPPORT": "If enabled in hybrid/U-Net mode, per-detection U-Net probabilities can reduce confidence in weak 3D links and favor links with consistent model support.",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Global-assignment penalty for linking detections with weak U-Net support. Set to 0 to ignore U-Net evidence during assignment.",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Global-assignment penalty for abrupt U-Net probability changes across adjacent slices.",
@@ -7609,7 +8240,9 @@ AUDIT_EXPLANATION = (
 )
 
 PARAM_ENUM_OPTIONS = {
-    "SEGMENTATION_ENGINE": ("classical_saturn", "hybrid", "unet_assisted"),
+    "SEGMENTATION_ENGINE": (
+        "classical_saturn", "hybrid", "unet_assisted", "unet_primary"
+    ),
     "UNET_THRESHOLD_MODE": ("soft", "hard"),
     "UNET_CONTEXT_MODE": ("z_minus_z_z_plus",),
     "UNET_INFERENCE_MODE": ("roi_tiled",),
