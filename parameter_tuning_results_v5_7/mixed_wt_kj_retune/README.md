@@ -51,6 +51,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 Completed specimen-level results are reused. A resume is rejected if its seed,
 candidate counts, or selected candidate roles differ from the original run.
 
+To retune only the U-Net rescue lane after a postprocessing change, reuse the
+shared classical preset and cached probability maps from a completed run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  ".\parameter_tuning_results_v5_7\mixed_wt_kj_retune\run_mixed_tuner.ps1" `
+  -UnetOnly `
+  -ClassicalRunId 20260729_195815 `
+  -RunId 20260729_hysteresis_rescue `
+  -UnetCandidateCount 12 `
+  -Seed 12345
+```
+
+This creates a new run directory. It does not modify the source run or repeat
+classical tuning and U-Net inference.
+
 Outputs are written beneath:
 
 ```text

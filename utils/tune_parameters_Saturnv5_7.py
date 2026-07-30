@@ -99,7 +99,6 @@ TRACKING_CONFIG_KEYS = (
 
 UNET_RESCUE_PARAM_SPACE = [
     ("UNET_CANDIDATE_THRESHOLD", 0.02, 0.12, False),
-    ("UNET_SEED_THRESHOLD", 0.10, 0.50, False),
     ("UNET_RESCUE_THRESHOLD", 0.20, 0.75, False),
     ("UNET_RESCUE_EXCLUDE_DILATION_PX", 0, 3, True),
     ("UNET_RESCUE_MIN_COMPONENT_PX", 2, 8, True),
@@ -111,9 +110,6 @@ UNET_RESCUE_PARAM_SPACE = [
     ("UNET_INSTANCE_SEED_THRESHOLD", 0.30, 0.80, False),
     ("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 3, 10, True),
     ("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0, 0.02, False),
-    ("MAX_WIDTH_UM", 3.5, 5.5, False),
-    ("MIN_LENGTH_WIDTH_RATIO", 1.6, 2.6, False),
-    ("MAX_TORTUOSITY", 2.2, 3.8, False),
 ]
 
 PROFILE_CHOICES = ("standard", "low_signal", "high_contrast", "no_clahe", "auto")
@@ -506,7 +502,15 @@ def summarize_candidate(rows, segs, cfg):
         if str(r.get("detection_source", "")).startswith("unet_rescued") and np.isfinite(r.get("unet_mean_probability", np.nan))
     ], dtype=float)
     rejected_reason_pixels = {}
+    rejected_reason_counts = {}
     for _seg, meas in segs:
+        for key, count in meas.get(
+            "unet_rescue_rejected_counts",
+            {},
+        ).items():
+            rejected_reason_counts[str(key)] = (
+                rejected_reason_counts.get(str(key), 0) + int(count)
+            )
         reason = meas.get("unet_rescue_rejected_reason")
         codes = meas.get("unet_rescue_reason_codes", {})
         if reason is None:
@@ -521,6 +525,18 @@ def summarize_candidate(rows, segs, cfg):
             rejected_reason_pixels[key] = rejected_reason_pixels.get(key, 0) + int(count)
     severe_rejected_px = sum(rejected_reason_pixels.get(k, 0) for k in ("long", "branches", "loop", "tortuous", "endpoints"))
     shape_rejected_px = sum(rejected_reason_pixels.get(k, 0) for k in ("wide", "ratio"))
+    technical_rejected_count = int(
+        sum(
+            rejected_reason_counts.get(k, 0)
+            for k in ("short", "long", "branches", "loop", "endpoints")
+        )
+    )
+    morphology_warning_count = int(
+        sum(
+            bool(r.get("unet_rescue_morphology_warning", False))
+            for r in rows
+        )
+    )
     off_roi_prob_px = int(sum(
         np.count_nonzero((s.get("unet_probability", np.zeros_like(s["mask_clean"], dtype=float)) > 0) & ~roi_mask_global)
         for s, _ in segs
@@ -552,13 +568,10 @@ def summarize_candidate(rows, segs, cfg):
     )
     unet_rescue_score = (
         technical_score
-        + severe_rejected_px * 0.0006
-        + shape_rejected_px * 0.0012
+        + technical_rejected_count * 0.01
         + max(0.0, 0.08 - rescue_fraction) * 30.0
         + max(0.0, rescue_fraction - 0.42) * 35.0
         + split_ratio_penalty(total_unet_rescued, unet_rescued_split)
-        + very_short_frac * 25.0
-        + very_long_frac * 1000.0
     )
     objective = str(cfg.get("TUNING_OBJECTIVE", "")).lower()
     if objective == "unet_rescue":
@@ -586,6 +599,9 @@ def summarize_candidate(rows, segs, cfg):
         "unet_rescue_fraction": rescue_fraction,
         "unet_rescue_mean_probability_median": float(np.median(unet_means)) if unet_means.size else 0.0,
         "unet_rescue_rejected_reason_pixels": rejected_reason_pixels,
+        "unet_rescue_rejected_reason_counts": rejected_reason_counts,
+        "unet_rescue_technical_rejected_count": technical_rejected_count,
+        "unet_rescue_morphology_warning_count": morphology_warning_count,
         "unet_rescue_severe_rejected_pixels": int(severe_rejected_px),
         "unet_rescue_shape_rejected_pixels": int(shape_rejected_px),
         "unet_probability_outside_roi_pixels": off_roi_prob_px,
@@ -952,7 +968,6 @@ def sample_unet_rescue_candidates(space, maxiter, seed, base_cfg):
                 base_cfg,
                 {
                     "UNET_CANDIDATE_THRESHOLD": 0.05,
-                    "UNET_SEED_THRESHOLD": 0.30,
                     "UNET_RESCUE_THRESHOLD": 0.30,
                     "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
                     "UNET_SHORT_RESCUE_MIN_MEAN_PROB": 0.35,
@@ -970,7 +985,6 @@ def sample_unet_rescue_candidates(space, maxiter, seed, base_cfg):
                 base_cfg,
                 {
                     "UNET_CANDIDATE_THRESHOLD": 0.05,
-                    "UNET_SEED_THRESHOLD": 0.30,
                     "UNET_RESCUE_THRESHOLD": 0.20,
                     "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
                     "UNET_SHORT_RESCUE_MIN_MEAN_PROB": 0.30,
@@ -1025,11 +1039,35 @@ def sample_tracking_candidates(space, maxiter, seed, base_cfg):
     return candidates
 
 
-def generate_candidate_review_pdf(outdir, mode, records, base_cfg, review_candidates):
+def generate_candidate_review_pdf(
+    outdir,
+    mode,
+    records,
+    base_cfg,
+    review_candidates,
+    preferred_role=None,
+):
     if mode not in {"segmentation", "unet_rescue"} or not records:
         return None
     review_count = min(3, max(1, int(review_candidates)), len(records))
-    selected = records[:review_count]
+    selected = []
+    if preferred_role:
+        preferred = next(
+            (
+                record
+                for record in records
+                if record.get("candidate_role") == preferred_role
+            ),
+            None,
+        )
+        if preferred is not None:
+            selected.append(preferred)
+    selected.extend(
+        record
+        for record in records
+        if record not in selected
+    )
+    selected = selected[:review_count]
     rendered = []
     space = (
         UNET_RESCUE_PARAM_SPACE
@@ -1091,13 +1129,99 @@ def generate_candidate_review_pdf(outdir, mode, records, base_cfg, review_candid
                 axes[0, col].imshow(overlay)
                 role = record.get("candidate_role", f"rank {col + 1}")
                 axes[0, col].set_title(
-                    f"Rank {col + 1}: {role}\n"
+                    f"Rank {record.get('numerical_rank', col + 1)}: {role}\n"
                     f"n={len(measurements['results'])}, score={record['score']:.3f}"
                 )
                 axes[0, col].axis("off")
             fig.suptitle(f"Saturn v5.7 {mode} candidate review, Z={z_idx}")
             pdf.savefig(fig, dpi=180)
             plt.close(fig)
+    if mode == "unet_rescue" and selected:
+        selected_record, selected_segs = rendered[0]
+        support_n = next_run_number(
+            outdir,
+            "selected_unet_probability_review_v5_7_*.pdf",
+        )
+        support_path = (
+            outdir
+            / f"selected_unet_probability_review_v5_7_{support_n:03d}.pdf"
+        )
+        low = float(selected_record["UNET_CANDIDATE_THRESHOLD"])
+        high = float(selected_record["UNET_RESCUE_THRESHOLD"])
+        with PdfPages(support_path) as support_pdf:
+            for slice_idx, (img, z_idx) in enumerate(
+                zip(images_to_eval, z_values_eval)
+            ):
+                seg, measurements = selected_segs[slice_idx]
+                base = segmentation.normalize_display(img)
+                probability = np.asarray(
+                    seg["unet_probability"],
+                    dtype=np.float32,
+                )
+                valid = (
+                    np.asarray(seg["roi_mask"], dtype=bool)
+                    & ~np.asarray(seg["exclusion_mask"], dtype=bool)
+                )
+                support = segmentation.apply_hysteresis_threshold(
+                    probability,
+                    min(low, high),
+                    high,
+                ) & valid
+                seeds = (probability >= high) & valid
+                support_rgb = np.stack([base, base, base], axis=-1)
+                support_rgb[support] = (
+                    0.25 * support_rgb[support]
+                    + 0.75 * np.array([0.0, 0.9, 1.0])
+                )
+                support_rgb[seeds] = (
+                    0.20 * support_rgb[seeds]
+                    + 0.80 * np.array([1.0, 0.9, 0.0])
+                )
+                overlay = segmentation.make_unet_rescue_review_overlay(
+                    img,
+                    measurements["skel_label"],
+                    measurements["results"],
+                    measurements.get("unet_rescue_rejected_reason"),
+                )
+                fig, axes = plt.subplots(
+                    1,
+                    4,
+                    figsize=(22, 6),
+                    constrained_layout=True,
+                )
+                axes[0].imshow(base, cmap="gray", vmin=0, vmax=1)
+                axes[0].set_title("Raw ROI-normalized image")
+                probability_view = axes[1].imshow(
+                    probability,
+                    cmap="magma",
+                    vmin=0,
+                    vmax=1,
+                )
+                axes[1].set_title("U-Net probability")
+                fig.colorbar(
+                    probability_view,
+                    ax=axes[1],
+                    fraction=0.046,
+                )
+                axes[2].imshow(support_rgb)
+                axes[2].set_title(
+                    f"Hysteresis support: cyan >= {low:.2f}; "
+                    f"yellow seed >= {high:.2f}"
+                )
+                axes[3].imshow(overlay)
+                axes[3].set_title(
+                    "Final: green classical; cyan U-Net; "
+                    "red/magenta technical reject"
+                )
+                for axis in axes:
+                    axis.axis("off")
+                role = selected_record.get("candidate_role", "selected")
+                fig.suptitle(
+                    f"Selected U-Net candidate {role}, Z={z_idx}"
+                )
+                support_pdf.savefig(fig, dpi=180)
+                plt.close(fig)
+        print(f"Selected U-Net probability review: {support_path}")
     return path
 
 
@@ -1432,7 +1556,7 @@ def run_self_check():
             "U-Net evidence candidate first",
             unet_candidates[0][0] == "evidence_0.05_0.30"
             and unet_candidates[0][1]["UNET_CANDIDATE_THRESHOLD"] == 0.05
-            and unet_candidates[0][1]["UNET_SEED_THRESHOLD"] == 0.30,
+            and unet_candidates[0][1]["UNET_RESCUE_THRESHOLD"] == 0.30,
         )
     )
     ctx_calls = []
@@ -1475,6 +1599,7 @@ def main(argv=None):
     parser.add_argument("--unet-cache-dir", default=None)
     parser.add_argument("--rebuild-unet-cache", action="store_true")
     parser.add_argument("--review-candidates", type=int, default=6)
+    parser.add_argument("--review-candidate-role", default=None)
     parser.add_argument("--aggregate-stratum-results", action="append", default=[])
     parser.add_argument(
         "--shared-candidate-role",
@@ -1616,6 +1741,8 @@ def main(argv=None):
             rec["candidate_role"] = role
             records.append(rec)
     records.sort(key=lambda r: r["score"])
+    for rank, record in enumerate(records, start=1):
+        record["numerical_rank"] = rank
     best = records[0] if records else {}
     review_path = generate_candidate_review_pdf(
         outdir,
@@ -1623,6 +1750,7 @@ def main(argv=None):
         records,
         cfg,
         args.review_candidates,
+        preferred_role=args.review_candidate_role,
     )
     save_results(
         outdir,

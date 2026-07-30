@@ -240,6 +240,8 @@ CONFIG = {
     "UNET_CANDIDATE_ACCOUNTING": True,
     "UNET_RESCUE_ENABLE": True,
     "UNET_RESCUE_THRESHOLD": 0.60,
+    "UNET_RESCUE_HYSTERESIS_ENABLE": True,
+    "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS": True,
     "UNET_RESCUE_EXCLUDE_DILATION_PX": 1,
     "UNET_RESCUE_MIN_COMPONENT_PX": 3,
     # Technical noise floor only. Do not use expected biological length as an
@@ -413,6 +415,8 @@ _REQUIRED = {
     "UNET_STITCH_MODE": str, "UNET_OUTSIDE_ROI_ZERO": bool, "UNET_FAIL_HARD": bool,
     "UNET_SAVE_PROBABILITY_MAPS": bool, "UNET_CANDIDATE_ACCOUNTING": bool,
     "UNET_RESCUE_ENABLE": bool, "UNET_RESCUE_THRESHOLD": (int, float),
+    "UNET_RESCUE_HYSTERESIS_ENABLE": bool,
+    "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS": bool,
     "UNET_RESCUE_EXCLUDE_DILATION_PX": int, "UNET_RESCUE_MIN_COMPONENT_PX": int,
     "UNET_RESCUE_MIN_SKEL_LEN_UM": (int, float),
     "UNET_SHORT_RESCUE_MIN_MEAN_PROB": (int, float),
@@ -526,6 +530,16 @@ def validate_config(cfg):
         errors.append("  NORM_LOW_PERCENTILE must be < NORM_HIGH_PERCENTILE within [0, 100]")
     if not (0 <= cfg.get("NORM_STACK_WEIGHT", -1) <= 1):
         errors.append("  NORM_STACK_WEIGHT must be between 0 and 1")
+    if not (
+        0
+        <= cfg.get("UNET_CANDIDATE_THRESHOLD", -1)
+        < cfg.get("UNET_RESCUE_THRESHOLD", -1)
+        <= 1
+    ):
+        errors.append(
+            "  UNET_CANDIDATE_THRESHOLD must be < "
+            "UNET_RESCUE_THRESHOLD within [0, 1]"
+        )
     if cfg.get("CLAHE_MODE") not in ("auto_stack", "auto", "no_clahe", "high_contrast", "standard", "low_signal"):
         errors.append("  CLAHE_MODE must be auto_stack/auto/no_clahe/high_contrast/standard/low_signal")
     if cfg.get("PREPROCESS_MODE") not in ("roi_adaptive", "full_frame"):
@@ -2279,6 +2293,14 @@ def measure_spermatids(seg, cfg):
         exclusion = seg.get("exclusion_mask", np.zeros_like(skel, dtype=bool)).astype(bool)
         valid = roi & ~exclusion
         rescue_thr = float(cfg.get("UNET_RESCUE_THRESHOLD", cfg.get("UNET_SEED_THRESHOLD", 0.50)))
+        candidate_thr = float(
+            cfg.get("UNET_CANDIDATE_THRESHOLD", min(rescue_thr, 0.05))
+        )
+        candidate_thr = min(candidate_thr, rescue_thr)
+        use_hysteresis = bool(cfg.get("UNET_RESCUE_HYSTERESIS_ENABLE", True))
+        retain_morphology_warnings = bool(
+            cfg.get("UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS", True)
+        )
         exclude_px = max(0, int(cfg.get("UNET_RESCUE_EXCLUDE_DILATION_PX", 3)))
         min_component = max(1, int(cfg.get("UNET_RESCUE_MIN_COMPONENT_PX", cfg.get("MIN_OBJ_PX", 3))))
         rescue_min_skel_um = float(cfg.get("UNET_RESCUE_MIN_SKEL_LEN_UM", cfg.get("MIN_SKEL_LEN_UM", 0.0)))
@@ -2314,7 +2336,14 @@ def measure_spermatids(seg, cfg):
         # Split complete U-Net instances before checking whether Saturn already
         # represents them. Removing occupied pixels first can turn one complete
         # nucleus into several artificial short residual fragments.
-        rescue_mask = (unet_prob >= rescue_thr) & valid
+        if use_hysteresis and candidate_thr < rescue_thr:
+            rescue_mask = apply_hysteresis_threshold(
+                unet_prob,
+                candidate_thr,
+                rescue_thr,
+            ) & valid
+        else:
+            rescue_mask = (unet_prob >= rescue_thr) & valid
         rescue_mask = remove_objects_smaller_than(rescue_mask, min_component)
         rescue_lab = _split_unet_rescue_instances(
             unet_prob,
@@ -2347,6 +2376,7 @@ def measure_spermatids(seg, cfg):
             tort = topo["tortuosity"]
             n_ep = topo["n_endpoints"]
             n_br = topo["n_branch_nodes"]
+            morphology_warnings = []
             if not (rescue_min_skel_px <= gl <= cfg["MAX_GEODESIC_LEN_PX"]):
                 if gl < rescue_min_skel_px and not high_confidence_short:
                     return None, "short"
@@ -2355,22 +2385,29 @@ def measure_spermatids(seg, cfg):
 
             width = float(np.median(2.0 * dist_map[coords[:, 0], coords[:, 1]]))
             if width > cfg["MAX_WIDTH_PX"]:
-                return None, "wide"
+                if retain_morphology_warnings:
+                    morphology_warnings.append("wide")
+                else:
+                    return None, "wide"
             length_width_ratio = gl / (width + 1e-9)
+            low_ratio = length_width_ratio < cfg["MIN_LENGTH_WIDTH_RATIO"]
             high_confidence_low_ratio = (
-                length_width_ratio < cfg["MIN_LENGTH_WIDTH_RATIO"]
+                low_ratio
                 and gl >= low_ratio_min_length_px
                 and mean_unet_prob >= low_ratio_min_prob
             )
-            if (
-                length_width_ratio < cfg["MIN_LENGTH_WIDTH_RATIO"]
-                and not high_confidence_low_ratio
-            ):
-                return None, "ratio"
+            if low_ratio:
+                if retain_morphology_warnings:
+                    morphology_warnings.append("low_length_width_ratio")
+                elif not high_confidence_low_ratio:
+                    return None, "ratio"
             if n_br > cfg["MAX_BRANCH_NODES"]:
                 return None, "branches"
             if n_ep >= 2 and tort > cfg["MAX_TORTUOSITY"]:
-                return None, "tortuous"
+                if retain_morphology_warnings:
+                    morphology_warnings.append("tortuous")
+                else:
+                    return None, "tortuous"
             if n_ep > cfg["MAX_ENDPOINT_COUNT"]:
                 return None, "endpoints"
 
@@ -2378,8 +2415,10 @@ def measure_spermatids(seg, cfg):
             resolved_source = source
             if gl < rescue_min_skel_px and high_confidence_short:
                 resolved_source = "unet_rescued_short_high_confidence"
-            elif high_confidence_low_ratio:
+            elif low_ratio and not retain_morphology_warnings and high_confidence_low_ratio:
                 resolved_source = "unet_rescued_low_ratio_high_confidence"
+            elif morphology_warnings:
+                resolved_source = "unet_rescued_morphology_warning"
             return {
                 "coords": coords,
                 "score": mean_unet_prob,
@@ -2403,6 +2442,10 @@ def measure_spermatids(seg, cfg):
                     "unet_mean_probability": mean_unet_prob if unet_vals.size else np.nan,
                     "unet_max_probability": float(np.max(unet_vals)) if unet_vals.size else np.nan,
                     "detection_source": resolved_source,
+                    "unet_rescue_morphology_warning": bool(morphology_warnings),
+                    "unet_rescue_morphology_warning_reasons": ";".join(
+                        morphology_warnings
+                    ),
                 },
             }, None
 
@@ -2520,6 +2563,13 @@ def measure_spermatids(seg, cfg):
         "unet_rescue_accepted_label": rescue_accepted_label,
         "unet_rescue_rejected_reason": rescue_rejected_reason,
         "unet_rescue_reason_codes": rescue_reason_codes,
+        "unet_rescue_rejected_counts": dict(rescue_reasons),
+        "unet_rescue_candidate_threshold": float(
+            cfg.get("UNET_CANDIDATE_THRESHOLD", 0.0)
+        ),
+        "unet_rescue_seed_threshold": float(
+            cfg.get("UNET_RESCUE_THRESHOLD", 0.0)
+        ),
     }
 
 
@@ -2597,27 +2647,48 @@ def make_unet_rescue_review_overlay(img_raw, skel_label, results, rescue_rejecte
             continue
 
     if rescue_rejected_reason is not None:
-        rejected = grey_dilation(
-            np.asarray(rescue_rejected_reason, dtype=np.uint8),
-            size=_OVERLAY_DISPLAY_DILATION_SIZE,
+        rejected = np.asarray(rescue_rejected_reason, dtype=np.uint8)
+        footprint = np.ones(
+            (_OVERLAY_DISPLAY_DILATION_SIZE,) * 2,
+            dtype=bool,
         )
-        short = rejected == 1
-        severe = np.isin(rejected, [2, 3, 6, 7, 8])
-        shape = np.isin(rejected, [4, 5])
+        short = morphology.binary_dilation(
+            rejected == 1,
+            footprint,
+        )
+        severe = morphology.binary_dilation(
+            np.isin(rejected, [2, 3, 6, 7, 8]),
+            footprint,
+        )
+        shape = morphology.binary_dilation(
+            np.isin(rejected, [4, 5]),
+            footprint,
+        )
         rgb[short] = (1.0, 0.0, 0.9)
         rgb[shape] = (1.0, 0.55, 0.0)
         rgb[severe] = (1.0, 0.0, 0.0)
 
     if skel_label is not None and int(np.max(skel_label)) > 0:
-        dilated = grey_dilation(skel_label.astype(np.int32), size=_OVERLAY_DISPLAY_DILATION_SIZE)
-        for label in np.unique(dilated):
-            if label <= 0:
-                continue
-            source = label_source.get(int(label), "saturn_classical")
-            if str(source).startswith("unet_rescued"):
-                rgb[dilated == label] = (0.0, 0.9, 1.0)
-            else:
-                rgb[dilated == label] = (0.0, 1.0, 0.25)
+        unet_labels = [
+            label
+            for label, source in label_source.items()
+            if label > 0 and str(source).startswith("unet_rescued")
+        ]
+        classical_labels = [
+            label
+            for label, source in label_source.items()
+            if label > 0 and not str(source).startswith("unet_rescued")
+        ]
+        classical_mask = morphology.binary_dilation(
+            np.isin(skel_label, classical_labels),
+            footprint,
+        )
+        unet_mask = morphology.binary_dilation(
+            np.isin(skel_label, unet_labels),
+            footprint,
+        )
+        rgb[classical_mask] = (0.0, 1.0, 0.25)
+        rgb[unet_mask] = (0.0, 0.9, 1.0)
 
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
@@ -3077,6 +3148,13 @@ def rows_from_results(results, z_idx, um):
         "detection_source":    r.get("detection_source", "saturn_classical"),
         "unet_mean_probability": round(float(r.get("unet_mean_probability", np.nan)), 4) if np.isfinite(r.get("unet_mean_probability", np.nan)) else np.nan,
         "unet_max_probability":  round(float(r.get("unet_max_probability", np.nan)), 4) if np.isfinite(r.get("unet_max_probability", np.nan)) else np.nan,
+        "unet_rescue_morphology_warning": bool(
+            r.get("unet_rescue_morphology_warning", False)
+        ),
+        "unet_rescue_morphology_warning_reasons": r.get(
+            "unet_rescue_morphology_warning_reasons",
+            "",
+        ),
     } for i, r in enumerate(results, start=1)]
 
 
@@ -6984,7 +7062,10 @@ PARAM_SECTIONS = {
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
         "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX", "UNET_FAIL_HARD",
-        "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD", "UNET_RESCUE_EXCLUDE_DILATION_PX",
+        "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD",
+        "UNET_RESCUE_HYSTERESIS_ENABLE",
+        "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS",
+        "UNET_RESCUE_EXCLUDE_DILATION_PX",
         "UNET_RESCUE_MIN_COMPONENT_PX", "UNET_RESCUE_MIN_SKEL_LEN_UM",
         "UNET_SHORT_RESCUE_MIN_MEAN_PROB",
         "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE",
@@ -7105,7 +7186,9 @@ PARAM_TITLES = {
     "UNET_ROI_PADDING_PX": "U-Net ROI padding (px)",
     "UNET_FAIL_HARD": "Stop run if U-Net inference fails",
     "UNET_RESCUE_ENABLE": "Enable U-Net rescue lane",
-    "UNET_RESCUE_THRESHOLD": "U-Net rescue probability threshold",
+    "UNET_RESCUE_THRESHOLD": "U-Net rescue seed threshold",
+    "UNET_RESCUE_HYSTERESIS_ENABLE": "Connect low-confidence support to rescue seeds",
+    "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS": "Retain unusual U-Net morphology for measurement",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "Rescue exclusion around Saturn hits (px)",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum rescue component size (px)",
     "UNET_RESCUE_MIN_SKEL_LEN_UM": "Minimum resolvable U-Net centerline (um)",
@@ -7202,7 +7285,9 @@ PARAM_DESCRIPTIONS = {
     "UNET_ROI_PADDING_PX": "Extra context around the selected ROI when preparing U-Net tiles. Helps avoid boundary artifacts without letting off-ROI tissue influence output.",
     "UNET_FAIL_HARD": "Required safety gate for hybrid analysis. If model loading or inference fails, stop the run instead of silently substituting classical-only segmentation.",
     "UNET_RESCUE_ENABLE": "If enabled, U-Net high-probability regions not already covered by accepted Saturn detections are skeletonized and measured as a separate rescue lane.",
-    "UNET_RESCUE_THRESHOLD": "Probability cutoff for the rescue lane. Higher values rescue fewer, more confident U-Net detections; lower values increase sensitivity but can add fragments.",
+    "UNET_RESCUE_THRESHOLD": "High-confidence seed cutoff for the rescue lane. With hysteresis enabled, connected support extends down to UNET_CANDIDATE_THRESHOLD.",
+    "UNET_RESCUE_HYSTERESIS_ENABLE": "If enabled, U-Net candidate pixels at the low candidate threshold are retained only when connected to a high-confidence rescue seed. This recovers faint boundaries without admitting isolated low-probability noise.",
+    "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS": "If enabled, unusual width, length-to-width ratio, or tortuosity is retained and reported as morphology for biological comparison. Technical failures such as unresolved loops, branches, excess endpoints, and objects above the 20 um guard remain excluded.",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum binary component size before U-Net rescue skeletonization. Increase to suppress tiny U-Net specks; decrease to recover very faint fragments.",
     "UNET_RESCUE_MIN_SKEL_LEN_UM": "Technical resolution floor for U-Net-only centerlines. Keep this well below expected biological nucleus lengths so genuinely short WT or mutant nuclei are retained; increase only when confirmed pixel-scale specks are being accepted.",

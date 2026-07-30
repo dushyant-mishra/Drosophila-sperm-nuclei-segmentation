@@ -34,7 +34,6 @@ def test_unet_candidate_sampling_starts_with_evidence_thresholds():
     assert len(first) == 6
     assert first[0][0] == "evidence_0.05_0.30"
     assert first[0][1]["UNET_CANDIDATE_THRESHOLD"] == 0.05
-    assert first[0][1]["UNET_SEED_THRESHOLD"] == 0.30
     assert first[0][1]["UNET_RESCUE_THRESHOLD"] == 0.30
     assert first[0][1]["UNET_RESCUE_MIN_SKEL_LEN_UM"] == 2.0
     assert first[0][1]["UNET_SHORT_RESCUE_MIN_MEAN_PROB"] == 0.35
@@ -98,7 +97,7 @@ def test_unet_evaluator_preserves_reviewed_base_configuration(monkeypatch):
     assert observed["UNET_RESCUE_ENABLE"] is True
 
 
-def test_unet_summary_counts_all_rescue_subtypes_and_penalizes_extremes():
+def test_unet_summary_reports_morphology_without_optimizing_it():
     tuner = load_tuner()
     cfg = tuner.CONFIG.copy()
     cfg.update(
@@ -146,7 +145,19 @@ def test_unet_summary_counts_all_rescue_subtypes_and_penalizes_extremes():
     assert summary["unet_rescue_fraction"] == 0.75
     assert summary["very_short_object_fraction"] == 0.25
     assert summary["very_long_object_fraction"] == 0.25
-    assert summary["unet_rescue_score"] > 250.0
+    assert summary["unet_rescue_score"] < 50.0
+    assert summary["morphology_prior_score_reported_not_optimized"] > 0.0
+
+
+def test_unet_search_space_keeps_classical_morphology_gates_fixed():
+    tuner = load_tuner()
+
+    keys = {key for key, *_ in tuner.UNET_RESCUE_PARAM_SPACE}
+
+    assert "MAX_WIDTH_UM" not in keys
+    assert "MIN_LENGTH_WIDTH_RATIO" not in keys
+    assert "MAX_TORTUOSITY" not in keys
+    assert "UNET_SEED_THRESHOLD" not in keys
 
 
 def test_segmentation_evaluator_preserves_reviewed_base_configuration(monkeypatch):

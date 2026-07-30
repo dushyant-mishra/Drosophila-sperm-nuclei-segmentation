@@ -5,6 +5,8 @@ param(
     [string]$SegmentationCandidateRole = "reviewed_base",
     [string]$UnetCandidateRole = "evidence_0.05_0.30",
     [string]$RunId = "",
+    [switch]$UnetOnly,
+    [string]$ClassicalRunId = "",
     [switch]$Resume,
     [switch]$ValidateOnly
 )
@@ -79,6 +81,9 @@ if ($ValidateOnly) {
 if (-not $RunId) {
     $RunId = Get-Date -Format "yyyyMMdd_HHmmss"
 }
+if ($UnetOnly -and -not $ClassicalRunId) {
+    throw "-UnetOnly requires -ClassicalRunId with a completed classical stage"
+}
 $RunRoot = Join-Path $ResultsRoot $RunId
 if (Test-Path -LiteralPath $RunRoot) {
     if (-not $Resume) {
@@ -125,6 +130,8 @@ if (Test-Path -LiteralPath $RunRoot) {
         checkpoint = $Checkpoint
         starting_preset = $StartingPreset
         manifest = $ManifestPath
+        unet_only = [bool]$UnetOnly
+        classical_source_run_id = $ClassicalRunId
     }
     $metadata | ConvertTo-Json -Depth 4 |
         Set-Content -LiteralPath (Join-Path $RunRoot "run_metadata.json") -Encoding UTF8
@@ -136,7 +143,9 @@ function Invoke-StratumTuning {
         [object]$Row,
         [string]$BasePreset,
         [string]$OutputDirectory,
-        [int]$CandidateCount
+        [int]$CandidateCount,
+        [string]$ReviewCandidateRole = "",
+        [string]$UnetCacheDirectory = ""
     )
 
     $resultPath = Join-Path $OutputDirectory "tuning_results_saturnv5_7_$Mode.json"
@@ -158,8 +167,17 @@ function Invoke-StratumTuning {
         "--seed", $Seed,
         "--review-candidates", 6
     )
+    if ($ReviewCandidateRole) {
+        $arguments += @("--review-candidate-role", $ReviewCandidateRole)
+    }
     if ($Mode -eq "unet_rescue") {
         $arguments += @("--unet-model", $Checkpoint)
+        if (
+            $UnetCacheDirectory -and
+            (Test-Path -LiteralPath $UnetCacheDirectory -PathType Container)
+        ) {
+            $arguments += @("--unet-cache-dir", $UnetCacheDirectory)
+        }
     }
 
     Write-Host ""
@@ -215,37 +233,64 @@ function Invoke-SharedAggregation {
     return $preset.FullName
 }
 
-# Stage 1: isolate and tune classical Saturn 2D segmentation.
-$segmentationRoot = Join-Path $RunRoot "01_classical_2d"
-$segmentationResults = @()
-foreach ($row in $validatedRows) {
-    $stratumOut = Join-Path $segmentationRoot $row.specimen_id
-    $segmentationResults += Invoke-StratumTuning `
+# Stage 1: isolate and tune classical Saturn 2D segmentation, or reuse it
+# unchanged when only the corrected U-Net rescue lane needs retuning.
+if ($UnetOnly) {
+    $sourceRunRoot = Join-Path $ResultsRoot $ClassicalRunId
+    if (-not (Test-Path -LiteralPath $sourceRunRoot -PathType Container)) {
+        throw "Classical source run not found: $sourceRunRoot"
+    }
+    $shared2dPreset = Get-ChildItem `
+        -LiteralPath (Join-Path $sourceRunRoot "01_classical_2d\shared_wt_kj") `
+        -Filter "shared_segmentation_params_v5_7_*.json" `
+        -File |
+        Sort-Object LastWriteTime |
+        Select-Object -Last 1 -ExpandProperty FullName
+    if (-not $shared2dPreset) {
+        throw "Shared classical preset not found in source run: $sourceRunRoot"
+    }
+    Write-Host "Reusing unchanged shared classical preset: $shared2dPreset"
+} else {
+    $segmentationRoot = Join-Path $RunRoot "01_classical_2d"
+    $segmentationResults = @()
+    foreach ($row in $validatedRows) {
+        $stratumOut = Join-Path $segmentationRoot $row.specimen_id
+        $segmentationResults += Invoke-StratumTuning `
+            -Mode "segmentation" `
+            -Row $row `
+            -BasePreset $StartingPreset `
+            -OutputDirectory $stratumOut `
+            -CandidateCount $SegmentationCandidateCount `
+            -ReviewCandidateRole $SegmentationCandidateRole
+    }
+    $shared2dDirectory = Join-Path $segmentationRoot "shared_wt_kj"
+    $shared2dPreset = Invoke-SharedAggregation `
         -Mode "segmentation" `
-        -Row $row `
+        -ResultPaths $segmentationResults `
         -BasePreset $StartingPreset `
-        -OutputDirectory $stratumOut `
-        -CandidateCount $SegmentationCandidateCount
+        -SelectedRole $SegmentationCandidateRole `
+        -OutputDirectory $shared2dDirectory
 }
-$shared2dDirectory = Join-Path $segmentationRoot "shared_wt_kj"
-$shared2dPreset = Invoke-SharedAggregation `
-    -Mode "segmentation" `
-    -ResultPaths $segmentationResults `
-    -BasePreset $StartingPreset `
-    -SelectedRole $SegmentationCandidateRole `
-    -OutputDirectory $shared2dDirectory
 
 # Stage 2: tune U-Net rescue against the unchanged shared 2D base.
 $unetRoot = Join-Path $RunRoot "02_unet_rescue"
 $unetResults = @()
 foreach ($row in $validatedRows) {
     $stratumOut = Join-Path $unetRoot $row.specimen_id
+    $cacheDirectory = ""
+    if ($UnetOnly) {
+        $cacheDirectory = Join-Path (
+            Join-Path $ResultsRoot $ClassicalRunId
+        ) "02_unet_rescue\$($row.specimen_id)\unet_probability_cache"
+    }
     $unetResults += Invoke-StratumTuning `
         -Mode "unet_rescue" `
         -Row $row `
         -BasePreset $shared2dPreset `
         -OutputDirectory $stratumOut `
-        -CandidateCount $UnetCandidateCount
+        -CandidateCount $UnetCandidateCount `
+        -ReviewCandidateRole $UnetCandidateRole `
+        -UnetCacheDirectory $cacheDirectory
 }
 $sharedHybridDirectory = Join-Path $unetRoot "shared_wt_kj"
 $sharedHybridPreset = Invoke-SharedAggregation `

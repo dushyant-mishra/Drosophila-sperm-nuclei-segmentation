@@ -241,7 +241,7 @@ def test_unet_rescue_confidence_exception_keeps_nucleus_below_resolution_floor()
     assert result["detection_source"] == "unet_rescued_short_high_confidence"
 
 
-def test_unet_rescue_confidence_exception_keeps_low_ratio_nucleus():
+def test_unet_rescue_retains_low_ratio_nucleus_as_morphology_warning():
     saturn = load_saturn_v57()
     cfg = saturn.CONFIG.copy()
     cfg.update(
@@ -275,10 +275,118 @@ def test_unet_rescue_confidence_exception_keeps_low_ratio_nucleus():
     measured = saturn.measure_spermatids(seg, cfg)
 
     assert len(measured["results"]) == 1
+    result = measured["results"][0]
+    assert result["detection_source"] == "unet_rescued_morphology_warning"
+    assert result["unet_rescue_morphology_warning"] is True
     assert (
-        measured["results"][0]["detection_source"]
-        == "unet_rescued_low_ratio_high_confidence"
+        "low_length_width_ratio"
+        in result["unet_rescue_morphology_warning_reasons"]
     )
+
+
+def test_unet_rescue_hysteresis_keeps_faint_support_connected_to_seed():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UM_PER_PX_XY": 0.3,
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_CANDIDATE_THRESHOLD": 0.05,
+            "UNET_RESCUE_THRESHOLD": 0.30,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+            "UNET_RESCUE_MIN_SKEL_LEN_UM": 2.0,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 0,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (48, 48)
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[24, 12:36] = 0.10
+    probability[24, 21:27] = 0.90
+    empty = np.zeros(shape, dtype=bool)
+    seg = {
+        "skel_pruned": empty.copy(),
+        "dist_clean": np.zeros(shape, dtype=float),
+        "skel_labeled": np.zeros(shape, dtype=np.int32),
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": empty.copy(),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert len(measured["results"]) == 1
+    assert measured["results"][0]["length_px_geodesic"] >= 20
+
+
+def test_unet_rescue_hysteresis_rejects_isolated_low_probability_noise():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_CANDIDATE_THRESHOLD": 0.05,
+            "UNET_RESCUE_THRESHOLD": 0.30,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 2,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 0,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (32, 32)
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[15, 8:24] = 0.10
+    empty = np.zeros(shape, dtype=bool)
+    seg = {
+        "skel_pruned": empty.copy(),
+        "dist_clean": np.zeros(shape, dtype=float),
+        "skel_labeled": np.zeros(shape, dtype=np.int32),
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": empty.copy(),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert measured["results"] == []
+    assert sum(measured["unet_rescue_rejected_counts"].values()) == 0
+
+
+def test_unet_rescue_keeps_twenty_micron_limit_as_hard_guard():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "UM_PER_PX_XY": 0.5,
+            "MAX_GEODESIC_LEN_UM": 20.0,
+            "MAX_GEODESIC_LEN_PX": 40.0,
+            "UNET_RESCUE_ENABLE": True,
+            "UNET_CANDIDATE_THRESHOLD": 0.05,
+            "UNET_RESCUE_THRESHOLD": 0.30,
+            "UNET_RESCUE_MIN_COMPONENT_PX": 3,
+            "UNET_RESCUE_EXCLUDE_DILATION_PX": 0,
+            "UNET_INSTANCE_SPLIT_ENABLE": False,
+        }
+    )
+    shape = (80, 80)
+    probability = np.zeros(shape, dtype=np.float32)
+    probability[40, 10:65] = 0.95
+    empty = np.zeros(shape, dtype=bool)
+    seg = {
+        "skel_pruned": empty.copy(),
+        "dist_clean": np.zeros(shape, dtype=float),
+        "skel_labeled": np.zeros(shape, dtype=np.int32),
+        "unet_probability": probability,
+        "roi_mask": np.ones(shape, dtype=bool),
+        "exclusion_mask": empty.copy(),
+    }
+
+    measured = saturn.measure_spermatids(seg, cfg)
+
+    assert measured["results"] == []
+    assert measured["unet_rescue_rejected_counts"]["long"] == 1
 
 
 def test_unet_report_counts_confidence_exception_sources():
