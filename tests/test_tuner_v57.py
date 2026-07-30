@@ -160,6 +160,315 @@ def test_unet_search_space_keeps_classical_morphology_gates_fixed():
     assert "UNET_SEED_THRESHOLD" not in keys
 
 
+def test_unet_primary_sampling_starts_with_evidence_thresholds():
+    tuner = load_tuner()
+
+    first = tuner.sample_unet_primary_candidates(
+        tuner.UNET_PRIMARY_PARAM_SPACE,
+        6,
+        12345,
+        tuner.CONFIG,
+    )
+    second = tuner.sample_unet_primary_candidates(
+        tuner.UNET_PRIMARY_PARAM_SPACE,
+        6,
+        12345,
+        tuner.CONFIG,
+    )
+
+    assert first == second
+    assert len(first) == 6
+    assert first[0][0] == "evidence_support_0.05_seed_0.30"
+    assert first[0][1]["UNET_CANDIDATE_THRESHOLD"] == 0.05
+    assert first[0][1]["UNET_SEED_THRESHOLD"] == 0.30
+    for _role, params in first:
+        assert (
+            params["UNET_CANDIDATE_THRESHOLD"]
+            < params["UNET_SEED_THRESHOLD"]
+        )
+
+
+def test_unet_primary_evaluator_enforces_authoritative_model_configuration(
+    monkeypatch,
+):
+    tuner = load_tuner()
+    observed = {}
+
+    def fake_segment(cfg):
+        observed.update(cfg)
+        return [], []
+
+    monkeypatch.setattr(tuner, "segment_eval_images", fake_segment)
+    monkeypatch.setattr(
+        tuner,
+        "summarize_candidate",
+        lambda rows, segs, cfg: {"score": 0.0},
+    )
+    base_cfg = tuner.CONFIG.copy()
+    base_cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "hybrid",
+            "TRACKING_BACKEND": "hybrid_repair",
+            "UNET_MODEL_PATH": "epoch_003.pt",
+            "_UNET_PROBABILITY_CACHE": {"z": "cached"},
+        }
+    )
+
+    result = tuner.evaluate_unet_primary_candidate(
+        {
+            "UNET_CANDIDATE_THRESHOLD": 0.05,
+            "UNET_SEED_THRESHOLD": 0.30,
+        },
+        base_cfg=base_cfg,
+    )
+
+    assert observed["SEGMENTATION_ENGINE"] == "unet_primary"
+    assert observed["TRACKING_BACKEND"] == "global_assignment"
+    assert observed["UNET_RESCUE_ENABLE"] is False
+    assert observed["UNET_INSTANCE_SPLIT_ENABLE"] is True
+    assert observed["UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE"] is False
+    assert observed["UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS"] is True
+    assert observed["_UNET_PROBABILITY_CACHE"] == {"z": "cached"}
+    assert result["SEGMENTATION_ENGINE"] == "unet_primary"
+
+
+def test_unet_primary_score_does_not_optimize_short_morphology():
+    tuner = load_tuner()
+    tuner.roi_mask_global = np.ones((8, 8), dtype=bool)
+    tuner.exclusion_mask_global = None
+    cfg = tuner.CONFIG.copy()
+    cfg.update(
+        {
+            "TUNING_OBJECTIVE": "unet_primary",
+            "UM_PER_PX_XY": 1.0,
+        }
+    )
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:4, 2:4] = True
+
+    def summarize(length):
+        rows = [
+            {
+                "length_px_geodesic": length,
+                "width_px": 2.0,
+                "length_width_ratio": length / 2.0,
+                "detection_source": "unet_primary",
+            }
+        ]
+        segs = [
+            (
+                {
+                    "mask_hyst": mask,
+                    "mask_clean": mask,
+                    "skel_pruned": mask,
+                    "bridge_stats": {
+                        "skeleton_pixels_before": 4,
+                        "skeleton_pixels_after": 4,
+                    },
+                },
+                {
+                    "results": rows,
+                    "skel_label": mask.astype(np.int32),
+                },
+            )
+        ]
+        return tuner.summarize_candidate(rows, segs, cfg)
+
+    short = summarize(3.0)
+    expected = summarize(9.0)
+    impossible = summarize(21.0)
+
+    assert short["score"] == pytest.approx(expected["score"])
+    assert short["very_short_object_fraction"] == 1.0
+    assert impossible["score"] >= expected["score"] + 1000.0
+
+
+def test_comparative_segmentation_score_does_not_penalize_short_morphology():
+    tuner = load_tuner()
+    tuner.roi_mask_global = np.ones((8, 8), dtype=bool)
+    tuner.exclusion_mask_global = None
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:4, 2:4] = True
+
+    def summarize(length):
+        cfg = tuner.CONFIG.copy()
+        cfg.update(
+            {
+                "TUNING_OBJECTIVE": "segmentation",
+                "ANALYSIS_MODE": "comparative",
+                "UM_PER_PX_XY": 1.0,
+            }
+        )
+        rows = [
+            {
+                "length_px_geodesic": length,
+                "width_px": 2.0,
+                "length_width_ratio": length / 2.0,
+                "detection_source": "saturn_classical",
+            }
+        ]
+        segs = [
+            (
+                {
+                    "mask_hyst": mask,
+                    "mask_clean": mask,
+                    "skel_pruned": mask,
+                    "bridge_stats": {
+                        "skeleton_pixels_before": 4,
+                        "skeleton_pixels_after": 4,
+                    },
+                },
+                {
+                    "results": rows,
+                    "skel_label": mask.astype(np.int32),
+                },
+            )
+        ]
+        return tuner.summarize_candidate(rows, segs, cfg)
+
+    short = summarize(3.0)
+    reference_like = summarize(9.0)
+
+    assert short["segmentation_score"] == pytest.approx(
+        reference_like["segmentation_score"]
+    )
+    assert short["very_short_object_fraction"] == 1.0
+
+
+def test_tracking_score_retains_single_slice_and_15_to_20um_morphology():
+    tuner = load_tuner()
+    cfg = {
+        **tuner.CONFIG,
+        "ANALYSIS_MODE": "comparative",
+        "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
+    }
+    detections = pd.DataFrame({"source_instance_key": ["z0_i1"]})
+    tracked = pd.DataFrame(
+        {
+            "track_link_type": ["track_start"],
+            "track_link_distance_um": [np.nan],
+            "track_link_gap_slices": [0],
+        }
+    )
+
+    def score(n_slices, length):
+        tracks = pd.DataFrame(
+            {
+                "track_id": [1],
+                "n_slices": [n_slices],
+                "total_3d_length_um": [length],
+                "max_length_2d": [length],
+                "technical_valid": [True],
+            }
+        )
+        return tuner.summarize_tracking_candidate(
+            detections,
+            tracked,
+            tracks,
+            cfg,
+        )
+
+    single_reference = score(1, 14.0)
+    multi_reference = score(2, 14.0)
+    long_warning = score(2, 18.0)
+
+    assert single_reference["score"] == pytest.approx(
+        multi_reference["score"]
+    )
+    assert long_warning["score"] == pytest.approx(
+        multi_reference["score"]
+    )
+    assert long_warning["over_join_guard_fraction"] == 1.0
+
+
+def test_unet_primary_tracking_evaluator_defaults_to_global_backend(monkeypatch):
+    tuner = load_tuner()
+    observed = {}
+    detections = pd.DataFrame(
+        {
+            "z_slice": [0, 1],
+            "source_instance_key": ["z0_i1", "z1_i1"],
+            "centroid_x": [10.0, 10.2],
+            "centroid_y": [20.0, 20.1],
+        }
+    )
+    tracked = pd.DataFrame(
+        {
+            "track_link_method": ["new", "assignment_cost"],
+            "track_link_distance_um": [float("nan"), 0.2],
+            "track_link_gap_slices": [0, 1],
+        }
+    )
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1],
+            "n_slices": [2],
+            "total_3d_length_um": [9.2],
+            "max_length_2d": [9.1],
+        }
+    )
+
+    def fake_track(df, cfg):
+        observed.update(cfg)
+        return tracked.copy(), tracks.copy()
+
+    monkeypatch.setattr(
+        tuner.segmentation,
+        "track_across_slices",
+        fake_track,
+    )
+    monkeypatch.setattr(
+        tuner.segmentation,
+        "flag_quality_tracks",
+        lambda df, cfg: df.assign(technical_valid=True),
+    )
+
+    result = tuner.evaluate_unet_primary_tracking_candidate(
+        detections,
+        {
+            "UNET_TRACK_MAX_CENTROID_DIST_UM": 3.0,
+            "UNET_TRACK_MAX_COST": 1.35,
+        },
+        base_cfg={
+            **tuner.CONFIG,
+            "TRACKING_BACKEND": "hybrid_repair",
+            "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 25.0,
+        },
+    )
+
+    assert observed["SEGMENTATION_ENGINE"] == "unet_primary"
+    assert observed["TRACKING_BACKEND"] == "global_assignment"
+    assert result["n_links"] == 1
+    assert result["unet_primary_links"] == 0
+
+
+def test_unet_primary_tracking_experimental_backend_remains_selectable(
+    monkeypatch,
+):
+    tuner = load_tuner()
+    observed = {}
+
+    def fake_evaluate(detections, params, base_cfg=None):
+        observed.update(base_cfg)
+        return {"score": 0.0}
+
+    monkeypatch.setattr(
+        tuner,
+        "evaluate_tracking_candidate",
+        fake_evaluate,
+    )
+    tuner.evaluate_unet_primary_tracking_candidate(
+        pd.DataFrame(),
+        {"UNET_TRACK_MAX_COST": 1.35},
+        base_cfg=tuner.CONFIG.copy(),
+        tracking_backend="unet_primary_assignment",
+    )
+
+    assert observed["TRACKING_BACKEND"] == "unet_primary_assignment"
+    assert observed["UNET_TRACK_MAX_GAP_SLICES"] == 1
+    assert observed["UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM"] == 20.0
+
+
 def test_segmentation_evaluator_preserves_reviewed_base_configuration(monkeypatch):
     tuner = load_tuner()
     observed = {}
@@ -492,6 +801,43 @@ def test_saved_preset_is_complete_and_gui_loadable():
     assert preset["_TUNING_METADATA"]["numerical_rank"] == 1
 
 
+def test_unet_primary_saved_preset_selects_primary_engine_and_tracker():
+    tuner = load_tuner()
+    tuner.z_values_eval = [17, 35, 70]
+    tuner.preprocess_context_global = SimpleNamespace(
+        selected_clahe_profile="standard"
+    )
+    cfg = tuner.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "unet_primary",
+            "TRACKING_BACKEND": "global_assignment",
+            "UNET_MODEL_PATH": "epoch_003.pt",
+            "UNET_RESCUE_ENABLE": False,
+            "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": False,
+        }
+    )
+    selected = {
+        "mode": "unet_primary",
+        "score": 0.5,
+        "numerical_rank": 1,
+        "selection_status": "first_candidate_for_visual_inspection",
+        "UNET_CANDIDATE_THRESHOLD": 0.05,
+        "UNET_SEED_THRESHOLD": 0.30,
+        "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
+    }
+
+    preset = tuner.loadable_parameter_preset(cfg, selected)
+
+    assert preset["SEGMENTATION_ENGINE"] == "unet_primary"
+    assert preset["TRACKING_BACKEND"] == "global_assignment"
+    assert preset["UNET_MODEL_PATH"] == "epoch_003.pt"
+    assert preset["UNET_CANDIDATE_THRESHOLD"] == 0.05
+    assert preset["UNET_SEED_THRESHOLD"] == 0.30
+    assert preset["UNET_RESCUE_ENABLE"] is False
+    assert preset["UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE"] is False
+
+
 def test_stratum_aggregation_writes_one_shared_unchanged_preset(tmp_path):
     tuner = load_tuner()
     parameter_values = tuner.candidate_from_config(
@@ -557,23 +903,78 @@ def test_stratum_aggregation_writes_one_shared_unchanged_preset(tmp_path):
     )
 
 
+def test_unet_primary_tracking_strata_aggregate_into_combined_preset(
+    tmp_path,
+):
+    tuner = load_tuner()
+    parameter_values = tuner.candidate_from_config(
+        tuner.UNET_PRIMARY_GLOBAL_TRACKING_PARAM_SPACE,
+        tuner.CONFIG,
+    )
+    paths = []
+    for idx, score in enumerate((2.0, 3.0), start=1):
+        path = tmp_path / f"tracking_stratum_{idx}.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "candidate_role": "reviewed_base",
+                        "score": score,
+                        "n_2d": 300 + idx,
+                        "n_tracks": 150 + idx,
+                        "calibration_xy_um_per_pixel": 0.38,
+                        "calibration_z_um_per_slice": 0.346,
+                        **parameter_values,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        paths.append(path)
+
+    cfg = tuner.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "unet_primary",
+            "TRACKING_BACKEND": "global_assignment",
+            "UNET_MODEL_PATH": "epoch_003.pt",
+        }
+    )
+    preset_path, summaries = tuner.aggregate_stratum_results(
+        paths,
+        tmp_path / "shared_tracking",
+        cfg,
+        "reviewed_base",
+        mode="unet_primary_tracking",
+    )
+    preset = json.loads(preset_path.read_text(encoding="utf-8"))
+
+    assert len(summaries) == 1
+    assert preset["SEGMENTATION_ENGINE"] == "unet_primary"
+    assert preset["TRACKING_BACKEND"] == "global_assignment"
+    assert preset["UNET_MODEL_PATH"] == "epoch_003.pt"
+    for key in parameter_values:
+        assert preset[key] == parameter_values[key]
+
+
 def test_auto_microscope_calibration_updates_tuner_config(monkeypatch, tmp_path):
     tuner = load_tuner()
     image = tmp_path / "Project001_Series015_z00_ch00.tif"
     image.touch()
     observed = {}
 
-    def fake_metadata(sample_dir, project, series, fallback_xy, fallback_z):
+    def fake_resolver(cfg, files, input_dir=None, require_metadata=None):
         observed.update(
             {
-                "sample_dir": Path(sample_dir),
-                "project": project,
-                "series": series,
-                "fallback_xy": fallback_xy,
-                "fallback_z": fallback_z,
+                "files": list(files),
+                "input_dir": Path(input_dir),
+                "require_metadata": require_metadata,
             }
         )
+        cfg["UM_PER_PX_XY"] = 0.37841796875
+        cfg["UM_PER_SLICE_Z"] = 0.3461841
         return {
+            "status": "leica_xml",
             "xy_um_per_pixel": 0.37841796875,
             "z_um_per_slice": 0.3461841,
             "acquisition_class": "objective=40x; zoom=0.75",
@@ -584,8 +985,8 @@ def test_auto_microscope_calibration_updates_tuner_config(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         tuner.segmentation,
-        "_study_parse_leica_metadata",
-        fake_metadata,
+        "resolve_stack_microscope_calibration",
+        fake_resolver,
     )
     cfg = tuner.CONFIG.copy()
 
@@ -593,8 +994,9 @@ def test_auto_microscope_calibration_updates_tuner_config(monkeypatch, tmp_path)
         cfg, tmp_path, [image]
     )
 
-    assert observed["project"] == "001"
-    assert observed["series"] == 15
+    assert observed["files"] == [image]
+    assert observed["input_dir"] == tmp_path
+    assert observed["require_metadata"] is True
     assert cfg["UM_PER_PX_XY"] == pytest.approx(0.37841796875)
     assert cfg["UM_PER_SLICE_Z"] == pytest.approx(0.3461841)
     assert cfg["_TUNER_CALIBRATION_SOURCE"].endswith(

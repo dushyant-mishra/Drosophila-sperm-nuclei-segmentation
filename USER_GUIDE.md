@@ -61,14 +61,22 @@ technical performance.
    where nuclei are most visible.
 3. Draw a new ROI or select **Load ROI**.
 4. Confirm that the red ROI outline follows the specimen on several Z planes.
-5. Select **Load Tuned Params** when using a reviewed v5.7 parameter JSON.
-6. In **Configure Parameters**, confirm calibration, segmentation engine, and
-   U-Net checkpoint settings.
-7. Use **Run Slice** for a representative visual check. Its count is labeled
+5. Select **Load Analysis Profile** and choose the reviewed combined v5.7 JSON.
+   This applies segmentation, U-Net, instance-splitting, and tracking settings
+   together.
+6. The profile also supplies `UNET_MODEL_PATH`. If that saved path has moved,
+   the GUI immediately asks for the matching `.pt` or `.pth` checkpoint. You
+   can also use **Select U-Net Checkpoint** explicitly.
+7. Confirm the status line shows the intended profile, segmentation engine,
+   and checkpoint filename. The same in-memory configuration is used by
+   **Run Analysis on Slice**, **Run Batch**, and **Run / Resume Study**.
+8. In **Configure Parameters**, confirm calibration and any manually edited
+   settings. A U-Net run cannot start when the checkpoint is absent.
+9. Use **Run Slice** for a representative visual check. Its count is labeled
    **2D preview candidates** and must not be interpreted as unique nuclei.
-8. Use **Run Batch (All Slices + 3D Track)** only after the slice check looks
+10. Use **Run Batch (All Slices + 3D Track)** only after the slice check looks
    reasonable.
-9. Review overlays and measurement tables before interpreting summary plots.
+11. Review overlays and measurement tables before interpreting summary plots.
 
 Each batch is written to a new `batch_output`, `batch_output_1`, and so on.
 
@@ -77,6 +85,356 @@ whether the selected U-Net checkpoint exists. The **2.5D U-Net Integration**
 section appears directly below calibration and provides dropdowns for modes,
 checkboxes for enable/disable settings, and **Browse** for the checkpoint.
 Existing batches are not overwritten.
+
+For the current reviewed WT/KJ workflow, load:
+
+```text
+parameter_tuning_results_v5_7\mixed_unet_primary\20260730_full\
+05_production_selected\production_selected_unet_primary_tracking_params_v5_7.json
+```
+
+and verify that its checkpoint resolves to:
+
+```text
+Kaggle notebook outputs\v57_kj_wt_training_export\
+checkpoints\epoch_003.pt
+```
+
+The Study Manager displays the active profile and model before a run and
+includes them in the confirmation dialog. Changing either input changes the
+study configuration fingerprint, preventing an old completed result from
+being silently treated as the same analysis.
+
+## 3.1 Tuning Workflow
+
+The production GUI includes the tuner through **Open Tuning Workspace**. The
+workspace runs separately so parameter searches do not freeze the analysis
+window. It inherits the current image directory, ROI, analysis profile, and
+checkpoint when they are available.
+
+### Start the Tuning Workspace
+
+The normal route is through Saturn:
+
+```powershell
+Set-Location "C:\Users\dmishra\Desktop\sperm_project"
+.\.venv\Scripts\Activate.ps1
+python .\sperm_segmentation_saturnv5.7.py --gui
+```
+
+Load a stack, its ROI, the current analysis profile, and the matching
+checkpoint. Then select **Open Tuning Workspace**.
+
+The workspace can also be started directly:
+
+```powershell
+Set-Location "C:\Users\dmishra\Desktop\sperm_project"
+
+$Python = ".\.venv\Scripts\python.exe"
+$Images = "C:\path\to\one_specimen"
+$Roi = Join-Path $Images "analysis_roi_v5_7.npy"
+$Profile = "C:\path\to\reviewed_base_profile.json"
+$Checkpoint = "C:\path\to\epoch_003.pt"
+
+& $Python .\utils\tuner_gui_Saturnv5_7.py `
+  --dir $Images `
+  --roi-mask $Roi `
+  --base-params $Profile `
+  --unet-model $Checkpoint
+```
+
+Before a new tuning campaign, verify that the core tuner imports and its
+internal contracts pass:
+
+```powershell
+& $Python .\utils\tune_parameters_Saturnv5_7.py --self-check
+```
+
+Use the files in this order:
+
+1. `sperm_segmentation_saturnv5.7.py`: open the production GUI, load a stack,
+   and draw or load its ROI.
+2. `utils/tuner_gui_Saturnv5_7.py`: graphical tuning launcher. Normally open
+   it with **Open Tuning Workspace**, rather than running it manually.
+3. `utils/tune_parameters_Saturnv5_7.py`: core one-stack tuning engine invoked
+   by the workspace.
+4. `scripts/run_v57_mixed_unet_primary_tuning.py`: balanced multi-specimen
+   orchestrator invoked by the workspace's **Balanced Multi-Sample** tab.
+5. The reviewed combined JSON produced after visual cross-specimen review:
+   load this back into Saturn with **Load Analysis Profile**.
+
+The inputs have different roles:
+
+- The **checkpoint** contains learned U-Net weights and produces probability
+  maps. Saturn parameter tuning reads but never modifies this file.
+- The **base analysis profile** is the starting JSON configuration for
+  preprocessing, segmentation, splitting, and tracking.
+- The **tuner** evaluates alternative pipeline parameters while holding the
+  checkpoint fixed.
+- **U-Net fine-tuning** changes model weights and remains a separate
+  annotation and GPU-training workflow.
+- The **reviewed combined profile** is the final JSON selected for production;
+  it records the checkpoint path but does not contain the checkpoint itself.
+
+### One-Stack Tuning
+
+Choose one operation:
+
+- **Preprocessing profile** compares ROI-aware preprocessing profiles.
+- **Classical 2D segmentation** tunes the classical segmentation path.
+- **U-Net rescue** retains the historical hybrid workflow for comparison.
+- **U-Net-primary 2D segmentation** tunes probability support and instance
+  splitting while retaining technically valid morphology variants.
+- **Classical cross-slice tracking** tunes tracking over consecutive slices.
+- **U-Net-primary global tracking** tunes the production
+  `global_assignment` backend over consecutive slices.
+
+Select representative slices containing nuclei. Tracking operations require a
+consecutive range. U-Net operations require the matching checkpoint. Use
+automatic microscope calibration when the specimen folder contains compatible
+Leica XML metadata; otherwise select the explicit XML.
+
+The slice field accepts:
+
+- `auto`: automatically choose representative planes.
+- `5,12,35,60,87`: evaluate explicitly listed planes for 2D tuning.
+- `33-37`: evaluate a consecutive range, required for tracking tuning.
+
+The **Candidates** value controls how many deterministic parameter candidates
+are evaluated. **Review** controls how many ranked candidates appear in the
+visual-review PDF. **Seed** makes candidate sampling reproducible. **Rebuild
+U-Net probability cache** reruns model inference; leave it clear when the
+images, ROI, checkpoint, and model-input settings have not changed.
+
+The one-stack GUI generates and executes the same commands shown below.
+
+#### Preprocessing-profile comparison
+
+```powershell
+& $Python -u .\utils\tune_parameters_Saturnv5_7.py `
+  --mode profile `
+  --dir $Images `
+  --slices "5,12,35,60,87" `
+  --roi-mask $Roi `
+  --auto-calibration `
+  --base-params $Profile `
+  --outdir ".\parameter_tuning_results_v5_7\manual_profile_test"
+```
+
+This compares ROI-aware normalization and CLAHE profiles. It does not train
+the U-Net.
+
+#### U-Net-primary 2D segmentation and splitting
+
+```powershell
+& $Python -u .\utils\tune_parameters_Saturnv5_7.py `
+  --mode unet_primary `
+  --dir $Images `
+  --slices "5,12,35,60,87" `
+  --roi-mask $Roi `
+  --auto-calibration `
+  --base-params $Profile `
+  --unet-model $Checkpoint `
+  --outdir ".\parameter_tuning_results_v5_7\manual_unet_primary" `
+  --maxiter 24 `
+  --review-candidates 8 `
+  --seed 12345
+```
+
+This tunes probability support, seed thresholds, splitting, and centerline
+reconstruction. It does not alter U-Net weights. Morphology differences are
+retained as annotations and are not optimized toward a wild-type target.
+
+#### U-Net-primary cross-slice tracking
+
+Use the reviewed 2D candidate JSON as the new base profile and use consecutive
+planes:
+
+```powershell
+$Reviewed2D = "C:\path\to\reviewed_shared_unet_primary_params.json"
+
+& $Python -u .\utils\tune_parameters_Saturnv5_7.py `
+  --mode unet_primary_tracking `
+  --dir $Images `
+  --slices "33-37" `
+  --roi-mask $Roi `
+  --auto-calibration `
+  --base-params $Reviewed2D `
+  --unet-model $Checkpoint `
+  --unet-primary-tracking-backend global_assignment `
+  --outdir ".\parameter_tuning_results_v5_7\manual_global_tracking" `
+  --maxiter 24 `
+  --review-candidates 8 `
+  --seed 12345
+```
+
+Tracking tuning changes cross-plane association parameters. It must not be
+used to force all nuclei to span multiple planes or to resemble a reference
+genotype.
+
+### Balanced Multi-Sample Tuning
+
+Use this workflow when one shared parameter set will be applied to a
+comparative study. The current orchestrator requires four independent tuning
+specimens: two specimens from each of two named groups. A mixed tuning dataset
+is a CSV manifest pointing to those specimens; it is not a folder made by
+combining their TIFF files.
+
+Each specimen remains in its own folder and must have:
+
+- one top-level source Z-stack;
+- a specimen-specific `analysis_roi_v5_7.npy`;
+- microscope metadata when automatic calibration is requested;
+- representative Z indices containing both easier and harder nuclei.
+
+The manifest columns are:
+
+| Column | Meaning |
+| :--- | :--- |
+| `specimen_id` | Unique neutral specimen identifier. |
+| `group` | Comparison group; exactly two group names are required. |
+| `image_dir` | Folder containing that specimen's source TIFF planes. |
+| `roi_path` | ROI belonging to that specimen. |
+| `selected_z_indices` | Comma-separated planes used for 2D tuning. |
+| `source_slice_count` | Exact number of source Z planes in the folder. |
+| `role` | Neutral reason the specimen was selected for tuning. |
+
+Do not use group-specific parameter values. The group column is used to verify
+balanced representation, not to push either group toward an expected
+morphology or count.
+
+#### Create the mixed manifest in PowerShell
+
+Edit the four specimen paths, group names, Z indices, and slice counts:
+
+```powershell
+Set-Location "C:\Users\dmishra\Desktop\sperm_project"
+
+$Manifest = ".\parameter_tuning_results_v5_7\my_mixed_tuning\mixed_tuner_manifest.csv"
+New-Item -ItemType Directory -Force (Split-Path $Manifest) | Out-Null
+
+$Rows = @(
+  [pscustomobject]@{
+    specimen_id = "GroupA_01"
+    group = "GroupA"
+    image_dir = "C:\data\GroupA\specimen_01"
+    roi_path = "C:\data\GroupA\specimen_01\analysis_roi_v5_7.npy"
+    selected_z_indices = "5,12,35,60,87"
+    source_slice_count = 88
+    role = "representative_contrast"
+  },
+  [pscustomobject]@{
+    specimen_id = "GroupA_02"
+    group = "GroupA"
+    image_dir = "C:\data\GroupA\specimen_02"
+    roi_path = "C:\data\GroupA\specimen_02\analysis_roi_v5_7.npy"
+    selected_z_indices = "4,11,28,46,70"
+    source_slice_count = 75
+    role = "acquisition_variability"
+  },
+  [pscustomobject]@{
+    specimen_id = "GroupB_01"
+    group = "GroupB"
+    image_dir = "C:\data\GroupB\specimen_01"
+    roi_path = "C:\data\GroupB\specimen_01\analysis_roi_v5_7.npy"
+    selected_z_indices = "5,13,27,41,65"
+    source_slice_count = 70
+    role = "representative_contrast"
+  },
+  [pscustomobject]@{
+    specimen_id = "GroupB_02"
+    group = "GroupB"
+    image_dir = "C:\data\GroupB\specimen_02"
+    roi_path = "C:\data\GroupB\specimen_02\analysis_roi_v5_7.npy"
+    selected_z_indices = "3,10,20,32,44"
+    source_slice_count = 50
+    role = "difficult_tissue_context"
+  }
+)
+
+$Rows | Export-Csv -LiteralPath $Manifest -NoTypeInformation -Encoding UTF8
+Import-Csv -LiteralPath $Manifest | Format-Table specimen_id, group, source_slice_count
+```
+
+Count the source planes in any specimen before entering
+`source_slice_count`:
+
+```powershell
+$Specimen = "C:\data\GroupA\specimen_01"
+
+(Get-ChildItem -LiteralPath $Specimen -File |
+  Where-Object {
+    $_.Extension -match '^\.(tif|tiff)$' -and
+    $_.BaseName -match '(?i)_z\d+.*_ch00'
+  }).Count
+```
+
+The mixed orchestrator currently validates channel-00 TIFF names containing
+both `_z` and `_ch00`. Organize or rename nonconforming source files with the
+Study Manager before constructing this tuner manifest.
+
+#### Validate the mixed dataset
+
+```powershell
+$Python = ".\.venv\Scripts\python.exe"
+$Checkpoint = "C:\path\to\epoch_003.pt"
+$BaseProfile = "C:\path\to\reviewed_base_profile.json"
+$MixedOutput = ".\parameter_tuning_results_v5_7\my_mixed_tuning_runs"
+
+& $Python -u .\scripts\run_v57_mixed_unet_primary_tuning.py `
+  --manifest $Manifest `
+  --checkpoint $Checkpoint `
+  --base-preset $BaseProfile `
+  --output-root $MixedOutput `
+  --validate-only
+```
+
+Validation must confirm all four specimen folders, ROIs, group balance, and
+slice counts before tuning.
+
+#### Run balanced segmentation and tracking tuning
+
+```powershell
+& $Python -u .\scripts\run_v57_mixed_unet_primary_tuning.py `
+  --manifest $Manifest `
+  --checkpoint $Checkpoint `
+  --base-preset $BaseProfile `
+  --output-root $MixedOutput `
+  --segmentation-candidates 24 `
+  --tracking-candidates 24 `
+  --tracking-slice-count 5 `
+  --seed 12345
+```
+
+The same operation is available in the workspace's **Balanced Multi-Sample**
+tab. First select **Validate inputs only**. After validation succeeds, clear
+that option and run the full workflow. The orchestrator:
+
+1. tunes U-Net-primary 2D settings independently on each balanced stratum;
+2. aggregates candidates shared across specimens;
+3. tunes production global tracking using the shared 2D settings;
+4. aggregates the tracking results;
+5. writes a completion record and reviewed-candidate PDFs.
+
+Each run receives a new timestamped output directory containing:
+
+```text
+settings/
+|-- analysis_profile_used.json
+|-- epoch_003.pt
+|-- mixed_tuner_manifest.csv
+`-- settings_manifest.json
+01_unet_primary_segmentation/
+02_global_tracking/
+completed_run.json
+run_metadata.json
+```
+
+Review the candidate PDFs for all four specimens. The numerically ranked
+output is only the first candidate for visual inspection, not automatic
+biological truth. After selecting one shared candidate, load its combined JSON
+into Saturn with **Load Analysis Profile** and confirm the profile and
+checkpoint names before running a smoke test or study.
 
 ## 4. Draw, Save, and Reuse an ROI
 
@@ -243,6 +601,17 @@ completion marker remain consistent; no new specimen is then started. Select
 **Run / Resume Study** later to skip completed specimens and continue with the
 remaining rows when the parameter fingerprint is unchanged.
 
+After a completed study, the manager automatically generates the organized
+between-sample analysis package. Use:
+
+- **Refresh Analysis Package** to regenerate both reports from the current
+  study aggregates. This refreshes generated PDF, PowerPoint, Excel, figure,
+  and derived-data files, so first preserve any manually edited copies.
+- **Open Biological Results** to open the primary, editable morphology-results
+  folder.
+- **Open Quality Control** to open acquisition, normalization, tracking,
+  warning-category, and audit diagnostics.
+
 ### Supported Source-Image Names
 
 The study manager discovers top-level TIFF planes using conservative filename
@@ -292,9 +661,20 @@ The manager runs specimens independently. A failed specimen does not stop the
 remaining samples, and completed specimens can resume without rerunning when
 the same parameter fingerprint is used.
 
+Every run also writes `study_exclusion_ledger.csv`. This records specimen-like
+folders omitted during discovery, invalid manifest rows, and specimens
+explicitly excluded by the user. Each row includes the source path, proposed
+sample ID and group, exclusion stage, machine-readable reason, and whether ROI
+or microscope metadata was present. Excluded specimens do not contribute to
+group summaries or statistical comparisons. Keep this ledger with the study
+results when reporting the final biological sample size.
+
 ### Study Outputs
 
 - `study_manifest.csv`: exact specimen, group, source, ROI, and calibration.
+- `study_exclusion_ledger.csv`: source and manifest exclusions with auditable
+  reason codes, including specimen folders that contain metadata but no source
+  images.
 - `study_run_state.json`: per-specimen state and resume information.
 - `runtime_parameters.json`: shared v5.7 parameters used for the study.
 - `specimen_summary.csv`: one raw and normalized summary row per specimen.
@@ -314,12 +694,24 @@ the same parameter fingerprint is used.
   file is for descriptive summaries and audit; its nuclei are nested within
   specimens and must not be treated as independent biological replicates.
 - `samples/<sample_id>/attempt_NNN/`: complete output for one specimen.
+- `between_sample_analysis/01_biological_results/`: the primary biological
+  PDF, editable PowerPoint and Excel workbook, plotted figures, and the exact
+  specimen-level source tables used for morphology comparisons.
+- `between_sample_analysis/02_quality_control/`: a separate QC PDF,
+  PowerPoint, workbook, derived QC tables, and copied provenance summaries.
+  The large `study_track_records.csv` remains in the study root to avoid an
+  unnecessary duplicate.
 
 The specimen morphology fields are calculated from the technical-valid track
 population used for `estimated_unique_nuclei`. A technical-failure outlier
 therefore cannot alter the reported specimen median length, tortuosity,
 thickness, volume, or Z span. The two-group comparison is intentionally marked
 exploratory, especially when either group has fewer than five specimens.
+
+The legacy `specimen_group_comparison.pdf` remains a pipeline aggregate for
+compatibility and is copied into the QC source-files folder for provenance.
+Its useful specimen-level plot and explanations are incorporated into the
+new biological package; it is not appended as duplicate pages.
 
 ## 11. Count Normalization
 
@@ -349,6 +741,12 @@ A typical output directory contains:
 
 ```text
 batch_output/
+|-- settings/
+|   |-- analysis_profile_used.json
+|   |-- epoch_003.pt
+|   |-- runtime_parameters.json
+|   |-- calibration_used.json
+|   `-- settings_manifest.json
 |-- overlays/
 |-- analysis_overlays/
 |-- quality_overlays/
@@ -369,6 +767,14 @@ batch_output/
 
 Exact optional files depend on configuration and whether U-Net inference,
 quality overlays, and presentation export are enabled.
+
+Every new single-slice, batch, command-line, and Study Manager output archives
+its reproducibility inputs under `settings/`. The checkpoint filename reflects
+the model actually selected and may therefore differ from `epoch_003.pt`.
+`settings_manifest.json` records each original path, copied path, byte size,
+and SHA-256 checksum. Study runs archive the shared settings at the study root
+and again inside each specimen attempt, where calibration and specimen-specific
+runtime paths may differ. Tuner output folders use the same settings bundle.
 
 Use `biologist_results/sample_summary.csv` for sample comparisons and
 `biologist_results/nuclei_for_analysis.csv` for nucleus-level analysis.

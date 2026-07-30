@@ -29,6 +29,38 @@ def test_v57_import_adds_project_root_for_unet_bridge():
     assert str(ROOT) in saturn.sys.path
 
 
+def test_study_analysis_generator_returns_organized_package_paths(
+    tmp_path,
+    monkeypatch,
+):
+    saturn = load_saturn_v57()
+    study_output = tmp_path / "study"
+    study_output.mkdir()
+    (study_output / "specimen_summary.csv").write_text("sample_id\n", encoding="utf-8")
+    (study_output / "study_track_records.csv").write_text(
+        "track_id\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(command, **kwargs):
+        assert "--study-output" in command
+        package = study_output / "between_sample_analysis"
+        (package / "01_biological_results").mkdir(parents=True)
+        (package / "02_quality_control").mkdir(parents=True)
+        return type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "", "stderr": ""},
+        )()
+
+    monkeypatch.setattr(saturn.subprocess, "run", fake_run)
+    paths = saturn.generate_study_between_sample_analysis(study_output)
+
+    assert paths["package_root"] == study_output / "between_sample_analysis"
+    assert paths["biological_dir"].is_dir()
+    assert paths["qc_dir"].is_dir()
+
+
 def test_quality_overlay_counts_only_report_genuinely_unmapped_labels():
     saturn = load_saturn_v57()
     labels = np.zeros((8, 8), dtype=np.int32)
@@ -164,6 +196,28 @@ def test_tracking_rejects_join_that_exceeds_physical_length_guard():
 
     assert not accepted
     assert reason.startswith("technical_joined_length=")
+
+
+def test_unet_primary_comparative_join_guard_retains_15_to_20um_tracks():
+    saturn = load_saturn_v57()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "SEGMENTATION_ENGINE": "unet_primary",
+            "ANALYSIS_MODE": "comparative",
+            "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
+            "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 20.0,
+        }
+    )
+
+    assert saturn._tracking_max_joined_length_um(cfg) == pytest.approx(
+        20.0
+    )
+
+    cfg["SEGMENTATION_ENGINE"] = "classical_saturn"
+    assert saturn._tracking_max_joined_length_um(cfg) == pytest.approx(
+        15.0
+    )
 
 
 def test_unet_rescue_keeps_biologically_short_high_confidence_nucleus():
@@ -660,7 +714,7 @@ def test_post_detection_qc_medians_exclude_technical_failures(tmp_path):
     assert "Median 3D length um: 12.000" not in report
 
 
-def test_tracking_audit_records_rejections_without_claiming_stops():
+def test_tracking_audit_records_rejections_with_conservative_end_context():
     saturn = load_saturn_v57()
     detections = pd.DataFrame({"track_id": [1, 1, 2]})
     tracks = pd.DataFrame({"track_id": [1, 2]})
@@ -672,8 +726,48 @@ def test_tracking_audit_records_rejections_without_claiming_stops():
 
     assert tracks.loc[tracks.track_id == 1, "rejected_extension_count"].item() == 2
     assert tracks.loc[tracks.track_id == 1, "has_rejected_extension"].item()
-    assert tracks["track_stop_reason"].eq("").all()
+    assert (
+        tracks.loc[tracks.track_id == 1, "track_stop_reason"].item()
+        == "ended_before_boundary_with_rejected_nearby_candidates"
+    )
+    assert (
+        tracks.loc[tracks.track_id == 2, "track_stop_reason"].item()
+        == "ended_before_boundary_no_accepted_successor"
+    )
     assert detections.loc[detections.track_id == 1, "track_rejected_extension_count"].eq(2).all()
+
+
+def test_reference_group_supports_arbitrary_control_labels():
+    saturn = load_saturn_v57()
+
+    assert saturn._study_reference_group(["Mutant-A", "Control-A"]) == "Control-A"
+    assert (
+        saturn._study_reference_group(["Treatment", "Reference strain"])
+        == "Reference strain"
+    )
+    assert saturn._study_reference_group(["Mutant-B", "Ctrl"]) == "Ctrl"
+
+
+def test_unet_primary_accounting_is_not_reported_as_classical():
+    saturn = load_saturn_v57()
+    detections = pd.DataFrame(
+        {
+            "detection_source": [
+                "unet_primary",
+                "unet_primary",
+                "saturn_classical",
+            ],
+            "unet_mean_probability": [0.8, 0.6, np.nan],
+        }
+    )
+
+    accounting = saturn._unet_detection_accounting(detections)
+
+    assert accounting["unet_primary_2d_count"] == 2
+    assert accounting["unet_supported_2d_count"] == 2
+    assert accounting["unet_rescued_2d_count"] == 0
+    assert accounting["saturn_classical_2d_count"] == 1
+    assert accounting["median_probability_of_unet_rescues"] == pytest.approx(0.7)
 
 
 def test_hybrid_tracking_preserves_rejected_extension_history():
@@ -702,7 +796,13 @@ def test_hybrid_tracking_preserves_rejected_extension_history():
 
     assert "rejected_extension_count" in tracks.columns
     assert tracks["rejected_extension_count"].sum() >= 1
-    assert tracks["track_stop_reason"].eq("").all()
+    assert set(tracks["track_stop_reason"]).issubset(
+        {
+            "reached_acquisition_upper_boundary",
+            "ended_before_boundary_with_rejected_nearby_candidates",
+            "ended_before_boundary_no_accepted_successor",
+        }
+    )
     assert "track_rejected_extension_count" in tracked.columns
 
 
@@ -735,6 +835,38 @@ def test_biologist_results_uses_only_technical_valid_tracks(tmp_path):
     assert len(nuclei) == 2
     assert set(nuclei["estimated_nucleus_id"]) == {1, 2}
     assert "median_2d_width_um" in nuclei.columns
+
+
+def test_comparative_morphology_warnings_remain_technical_valid():
+    saturn = load_saturn_v57()
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2, 3],
+            "centroid_x": [10.0, 20.0, 30.0],
+            "centroid_y": [10.0, 20.0, 30.0],
+            "total_3d_length_um": [3.0, 18.0, 10.0],
+            "tortuosity_3d": [1.0, 1.0, 2.0],
+            "thickness_um": [1.0, 2.0, 3.0],
+            "n_slices": [1, 3, 2],
+        }
+    )
+    cfg = saturn.CONFIG.copy()
+    cfg["ANALYSIS_MODE"] = "comparative"
+
+    audited = saturn.flag_quality_tracks(tracks, cfg)
+
+    assert audited["technical_valid"].tolist() == [True, True, True]
+    assert audited["is_biological_candidate"].tolist() == [
+        True,
+        True,
+        True,
+    ]
+    assert audited["morphology_warning"].tolist() == [True, True, True]
+    assert audited["reference_morphology_pass"].tolist() == [
+        False,
+        False,
+        False,
+    ]
 
 
 def test_track_exports_do_not_duplicate_analysis_population(tmp_path):
@@ -928,6 +1060,44 @@ def test_discovery_normalizes_kj_and_w1118_group_folder_names(tmp_path):
     rows = saturn.discover_multisample_study(tmp_path)
 
     assert {row["group"] for row in rows} == {"KJ", "WT"}
+
+
+def test_exclusion_ledger_records_specimen_folder_without_source_images(tmp_path):
+    saturn = load_saturn_v57()
+    make_sample(tmp_path, "w1118 sv feb", "WT-1")
+    missing = tmp_path / "w1118 sv feb" / "WT-15"
+    (missing / "MetaData").mkdir(parents=True)
+
+    rows = saturn.discover_multisample_study(tmp_path)
+    ledger_path = tmp_path / "output" / "study_exclusion_ledger.csv"
+    saturn.save_study_exclusion_ledger(
+        rows,
+        ledger_path,
+        study_root=tmp_path,
+    )
+
+    ledger = pd.read_csv(ledger_path)
+    assert len(ledger) == 1
+    assert ledger.loc[0, "candidate_id"] == "WT-15"
+    assert ledger.loc[0, "group"] == "WT"
+    assert ledger.loc[0, "reason_code"] == "no_source_images"
+    assert bool(ledger.loc[0, "metadata_found"]) is True
+
+
+def test_exclusion_ledger_records_user_excluded_manifest_row(tmp_path):
+    saturn = load_saturn_v57()
+    make_sample(tmp_path, "WT", "WT-1")
+    rows = saturn.discover_multisample_study(tmp_path)
+    rows[0]["include"] = False
+    validated, errors = saturn.validate_multisample_manifest(rows)
+    assert errors == []
+
+    ledger_path = tmp_path / "study_exclusion_ledger.csv"
+    saturn.save_study_exclusion_ledger(validated, ledger_path)
+
+    ledger = pd.read_csv(ledger_path)
+    assert ledger.loc[0, "reason_code"] == "user_excluded"
+    assert ledger.loc[0, "candidate_id"] == validated[0]["sample_id"]
 
 
 def test_discovery_accepts_generic_z_names_and_only_channel_zero(tmp_path):
@@ -1127,6 +1297,86 @@ def test_leica_metadata_uses_complete_nested_settings_and_n_minus_one_z_spacing(
     assert "NA=1.3" in result["acquisition_class"]
 
 
+def test_explicit_leica_xml_voxel_calibration(tmp_path):
+    saturn = load_saturn_v57()
+    metadata_path = tmp_path / "Project001_Series015.xml"
+    metadata_path.write_text(
+        """<Root>
+        <DimensionDescription DimID="1" NumberOfElements="1024"
+            Length="387.5" Voxel="0.37841796875" Unit="um" />
+        <DimensionDescription DimID="2" NumberOfElements="1024"
+            Length="387.5" Voxel="0.37841796875" Unit="um" />
+        <DimensionDescription DimID="3" NumberOfElements="88"
+            Length="30.11802" Voxel="0.3461841379" Unit="um" />
+        </Root>""",
+        encoding="utf-8",
+    )
+
+    calibration = saturn.load_leica_calibration_xml(metadata_path)
+
+    assert calibration["UM_PER_PX_XY"] == pytest.approx(0.37841796875)
+    assert calibration["UM_PER_SLICE_Z"] == pytest.approx(0.3461841379)
+    assert calibration["size_z"] == 88
+
+
+def test_explicit_leica_xml_rejects_xy_scale_mismatch(tmp_path):
+    saturn = load_saturn_v57()
+    metadata_path = tmp_path / "bad_xy.xml"
+    metadata_path.write_text(
+        """<Root>
+        <DimensionDescription DimID="X" NumberOfElements="10"
+            Voxel="0.38" Unit="um" />
+        <DimensionDescription DimID="Y" NumberOfElements="10"
+            Voxel="0.50" Unit="um" />
+        <DimensionDescription DimID="Z" NumberOfElements="3"
+            Voxel="1.04" Unit="um" />
+        </Root>""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="differ by more than 2%"):
+        saturn.load_leica_calibration_xml(metadata_path)
+
+
+def test_stack_calibration_prefers_complete_leica_xml(tmp_path):
+    saturn = load_saturn_v57()
+    metadata_dir = tmp_path / "MetaData"
+    metadata_dir.mkdir()
+    metadata_path = metadata_dir / "Project001_Series015.xml"
+    metadata_path.write_text(
+        """<Root>
+        <DimensionDescription DimID="1" NumberOfElements="10"
+            Length="3.8" Voxel="0.38" Unit="um" />
+        <DimensionDescription DimID="2" NumberOfElements="10"
+            Length="3.8" Voxel="0.38" Unit="um" />
+        <DimensionDescription DimID="3" NumberOfElements="3"
+            Length="2.08" Voxel="1.04" Unit="um" />
+        </Root>""",
+        encoding="utf-8",
+    )
+    files = [
+        tmp_path / f"Project001_Series015_z{z:02d}_ch00.tif"
+        for z in range(3)
+    ]
+    cfg = saturn.CONFIG.copy()
+
+    provenance = saturn.resolve_stack_microscope_calibration(
+        cfg,
+        files,
+        input_dir=tmp_path,
+        require_metadata=True,
+    )
+
+    assert cfg["UM_PER_PX_XY"] == pytest.approx(0.38)
+    assert cfg["UM_PER_SLICE_Z"] == pytest.approx(1.04)
+    assert cfg["CALIBRATION_SOURCE"] == "leica_metadata_xml"
+    assert cfg["CALIBRATION_METADATA_FILE"] == str(metadata_path.resolve())
+    assert (
+        provenance["calibration_method"]
+        == "explicit_voxel_or_dimension_calibration"
+    )
+
+
 def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     saturn = load_saturn_v57()
     make_sample(tmp_path / "input", "WT", "WT-1")
@@ -1218,6 +1468,9 @@ def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     assert (output_root / "specimen_group_comparisons.csv").exists()
     assert (output_root / "specimen_group_comparison_qc.json").exists()
     assert (output_root / "specimen_group_comparison.pdf").exists()
+    from pypdf import PdfReader
+
+    assert len(PdfReader(output_root / "specimen_group_comparison.pdf").pages) == 3
     comparisons = pd.read_csv(output_root / "specimen_group_comparisons.csv")
     assert set(comparisons["analysis_unit"]) == {"biological specimen"}
     assert set(comparisons["inference_status"]) == {"insufficient_specimens"}

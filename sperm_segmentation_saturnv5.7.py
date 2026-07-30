@@ -69,16 +69,12 @@ elongated, condensed sperm nuclei.  This pipeline automates the process by:
 5. Exporting results as CSV, a multi-sheet Excel workbook, a multi-page PDF
    report, and a native PowerPoint (.pptx) dashboard with editable charts.
 
-Saturn-specific calibration
-----------------------------
-Physical scale factors are derived from Leica confocal metadata for the
-Saturn dataset:
-
-- ``UM_PER_PX_XY  = 0.7568``  um/pixel  (lateral resolution)
-- ``UM_PER_SLICE_Z = 1.0404``  um/slice  (z-step size)
-
-These values are set as defaults in ``CONFIG`` and can be overridden via
-the Parameter Editor GUI or by loading a JSON settings file.
+Microscope calibration
+----------------------
+For Leica-named stacks, v5.7 reads lateral pixel size and Z spacing from the
+matching ``MetaData/Project..._Series....xml`` file before segmentation,
+measurement, or tracking. The numeric values in ``CONFIG`` are legacy/manual
+fallback values only. Every run records the resolved values and their source.
 
 v5.2 measurement notes
 ----------------------
@@ -108,8 +104,8 @@ Pipeline architecture
 
 Key configuration parameters (``CONFIG`` dict)
 -----------------------------------------------
-``UM_PER_PX_XY``       Physical pixel size in um (Leica metadata: 0.7568).
-``UM_PER_SLICE_Z``     Z-step size in um (Leica metadata: 1.0404).
+``UM_PER_PX_XY``       Resolved physical pixel size in um.
+``UM_PER_SLICE_Z``     Resolved Z-step size in um.
 ``FRANGI_SCALE_RANGE`` Tubeness filter scales (px); set to match sperm nucleus width.
 ``MIN_SKEL_LEN_PX``    Minimum skeleton length accepted (removes debris/noise).
 ``MAX_WIDTH_PX``       Maximum skeleton width accepted (rejects merged clusters).
@@ -145,6 +141,7 @@ Dushyant Mishra  |  Findlay Lab  |  Saturn Dataset Branch
 import os, sys, glob, re, time, warnings, heapq, argparse, math, pathlib as pl
 import time as _t
 import json, webbrowser, threading, subprocess, shutil
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict
 try:
     import requests
@@ -261,6 +258,10 @@ CONFIG = {
     "UNET_INSTANCE_SEED_THRESHOLD": 0.75,
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": 0.001,
+    "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": True,
+    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 18.0,
+    "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": 11.0,
+    "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": 2.0,
     "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": False,
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": 2,
@@ -281,9 +282,13 @@ CONFIG = {
     "FINAL_ACCEPTED_LABEL": "Final accepted",
     "EXCLUDED_FROM_MEASUREMENT_LABEL": "Excluded from measurement",
 
-    # ------ calibration ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    # Legacy/manual fallback only; Leica stacks resolve these from XML.
     "UM_PER_PX_XY":   0.756836,
     "UM_PER_SLICE_Z": 1.040460,
+    "AUTO_LEICA_CALIBRATION": True,
+    "REQUIRE_LEICA_METADATA": False,
+    "CALIBRATION_SOURCE": "fallback_config",
+    "CALIBRATION_METADATA_FILE": "",
 
     # ------ image enhancement ---------------------------------------------------------------------------------------------------------------------------------------------------------------
     "CLAHE_CLIP":   0.025,
@@ -342,7 +347,7 @@ CONFIG = {
 
     # ------ tracking across z ---------------------------------------------------------------------------------------------------------------------------------------------------------------
     "DO_TRACKING":          True,
-    "TRACKING_BACKEND":     "hybrid_repair",  # legacy, global_assignment, or hybrid_repair
+    "TRACKING_BACKEND":     "hybrid_repair",  # legacy, global_assignment, hybrid_repair, or unet_primary_assignment
     "TRACK_MAX_DIST_UM":    6.8711,
     "TRACK_MAX_GAP_SLICES": 1,
     "TRACK_BBOX_PADDING_PX": 2,
@@ -402,6 +407,8 @@ CONFIG = {
     "SAVE_LABEL_TIFS":     True,
     "SAVE_OVERLAYS":       True,
     "SAVE_DETAIL_FIGURE":  True,
+    "SAVE_TECHNICAL_REVIEW_OVERLAYS": False,
+    "REPORT_MAX_SLICE_PAGES": 6,
     "SHOW_PREVIEW_WINDOW": True,
     "SHOW_DEBUG_PREVIEW":  True,
 }
@@ -447,6 +454,10 @@ _REQUIRED = {
     "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": (int, float),
     "UNET_INSTANCE_SPLIT_ENABLE": bool, "UNET_INSTANCE_SEED_THRESHOLD": (int, float),
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": int, "UNET_INSTANCE_WATERSHED_COMPACTNESS": (int, float),
+    "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": bool,
+    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": (int, float),
+    "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": (int, float),
+    "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": (int, float),
     "UNET_PRIMARY_MIN_COMPONENT_PX": int,
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": bool,
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": int,
@@ -462,6 +473,8 @@ _REQUIRED = {
     "UNET_COMPLETED_BY_EXTENSION_LABEL": str, "UNET_MERGED_CANDIDATE_LABEL": str,
     "UNET_QC_BORDERLINE_LABEL": str,
     "UM_PER_PX_XY": float, "UM_PER_SLICE_Z": float,
+    "AUTO_LEICA_CALIBRATION": bool, "REQUIRE_LEICA_METADATA": bool,
+    "CALIBRATION_SOURCE": str, "CALIBRATION_METADATA_FILE": str,
     "CLAHE_CLIP": float, "CLAHE_KERNEL": int, "BG_SIGMA": (int, float),
     "BG_SIGMA_UM": (int, float), "DENOISE_SIGMA_UM": (int, float),
     "RIDGE_SIGMAS": list, "RIDGE_SIGMAS_UM": list,
@@ -515,6 +528,8 @@ _REQUIRED = {
     "SAVE_DEBUG_IMAGES": bool, "SAVE_MASK_TIFS": bool,
     "SAVE_LABEL_TIFS": bool, "SAVE_OVERLAYS": bool,
     "SAVE_DETAIL_FIGURE": bool, "SHOW_PREVIEW_WINDOW": bool,
+    "SAVE_TECHNICAL_REVIEW_OVERLAYS": bool,
+    "REPORT_MAX_SLICE_PAGES": int,
     "SHOW_DEBUG_PREVIEW": bool,
 }
 
@@ -586,10 +601,29 @@ def validate_config(cfg):
         )
     if cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 0) < 1:
         errors.append("  UNET_PRIMARY_MIN_COMPONENT_PX must be at least 1")
+    if engine == "unet_primary" and not (
+        cfg.get("UNET_SEED_THRESHOLD", 0)
+        <= cfg.get("UNET_INSTANCE_SEED_THRESHOLD", -1)
+        <= 1
+    ):
+        errors.append(
+            "  UNET_INSTANCE_SEED_THRESHOLD must be at least "
+            "UNET_SEED_THRESHOLD and within [0, 1]"
+        )
+    split_min = cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM", 0)
+    split_target = cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM", 0)
+    split_trigger = cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM", 0)
+    if not (0 < split_min <= split_target < split_trigger):
+        errors.append(
+            "  U-Net overlong split thresholds must satisfy "
+            "0 < minimum child <= target < trigger"
+        )
     if cfg.get("UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX", -1) < 0:
         errors.append(
             "  UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX must be nonnegative"
         )
+    if cfg.get("REPORT_MAX_SLICE_PAGES", 0) < 0:
+        errors.append("  REPORT_MAX_SLICE_PAGES must be nonnegative")
     if cfg.get("CLAHE_MODE") not in ("auto_stack", "auto", "no_clahe", "high_contrast", "standard", "low_signal"):
         errors.append("  CLAHE_MODE must be auto_stack/auto/no_clahe/high_contrast/standard/low_signal")
     if cfg.get("PREPROCESS_MODE") not in ("roi_adaptive", "full_frame"):
@@ -622,6 +656,99 @@ def validate_config(cfg):
                       "    REJECT_BRANCHES=False -> MAX_BRANCH_NODES=9999")
     if errors:
         raise ValueError("CONFIG errors:\n" + "\n".join(errors))
+
+
+_UNET_SEGMENTATION_ENGINES = {"unet_assisted", "hybrid", "unet_primary"}
+
+
+def _profile_parameter_mapping(payload, config_keys):
+    """Return the nested mapping containing the most recognized CONFIG keys."""
+    if not isinstance(payload, dict):
+        raise ValueError("Analysis profile JSON must contain a JSON object.")
+    candidates = [payload]
+    for key in (
+        "parameters",
+        "params",
+        "config",
+        "best_parameters",
+        "best_params",
+        "selected_parameters",
+    ):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    scored = [
+        (sum(key in config_keys for key in candidate), candidate)
+        for candidate in candidates
+    ]
+    score, selected = max(scored, key=lambda item: item[0])
+    if score == 0:
+        raise ValueError("The JSON contains no recognized Saturn CONFIG keys.")
+    return selected
+
+
+def load_analysis_profile(profile_path, base_cfg=None, checkpoint_override=None):
+    """Load a tuned JSON and bind its U-Net checkpoint into one runtime config."""
+    profile_path = pl.Path(profile_path).expanduser().resolve()
+    with profile_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    cfg = CONFIG.copy() if base_cfg is None else dict(base_cfg)
+    selected = _profile_parameter_mapping(payload, set(cfg))
+    applied = {key: value for key, value in selected.items() if key in cfg}
+    cfg.update(applied)
+
+    checkpoint_value = (
+        checkpoint_override
+        if checkpoint_override is not None
+        else cfg.get("UNET_MODEL_PATH", "")
+    )
+    checkpoint_text = os.path.expandvars(
+        os.path.expanduser(str(checkpoint_value).strip())
+    )
+    if checkpoint_text:
+        checkpoint = pl.Path(checkpoint_text)
+        if not checkpoint.is_absolute():
+            checkpoint = profile_path.parent / checkpoint
+        cfg["UNET_MODEL_PATH"] = str(checkpoint.resolve())
+    cfg["_ACTIVE_PROFILE_PATH"] = str(profile_path)
+    cfg["_ACTIVE_PROFILE_NAME"] = profile_path.name
+    cfg["_ACTIVE_PROFILE_APPLIED_KEY_COUNT"] = len(applied)
+    return cfg, applied
+
+
+def validate_analysis_runtime_config(cfg):
+    """Validate ordinary parameters plus U-Net checkpoint availability."""
+    validate_config(cfg)
+    engine = str(cfg.get("SEGMENTATION_ENGINE", "")).strip().lower()
+    if engine not in _UNET_SEGMENTATION_ENGINES:
+        return {
+            "segmentation_engine": engine,
+            "unet_required": False,
+            "checkpoint_path": "",
+        }
+    cache = cfg.get("_UNET_PROBABILITY_CACHE")
+    checkpoint = str(cfg.get("UNET_MODEL_PATH", "")).strip()
+    if cache is None and not checkpoint:
+        raise ValueError(
+            f"{engine} requires a trained U-Net checkpoint. "
+            "Load an analysis profile and select its .pt or .pth checkpoint."
+        )
+    if cache is None and not os.path.isfile(checkpoint):
+        raise FileNotFoundError(f"U-Net checkpoint not found: {checkpoint}")
+    return {
+        "segmentation_engine": engine,
+        "unet_required": True,
+        "checkpoint_path": os.path.abspath(checkpoint) if checkpoint else "",
+    }
+
+
+def analysis_profile_summary(cfg):
+    """Return a concise, user-facing description of the active runtime inputs."""
+    profile_name = str(cfg.get("_ACTIVE_PROFILE_NAME", "")).strip() or "manual/default"
+    engine = str(cfg.get("SEGMENTATION_ENGINE", "classical")).strip() or "classical"
+    checkpoint = str(cfg.get("UNET_MODEL_PATH", "")).strip()
+    model_name = os.path.basename(checkpoint) if checkpoint else "none"
+    return f"Profile: {profile_name} | Engine: {engine} | Model: {model_name}"
 
 
 # =============================================================================
@@ -2346,6 +2473,210 @@ def _split_unet_probability_instances(
     return output, rejected, audit, parent_by_instance
 
 
+def _longest_centerline_for_mask(mask):
+    """Return the ordered longest skeleton path and its geodesic pixel length."""
+    mask = np.asarray(mask, dtype=bool)
+    skeleton = skeletonize(mask)
+    candidates = []
+    for prop in measure.regionprops(measure.label(skeleton)):
+        path = extract_geodesic_centerline_coords(
+            prop.coords, mask.shape[1]
+        )
+        topology = measure_topology(
+            path, mask.shape[1], allow_loops=True
+        )
+        length_px = float(topology["geo_len"]) if topology else 0.0
+        candidates.append((length_px, path))
+    if not candidates:
+        return np.empty((0, 2), dtype=np.int32), 0.0
+    length_px, path = max(candidates, key=lambda item: item[0])
+    return np.asarray(path, dtype=np.int32), float(length_px)
+
+
+def _path_cumulative_distance(path):
+    """Return cumulative Euclidean pixel distance along an ordered path."""
+    path = np.asarray(path, dtype=np.float64)
+    if path.shape[0] == 0:
+        return np.empty(0, dtype=np.float64)
+    if path.shape[0] == 1:
+        return np.zeros(1, dtype=np.float64)
+    steps = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    return np.concatenate(([0.0], np.cumsum(steps)))
+
+
+def _overlong_watershed_markers(
+    probability,
+    component,
+    path,
+    segment_count,
+):
+    """
+    Place one probability-supported marker in each longitudinal path segment.
+
+    Markers are selected near evenly spaced centerline positions, then moved to
+    the highest-probability centerline pixel inside that segment. This keeps
+    watershed cuts tied to the U-Net evidence while avoiding distance-transform
+    over-seeding along one naturally elongated nucleus.
+    """
+    probability = np.asarray(probability, dtype=np.float32)
+    component = np.asarray(component, dtype=bool)
+    path = np.asarray(path, dtype=np.int32)
+    cumulative = _path_cumulative_distance(path)
+    markers = np.zeros(component.shape, dtype=np.int32)
+    if cumulative.size == 0 or float(cumulative[-1]) <= 0.0:
+        return markers
+
+    edges = np.linspace(0.0, float(cumulative[-1]), int(segment_count) + 1)
+    used = set()
+    marker_id = 0
+    for index in range(int(segment_count)):
+        if index == int(segment_count) - 1:
+            in_segment = (
+                (cumulative >= edges[index])
+                & (cumulative <= edges[index + 1])
+            )
+        else:
+            in_segment = (
+                (cumulative >= edges[index])
+                & (cumulative < edges[index + 1])
+            )
+        candidates = np.flatnonzero(in_segment)
+        if candidates.size == 0:
+            continue
+        target = 0.5 * (edges[index] + edges[index + 1])
+        candidate_probs = probability[
+            path[candidates, 0], path[candidates, 1]
+        ]
+        best_probability = float(np.max(candidate_probs))
+        best = candidates[np.flatnonzero(candidate_probs == best_probability)]
+        if best.size > 1:
+            best_index = int(
+                np.argmin(np.abs(cumulative[best] - target))
+            )
+            selected = int(best[best_index])
+        else:
+            selected = int(best[0])
+        row, col = (int(v) for v in path[selected])
+        if (row, col) in used or not component[row, col]:
+            continue
+        used.add((row, col))
+        marker_id += 1
+        markers[row, col] = marker_id
+    return markers
+
+
+def _refine_overlong_unet_instances(
+    probability,
+    instance_labels,
+    parent_by_instance,
+    cfg,
+):
+    """
+    Re-watershed unresolved physically impossible U-Net components.
+
+    Components at or below the trigger are preserved exactly. Longer
+    components are partitioned along their measured mask centerline, and a
+    proposed split is accepted only when every child retains a measurable
+    centerline above the technical minimum. No pixels are added or removed.
+    """
+    instance_labels = np.asarray(instance_labels, dtype=np.int32)
+    if not bool(cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_ENABLE", True)):
+        return instance_labels.copy(), dict(parent_by_instance), []
+
+    um_per_px = max(float(cfg.get("UM_PER_PX_XY", 1.0)), 1e-9)
+    trigger_um = float(
+        cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM", 18.0)
+    )
+    target_um = float(
+        cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM", 11.0)
+    )
+    min_child_um = float(
+        cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM", 2.0)
+    )
+    if not (0.0 < min_child_um <= target_um < trigger_um):
+        raise ValueError(
+            "U-Net overlong split thresholds must satisfy "
+            "0 < minimum child <= target < trigger"
+        )
+
+    output = np.zeros_like(instance_labels)
+    new_parent_map = {}
+    audit = []
+    next_label = 1
+    compactness = max(
+        0.0, float(cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0))
+    )
+
+    for prop in measure.regionprops(instance_labels):
+        old_label = int(prop.label)
+        component = instance_labels == old_label
+        # A straight-object lower bound avoids skeletonizing hundreds of
+        # clearly sub-threshold instances during every refinement pass.
+        if float(prop.axis_major_length) * um_per_px <= trigger_um * 0.85:
+            output[component] = next_label
+            new_parent_map[next_label] = int(
+                parent_by_instance.get(old_label, 0)
+            )
+            next_label += 1
+            continue
+        path, length_px = _longest_centerline_for_mask(component)
+        length_um = float(length_px * um_per_px)
+        children = [component]
+        disposition = "unchanged"
+
+        if length_um > trigger_um and path.shape[0] >= 2:
+            segment_count = max(2, int(math.ceil(length_um / target_um)))
+            markers = _overlong_watershed_markers(
+                probability, component, path, segment_count
+            )
+            if int(markers.max()) >= 2:
+                proposed = skseg.watershed(
+                    -np.asarray(probability, dtype=np.float32),
+                    markers=markers,
+                    mask=component,
+                    compactness=compactness,
+                ).astype(np.int32)
+                proposed_children = [
+                    proposed == child_id
+                    for child_id in range(1, int(proposed.max()) + 1)
+                ]
+                child_lengths_um = []
+                for child in proposed_children:
+                    _, child_length_px = _longest_centerline_for_mask(child)
+                    child_lengths_um.append(child_length_px * um_per_px)
+                if (
+                    len(proposed_children) >= 2
+                    and all(
+                        value >= min_child_um
+                        for value in child_lengths_um
+                    )
+                    and max(child_lengths_um) < length_um
+                ):
+                    children = proposed_children
+                    disposition = "overlong_watershed_split"
+
+        child_labels = []
+        for child in children:
+            output[child] = next_label
+            new_parent_map[next_label] = int(
+                parent_by_instance.get(old_label, 0)
+            )
+            child_labels.append(next_label)
+            next_label += 1
+        if length_um > trigger_um:
+            audit.append({
+                "input_instance_id": old_label,
+                "input_length_um": length_um,
+                "output_instance_ids": child_labels,
+                "output_instance_count": len(child_labels),
+                "disposition": disposition,
+                "split_trigger_um": trigger_um,
+                "split_target_um": target_um,
+            })
+
+    return output, new_parent_map, audit
+
+
 def _centerline_unet_primary_instances(instance_labels):
     """Create one deterministic longest-geodesic centerline per instance."""
     instance_labels = np.asarray(instance_labels, dtype=np.int32)
@@ -2417,15 +2748,51 @@ def _build_unet_primary_segmentation(
     foreground, seed_mask, rejected, foreground_audit = (
         _build_unet_primary_foreground(probability, valid_mask, cfg)
     )
+    instance_seed_threshold = float(
+        cfg.get(
+            "UNET_INSTANCE_SEED_THRESHOLD",
+            cfg.get("UNET_SEED_THRESHOLD", 0.30),
+        )
+    )
+    if not float(cfg["UNET_SEED_THRESHOLD"]) <= instance_seed_threshold <= 1.0:
+        raise ValueError(
+            "UNET_INSTANCE_SEED_THRESHOLD must be at least "
+            "UNET_SEED_THRESHOLD and no greater than 1"
+        )
+    instance_seed_mask = (
+        (np.asarray(probability, dtype=np.float32) >= instance_seed_threshold)
+        & foreground
+    )
+    foreground_parents = measure.label(foreground)
+    for parent_prop in measure.regionprops(foreground_parents):
+        parent = foreground_parents == parent_prop.label
+        if not np.any(instance_seed_mask & parent):
+            instance_seed_mask |= seed_mask & parent
     instances, split_rejected, split_audit, parent_map = (
         _split_unet_probability_instances(
             probability,
             foreground,
-            seed_mask,
+            instance_seed_mask,
             cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 3),
             compactness=cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0),
         )
     )
+    overlong_split_audit = []
+    for split_pass in range(4):
+        instances, parent_map, pass_audit = _refine_overlong_unet_instances(
+            probability,
+            instances,
+            parent_map,
+            cfg,
+        )
+        for row in pass_audit:
+            row["split_pass"] = split_pass + 1
+        overlong_split_audit.extend(pass_audit)
+        if not any(
+            row["disposition"] == "overlong_watershed_split"
+            for row in pass_audit
+        ):
+            break
     rejected = np.maximum(rejected, split_rejected)
     centerlines, centerline_meta, failures = (
         _centerline_unet_primary_instances(instances)
@@ -2492,7 +2859,9 @@ def _build_unet_primary_segmentation(
         mask = instances == prop.label
         local_distance = _distance_transform_component(mask, bbox=prop.bbox)
         distance[mask] = local_distance[mask]
-    component_audit = foreground_audit + split_audit
+    component_audit = (
+        foreground_audit + split_audit + overlong_split_audit
+    )
     return {
         "mask_hyst": foreground,
         "mask_clean": instances > 0,
@@ -2506,6 +2875,7 @@ def _build_unet_primary_segmentation(
         "unet_primary_centerline_labels": centerlines,
         "unet_probability": np.asarray(probability, dtype=np.float32),
         "unet_seed_mask": seed_mask,
+        "unet_instance_seed_mask": instance_seed_mask,
         "unet_primary_rejected_reason": rejected,
         "unet_primary_component_audit": component_audit,
         "unet_primary_debug": {
@@ -2644,6 +3014,7 @@ def _measure_unet_primary_instances(seg, cfg):
             continue
 
         geodesic = float(topology["geo_len"])
+        geodesic_um = geodesic * float(cfg.get("UM_PER_PX_XY", 1.0))
         median_width = float(np.median(widths))
         ratio = geodesic / (median_width + 1e-9)
         metadata = centerline_meta.get(instance_id, {})
@@ -2668,6 +3039,15 @@ def _measure_unet_primary_instances(seg, cfg):
         if not record_morphology_warnings:
             warning_reasons = []
 
+        if geodesic_um < 2.0:
+            length_review_band = "below_2_um_technical_review"
+        elif geodesic_um <= 15.0:
+            length_review_band = "2_to_15_um_broadly_plausible"
+        elif geodesic_um <= 20.0:
+            length_review_band = "15_to_20_um_long_review"
+        else:
+            length_review_band = "above_20_um_fused_component_review"
+
         cy, cx = prop.centroid
         results.append({
             "label": instance_id,
@@ -2685,6 +3065,14 @@ def _measure_unet_primary_instances(seg, cfg):
             "area_px": float(geodesic * median_width),
             "skeleton_area_px": float(center_coords.shape[0]),
             "instance_mask_area_px": float(prop.area),
+            "length_measurement_method": "final_instance_mask_centerline",
+            "centerline_within_instance_mask": bool(
+                np.all(instance_mask[
+                    center_coords[:, 0], center_coords[:, 1]
+                ])
+            ),
+            "length_review_band": length_review_band,
+            "suspected_multi_object_merge": bool(geodesic_um > 20.0),
             "bbox_min_y": float(prop.bbox[0]),
             "bbox_min_x": float(prop.bbox[1]),
             "bbox_max_y": float(prop.bbox[2]),
@@ -3884,6 +4272,17 @@ def rows_from_results(results, z_idx, um):
             "estimated_slender_area_px": estimated_slender_area,
             "skeleton_area_px":    round(r.get("skeleton_area_px", 0.0), 1),
             "instance_mask_area_px": instance_mask_area,
+            "length_measurement_method": r.get(
+                "length_measurement_method",
+                "skeleton_centerline",
+            ),
+            "centerline_within_instance_mask": bool(
+                r.get("centerline_within_instance_mask", True)
+            ),
+            "length_review_band": r.get("length_review_band", ""),
+            "suspected_multi_object_merge": bool(
+                r.get("suspected_multi_object_merge", False)
+            ),
             "bbox_min_y":          r.get("bbox_min_y"),
             "bbox_min_x":          r.get("bbox_min_x"),
             "bbox_max_y":          r.get("bbox_max_y"),
@@ -3944,6 +4343,21 @@ def _estimated_tracking_extension_length_um(
     return math.hypot(lateral_length, z_span)
 
 
+def _tracking_max_joined_length_um(cfg):
+    """Return the technical join guard for the active analysis workflow."""
+    engine = str(
+        cfg.get("SEGMENTATION_ENGINE", "classical_saturn")
+    ).strip().lower()
+    mode = str(cfg.get("ANALYSIS_MODE", "comparative")).strip().lower()
+    if engine == "unet_primary" and mode == "comparative":
+        return float(
+            cfg.get("UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM", 20.0)
+        )
+    return float(
+        cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)
+    )
+
+
 def check_extension_consistency(prev_state, candidate_detection, cfg, overlap_exists=False):
     """
     Check if extending a track with this detection would be biologically consistent.
@@ -3976,9 +4390,7 @@ def check_extension_consistency(prev_state, candidate_detection, cfg, overlap_ex
     cand_ori = candidate_detection.get("orientation")
     cand_z = candidate_detection.get("z_slice", prev_state["last_z"])
 
-    max_joined_length = float(
-        cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)
-    )
+    max_joined_length = _tracking_max_joined_length_um(cfg)
     estimated_joined_length = _estimated_tracking_extension_length_um(
         prev_state,
         cand_x,
@@ -4083,10 +4495,11 @@ def _normalize_rejected_extension_events(event_map):
 
 def _attach_tracking_audit(df, track_summary, rejected_extensions):
     """
-    Attach rejected-extension history without claiming that a track stopped.
+    Attach rejected-extension history and defensible track-end context.
 
     A rejected candidate is only a near-miss considered by the tracker. The
-    same track may subsequently link to a different, consistent detection.
+    same track may subsequently link to a different, consistent detection, so
+    it must not be reported as the confirmed reason that a track stopped.
     """
     events_by_track = _normalize_rejected_extension_events(rejected_extensions)
     counts = {track_id: len(events) for track_id, events in events_by_track.items()}
@@ -4103,9 +4516,31 @@ def _attach_tracking_audit(df, track_summary, rejected_extensions):
     track_summary["rejected_extension_reasons"] = track_summary["track_id"].map(joined).fillna("")
     track_summary["first_rejected_extension_reason"] = track_summary["track_id"].map(first).fillna("")
 
-    # Keep the old column for file compatibility, but do not populate it with
-    # unconfirmed stop claims.
-    track_summary["track_stop_reason"] = ""
+    z_max = (
+        int(pd.to_numeric(df["z_slice"], errors="coerce").max())
+        if not df.empty and "z_slice" in df.columns
+        else None
+    )
+    z_end = pd.to_numeric(
+        track_summary.get("z_end", pd.Series(np.nan, index=track_summary.index)),
+        errors="coerce",
+    )
+    reached_boundary = (
+        z_end.ge(z_max)
+        if z_max is not None
+        else pd.Series(False, index=track_summary.index)
+    )
+    track_summary["track_stop_reason"] = np.select(
+        [
+            reached_boundary,
+            track_summary["has_rejected_extension"],
+        ],
+        [
+            "reached_acquisition_upper_boundary",
+            "ended_before_boundary_with_rejected_nearby_candidates",
+        ],
+        default="ended_before_boundary_no_accepted_successor",
+    )
 
     df["track_rejected_extension_count"] = (
         df["track_id"].map(counts).fillna(0).astype(int)
@@ -4300,6 +4735,8 @@ def track_across_slices_legacy(detections_df, cfg):
         width = pd.to_numeric(df.get("width_um"), errors="coerce")
         length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
         df["length_width_ratio"] = length / width.clip(lower=1e-9)
+    if "suspected_multi_object_merge" not in df.columns:
+        df["suspected_multi_object_merge"] = False
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -4322,6 +4759,10 @@ def track_across_slices_legacy(detections_df, cfg):
         y_start         = ("centroid_y",         "first"),
         x_end           = ("centroid_x",         "last"),
         y_end           = ("centroid_y",         "last"),
+        suspected_multi_object_merge = (
+            "suspected_multi_object_merge",
+            "max",
+        ),
     )
 
     um_xy = cfg["UM_PER_PX_XY"]
@@ -4488,6 +4929,8 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         width = pd.to_numeric(df.get("width_um"), errors="coerce")
         length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
         df["length_width_ratio"] = length / width.clip(lower=1e-9)
+    if "suspected_multi_object_merge" not in df.columns:
+        df["suspected_multi_object_merge"] = False
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -4510,6 +4953,10 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         y_start         = ("centroid_y",         "first"),
         x_end           = ("centroid_x",         "last"),
         y_end           = ("centroid_y",         "last"),
+        suspected_multi_object_merge = (
+            "suspected_multi_object_merge",
+            "max",
+        ),
     )
 
     um_xy = cfg["UM_PER_PX_XY"]
@@ -4571,7 +5018,8 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
         "median_width_2d", "median_length_width_ratio_2d", "sum_area_px",
-        "min_area_px", "max_area_px", "area_start", "area_end"
+        "min_area_px", "max_area_px", "area_start", "area_end",
+        "suspected_multi_object_merge",
     ] + unet_summary_cols
     ts = ts[cols_ordered]
     return _attach_tracking_audit(df, ts, rejected_extensions)
@@ -4656,8 +5104,9 @@ def track_across_slices_global_assignment(detections_df, cfg):
                         det["length"],
                         cfg,
                     )
-                    if estimated_joined_length > float(
-                        cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)
+                    if (
+                        estimated_joined_length
+                        > _tracking_max_joined_length_um(cfg)
                     ):
                         continue
                     dx = det["x"] - st["last_x"]
@@ -5699,6 +6148,8 @@ def track_across_slices_unet_primary(
 
 def track_across_slices(detections_df, cfg):
     backend = str(cfg.get("TRACKING_BACKEND", "legacy")).strip().lower()
+    if backend in ("unet_primary_assignment", "unet_primary"):
+        return track_across_slices_unet_primary(detections_df, cfg)
     if backend in ("hybrid_repair", "hybrid", "repair"):
         return track_across_slices_hybrid_repair(detections_df, cfg)
     if backend in ("global_assignment", "assignment", "hungarian"):
@@ -6001,7 +6452,7 @@ def export_comparative_track_tables(out_dir, track_summary, version_label=None):
         "Primary nucleus-level table: biologist_results/nuclei_for_analysis*.csv\n"
         "Master audit table: track_summary*.csv\n"
         "Morphology warnings remain in the primary population because they may "
-        "represent genuine genotype-dependent phenotypes.\n"
+        "represent genuine biological group-dependent phenotypes.\n"
         "The legacy is_biological_candidate flag is identical to technical_valid "
         "and does not define a separate population.\n"
     )
@@ -6100,7 +6551,9 @@ def _unet_detection_accounting(detections):
         if not frame.empty and "detection_source" in frame.columns
         else pd.Series(["saturn_classical"] * len(frame), index=frame.index, dtype=str)
     )
+    unet_primary = source == "unet_primary"
     unet = source.str.startswith("unet_rescued")
+    unet_supported = source.str.startswith("unet_")
     split = source == "unet_rescued_split"
     short = source == "unet_rescued_short_high_confidence"
     low_ratio = source == "unet_rescued_low_ratio_high_confidence"
@@ -6111,11 +6564,13 @@ def _unet_detection_accounting(detections):
     if not frame.empty and "unet_mean_probability" in frame.columns:
         probability = pd.to_numeric(frame["unet_mean_probability"], errors="coerce")
         probability_supported = probability.notna() & np.isfinite(probability)
-        accepted_probability = probability[unet].dropna()
+        accepted_probability = probability[unet_supported].dropna()
         if not accepted_probability.empty:
             median_probability = float(accepted_probability.median())
     return {
         "saturn_classical_2d_count": int((source == "saturn_classical").sum()),
+        "unet_primary_2d_count": int(unet_primary.sum()),
+        "unet_supported_2d_count": int(unet_supported.sum()),
         "unet_rescued_2d_count": int(unet.sum()),
         "unet_rescued_direct_2d_count": int(direct.sum()),
         "unet_rescued_split_2d_count": int(split.sum()),
@@ -6123,6 +6578,7 @@ def _unet_detection_accounting(detections):
         "unet_rescued_low_ratio_high_confidence_2d_count": int(low_ratio.sum()),
         "unet_rescued_other_2d_count": int((unet & ~known).sum()),
         "unet_probability_supported_2d_count": int(probability_supported.sum()),
+        "median_probability_of_unet_supported": median_probability,
         "median_probability_of_unet_rescues": median_probability,
         "unet_rescue_fraction_of_2d_detections": float(unet.sum() / max(len(frame), 1)),
     }
@@ -6559,7 +7015,7 @@ def export_outlier_audit(out_dir, df_tracks, cfg):
         lines.append(f"Morphology-warning tracks retained in comparative population: {int(df_tracks['morphology_warning'].sum())}")
     if "reference_morphology_pass" in df_tracks.columns:
         lines.append(f"Reference-morphology diagnostic subset: {int(df_tracks['reference_morphology_pass'].sum())}")
-    lines.append("Morphology warnings are retained in the comparative population because they may represent genuine genotype-dependent phenotypes.")
+    lines.append("Morphology warnings are retained in the comparative population because they may represent genuine biological group-dependent phenotypes.")
     lines.append("")
     lines.append("Thresholds:")
     lines.append(f"  length > {thresh_len}")
@@ -6747,6 +7203,19 @@ def process_one_image(image_path, cfg, output_dir):
               including ``mask_clean``, ``skel_pruned``, ``skel_label``, etc.
     """
     ensure_dir(output_dir)
+    calibration = resolve_stack_microscope_calibration(
+        cfg,
+        [image_path],
+        input_dir=pl.Path(image_path).parent,
+    )
+    save_calibration_provenance(output_dir, cfg)
+    save_analysis_settings_bundle(output_dir, cfg)
+    print(
+        "Calibration: "
+        f"XY={cfg['UM_PER_PX_XY']:.9g} um/pixel, "
+        f"Z={cfg['UM_PER_SLICE_Z']:.9g} um/slice "
+        f"({calibration['status']})"
+    )
     overlay_dir = os.path.join(output_dir, "overlays")
     debug_dir   = os.path.join(output_dir, "debug")
     rescue_review_dir = os.path.join(
@@ -6794,6 +7263,7 @@ def process_one_image(image_path, cfg, output_dir):
 
     if cfg["SAVE_OVERLAYS"]:
         _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_overlay.png"), overlay_rgb)
+    if cfg.get("SAVE_TECHNICAL_REVIEW_OVERLAYS", False):
         rescue_rgb = make_unet_rescue_review_overlay(
             img_raw,
             meas["skel_label"],
@@ -6875,6 +7345,19 @@ def process_batch(cfg):
 
     files, z_indices = load_batch_files(cfg["INPUT_DIR"], cfg["FILE_PATTERN"])
     files_by_z = {int(z): f for f, z in zip(files, z_indices)}
+    calibration = resolve_stack_microscope_calibration(
+        cfg,
+        files,
+        input_dir=cfg["INPUT_DIR"],
+    )
+    save_calibration_provenance(cfg["OUTPUT_DIR"], cfg)
+    save_analysis_settings_bundle(cfg["OUTPUT_DIR"], cfg)
+    print(
+        "Calibration: "
+        f"XY={cfg['UM_PER_PX_XY']:.9g} um/pixel, "
+        f"Z={cfg['UM_PER_SLICE_Z']:.9g} um/slice "
+        f"({calibration['status']})"
+    )
     um         = cfg["UM_PER_PX_XY"]
     roi_mask = None
     exclusion_mask = None
@@ -6948,6 +7431,18 @@ def process_batch(cfg):
 
             panel = np.hstack([orig_rgb, overlay_rgb])
             _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_panel.png"), panel)
+            if max_proj_raw is None:
+                max_proj_raw = img_2d.copy().astype(np.float32)
+                max_proj_ov = overlay_rgb.copy().astype(np.float32)
+            else:
+                max_proj_raw = np.maximum(max_proj_raw, img_2d.astype(np.float32))
+                max_proj_ov = np.maximum(max_proj_ov, overlay_rgb.astype(np.float32))
+            if cfg.get("DO_TRACKING", True):
+                slice_cache[int(z_idx)] = {
+                    "image": img_2d.copy(),
+                    "skel_label": skel_label.copy().astype(np.int32),
+                }
+        if cfg.get("SAVE_TECHNICAL_REVIEW_OVERLAYS", False):
             rescue_rgb = make_unet_rescue_review_overlay(
                 img_2d,
                 skel_label,
@@ -6961,18 +7456,6 @@ def process_batch(cfg):
                 ),
                 rescue_rgb,
             )
-
-            if max_proj_raw is None:
-                max_proj_raw = img_2d.copy().astype(np.float32)
-                max_proj_ov = overlay_rgb.copy().astype(np.float32)
-            else:
-                max_proj_raw = np.maximum(max_proj_raw, img_2d.astype(np.float32))
-                max_proj_ov = np.maximum(max_proj_ov, overlay_rgb.astype(np.float32))
-            if cfg.get("DO_TRACKING", True):
-                slice_cache[int(z_idx)] = {
-                    "image": img_2d.copy(),
-                    "skel_label": skel_label.copy().astype(np.int32),
-                }
 
         if cfg["SAVE_DETAIL_FIGURE"]:
             save_detail_figure(img_2d, overlay_rgb, results,
@@ -7046,7 +7529,14 @@ def process_batch(cfg):
     # --- Reporting Phase (CLI/Batch) ---
     print(f"\nGenerating final reports in {cfg['OUTPUT_DIR']}...")
     generate_batch_report(
-        cfg["OUTPUT_DIR"], df, df_sum, um, ts, df_tracked=df_trk)
+        cfg["OUTPUT_DIR"],
+        df,
+        df_sum,
+        um,
+        ts,
+        df_tracked=df_trk,
+        max_slice_pages=cfg.get("REPORT_MAX_SLICE_PAGES", 6),
+    )
     generate_excel_report(cfg["OUTPUT_DIR"], df, df_sum, ts)
 
     total = time.time() - t_batch
@@ -7435,7 +7925,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
 
 def generate_batch_report(
         out_dir, df, df_summary, um, df_tracks=None, gui_callback=None,
-        generate_pptx=True, df_tracked=None):
+        generate_pptx=True, df_tracked=None, max_slice_pages=6):
     """
     Compiles standard summary global output architectures including histograms, mathematical summaries,
     biological methodology pages, and graphical slice overlays natively to a `.pdf` file.
@@ -7888,15 +8378,15 @@ def generate_batch_report(
                 "   Formula: nearest 3D centroid-to-centroid distance\n"
                 "   Meaning: Simple local packing-density readout.\n\n"
                 "10. Technical Track Audit (post-tracking)\n"
-                "   Hard-fail rules: length > AUDIT_MAX_LENGTH_UM, tortuosity > AUDIT_MAX_TORTUOSITY, extreme thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, and n_slices < AUDIT_MIN_SLICES.\n"
-                "   Warning-only rules: thickness > AUDIT_MAX_THICKNESS_UM and taper > AUDIT_MAX_TAPER_RATIO. These PSF-sensitive flags remain in the estimated-nuclei population for review.\n"
+                "   Technical-invalid examples include non-finite geometry, ROI leakage, duplicate Z observations, and unresolved components above 20 um that remain likely multi-object joins after watershed.\n"
+                "   Morphology-only annotations include short, 15-20 um long-review, wide, thin, curved, tortuous, and single-slice observations. These remain in the estimated-nuclei population.\n"
                 "   Interpretation: Technical-valid tracks define the one estimated-nuclei population. Reference morphology and warning-free flags are QC annotations, not separate biological populations.\n"
                 "\n11. v5.7 U-Net Rescue Lane\n"
                 "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues retain detailed detection_source labels for direct, split, short high-confidence, and low-ratio high-confidence recovery.\n"
                 "   The rescue-review overlay uses green for Saturn classical detections, cyan for accepted U-Net rescues, and magenta/orange/red for U-Net-positive candidates rejected by rescue gates.\n"
                 "   Overlay dilation is display-only and is never used for count, length, width, or 3D tracking calculations.\n\n"
                 "12. PSF-sensitive metrics note\n"
-                "   Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling. Use them mainly for relative comparisons between matched WT and mutant datasets, not as literal physical dimensions.\n"
+                "   Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling. Use them mainly for relative comparisons between biological groups acquired with matched settings, not as literal physical dimensions.\n"
             )
             ax_g.text(0, 1, guide_full, transform=ax_g.transAxes, fontsize=10, family='monospace', verticalalignment='top', linespacing=1.3)
             fig_guide.savefig(os.path.join(plot_dir, "methods_guide.png"), dpi=300, bbox_inches='tight')
@@ -7971,7 +8461,19 @@ def generate_batch_report(
                     .astype(int)
                     .tolist()
                 )
-            for idx_p, (row_idx, row) in enumerate(df_summary.iterrows()):
+            summary_rows = list(df_summary.iterrows())
+            if max_slice_pages and len(summary_rows) > int(max_slice_pages):
+                positions = np.linspace(
+                    0,
+                    len(summary_rows) - 1,
+                    int(max_slice_pages),
+                    dtype=int,
+                )
+                summary_rows = [
+                    summary_rows[position]
+                    for position in sorted(set(positions.tolist()))
+                ]
+            for idx_p, (row_idx, row) in enumerate(summary_rows):
                 z = int(row['z_slice'])
                 analysis_panel_path = os.path.join(
                     analysis_dir,
@@ -8073,7 +8575,9 @@ def generate_batch_report(
                 plt.close(fig_slice)
 
                 if gui_callback:
-                    gui_callback(int(80 + (20 * (idx_p+1) / len(df_summary))))
+                    gui_callback(int(
+                        80 + (20 * (idx_p + 1) / len(summary_rows))
+                    ))
 
         print(f"Report successfully saved to {pdf_path}")
 
@@ -8555,7 +9059,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
                 ("Practical use: ", "Treat tuned tracking values as strong starting points. Adjust them only if a new dataset clearly shows fragmentation or over-merging.")
             ]),
             ("11. Technical Track Audit (post-tracking)", [
-                ("Audit rules: ", "hard-fail tracks when 3D length > AUDIT_MAX_LENGTH_UM, 3D tortuosity > AUDIT_MAX_TORTUOSITY, effective thickness > AUDIT_EXTREME_THICKNESS_UM, extreme taper > AUDIT_EXTREME_TAPER_RATIO, or track slices < AUDIT_MIN_SLICES. Ordinary thick/taper tracks remain warning-only."),
+                ("Audit rules: ", "Technical failures are limited to integrity problems such as non-finite geometry, ROI leakage, duplicate Z observations, and unresolved above-20 um components likely to contain multiple joined objects. Short, 15-20 um long-review, wide, curved, tortuous, and single-slice observations remain morphology annotations."),
                 ("Meaning: ", "Audit does not change raw detection or tracking. Technical-valid tracks form the estimated-nuclei population; technical failures are excluded."),
                 ("Practical use: ", "Use estimated unique nuclei as the one analysis population. Morphology-warning, warning-free, and reference-morphology flags are QC annotations only."),
                 ("Biology note: ", "At this acquisition z-step (~1.04 um), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
@@ -8567,7 +9071,7 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             ]),
             ("13. PSF-sensitive metrics note", [
                 ("Important: ", "Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling."),
-                ("Use them for: ", "relative comparison between WT and mutant datasets acquired with matched settings."),
+                ("Use them for: ", "relative comparison between biological groups acquired with matched settings."),
                 ("Do not use them as: ", "literal physical dimensions or absolute biophysical ground truth.")
             ])
         ]
@@ -8666,6 +9170,10 @@ PARAM_SECTIONS = {
         "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB", "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM",
         "UNET_INSTANCE_SPLIT_ENABLE", "UNET_INSTANCE_SEED_THRESHOLD",
         "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", "UNET_INSTANCE_WATERSHED_COMPACTNESS",
+        "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE",
+        "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM",
+        "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM",
+        "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM",
         "UNET_PRIMARY_MIN_COMPONENT_PX",
         "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE",
         "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX",
@@ -8713,6 +9221,10 @@ PARAM_SECTIONS = {
     "Candidate Audit (post-tracking)": [
         "AUDIT_MAX_LENGTH_UM", "AUDIT_MAX_TORTUOSITY", "AUDIT_MAX_THICKNESS_UM", "AUDIT_MAX_TAPER_RATIO",
         "AUDIT_EXTREME_THICKNESS_UM", "AUDIT_EXTREME_TAPER_RATIO", "AUDIT_MIN_SLICES"
+    ],
+    "Report Output": [
+        "SAVE_TECHNICAL_REVIEW_OVERLAYS",
+        "REPORT_MAX_SLICE_PAGES",
     ],
 }
 
@@ -8802,6 +9314,10 @@ PARAM_TITLES = {
     "UNET_INSTANCE_SEED_THRESHOLD": "U-Net instance seed threshold",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum seed peak spacing (px)",
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Watershed compactness",
+    "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": "Split unresolved overlong U-Net components",
+    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": "Overlong split trigger (um)",
+    "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": "Overlong split target spacing (um)",
+    "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": "Minimum split child length (um)",
     "UNET_PRIMARY_MIN_COMPONENT_PX": "U-Net-primary minimum component size (px)",
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": "Add residual Saturn-only detections",
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": "Saturn residual exclusion dilation (px)",
@@ -8818,7 +9334,9 @@ PARAM_TITLES = {
     "AUDIT_MAX_TAPER_RATIO": "Audit: maximum taper ratio (PSF-sensitive)",
     "AUDIT_EXTREME_THICKNESS_UM": "Candidate hard-fail: extreme thickness (um)",
     "AUDIT_EXTREME_TAPER_RATIO": "Candidate hard-fail: extreme taper ratio",
-    "AUDIT_MIN_SLICES": "Audit: minimum slices required (1 recommended here)"
+    "AUDIT_MIN_SLICES": "Audit: minimum slices required (1 recommended here)",
+    "REPORT_MAX_SLICE_PAGES": "Representative slice pages in PDF",
+    "SAVE_TECHNICAL_REVIEW_OVERLAYS": "Save per-slice technical review overlays",
 }
 
 PARAM_DESCRIPTIONS = {
@@ -8875,7 +9393,7 @@ PARAM_DESCRIPTIONS = {
     "HYBRID_REPAIR_MAX_LINK_DIST_UM": "V5.6 ROI-ADAPTIVE repair only. Hard distance gate for fragment merges unless there is direct bounding-box overlap evidence.",
     "HYBRID_REPAIR_MIN_OVERLAP": "V5.6 ROI-ADAPTIVE repair only. Preferred minimum bounding-box overlap for a repair link. Very close non-overlap links can still pass if the total cost is low.",
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": "V5.6 ROI-ADAPTIVE repair only. Rejects a proposed merge if the estimated merged 3D length would exceed this value.",
-    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": "Hard physical guard used by every tracking backend. A proposed cross-slice link is rejected when it would create a reconstructed nucleus longer than this value; individual long observations remain visible for review.",
+    "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": "Hard proposed-join guard for classical and legacy tracking. U-Net-primary comparative tracking instead uses UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM so 15-20 um nuclei remain measurable with warnings. Rejected joins do not delete their original 2D detections.",
     "SEGMENTATION_ENGINE": "classical_saturn preserves Saturn segmentation; hybrid and unet_assisted add U-Net support; unet_primary makes seed-connected U-Net probability instances authoritative.",
     "UNET_MODEL_PATH": "Path to a trained 2.5D U-Net checkpoint. Leave blank to keep Saturn fully classical.",
     "UNET_THRESHOLD_MODE": "soft keeps U-Net output as probability evidence; hard turns the probability map into a binary candidate mask. Soft is safer while the model is still being validated.",
@@ -8894,19 +9412,23 @@ PARAM_DESCRIPTIONS = {
     "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS": "If enabled, unusual width, length-to-width ratio, or tortuosity is retained and reported as morphology for biological comparison. Technical failures such as unresolved loops, branches, excess endpoints, and objects above the 20 um guard remain excluded.",
     "UNET_RESCUE_EXCLUDE_DILATION_PX": "How far to dilate accepted Saturn skeletons before searching for U-Net-only missed detections. Increase to avoid duplicate detections around existing nuclei.",
     "UNET_RESCUE_MIN_COMPONENT_PX": "Minimum binary component size before U-Net rescue skeletonization. Increase to suppress tiny U-Net specks; decrease to recover very faint fragments.",
-    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Technical resolution floor for U-Net-only centerlines. Keep this well below expected biological nucleus lengths so genuinely short WT or mutant nuclei are retained; increase only when confirmed pixel-scale specks are being accepted.",
-    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": "Mean U-Net probability required to retain a centerline below the technical length floor. This confidence exception prevents expected WT or mutant length from becoming an acceptance rule.",
+    "UNET_RESCUE_MIN_SKEL_LEN_UM": "Technical resolution floor for U-Net-only centerlines. Keep this well below expected biological nucleus lengths so genuinely short nuclei from any group are retained; increase only when confirmed pixel-scale specks are being accepted.",
+    "UNET_SHORT_RESCUE_MIN_MEAN_PROB": "Mean U-Net probability required to retain a centerline below the technical length floor. This confidence exception prevents an expected reference-group length from becoming an acceptance rule.",
     "UNET_RESCUE_MAX_ADDITIONS_PER_SLICE": "Optional cap on rescued objects per slice. Set to 0 for no cap. Use only if visual review shows the rescue lane is too permissive.",
     "UNET_RESCUE_SPLIT_RETRY_ENABLE": "If enabled, U-Net rescue candidates rejected as long, branched, looped, tortuous, or endpoint-heavy are retried at stricter probability-core thresholds before final rejection.",
     "UNET_RESCUE_SPLIT_THRESHOLDS": "Probability core thresholds used during split retry. Higher thresholds can separate connected U-Net regions into cleaner individual nuclei before biological QC.",
     "UNET_RESCUE_CENTERLINE_SALVAGE_ENABLE": "If enabled, high-confidence red U-Net candidates rejected for topology are reduced to their longest simple centerline and measured once more.",
     "UNET_RESCUE_CENTERLINE_MIN_MEAN_PROB": "Minimum mean U-Net probability required before topology-rejected red candidates can be centerline-salvaged.",
     "UNET_LOW_RATIO_RESCUE_MIN_MEAN_PROB": "Allows a low length-to-width U-Net candidate only when its mean model probability reaches this value. This avoids globally weakening the morphology rule.",
-    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": "Technical minimum centerline length for the high-confidence low-ratio exception. The default 4 um excludes tiny fragments while remaining below expected WT and mutant nucleus lengths.",
+    "UNET_LOW_RATIO_RESCUE_MIN_LENGTH_UM": "Technical minimum centerline length for the high-confidence low-ratio exception. The default 4 um excludes tiny fragments while remaining below expected nucleus lengths across comparison groups.",
     "UNET_INSTANCE_SPLIT_ENABLE": "If enabled, connected U-Net rescue probability regions are split into putative instances before skeletonization and measurement.",
     "UNET_INSTANCE_SEED_THRESHOLD": "Probability threshold for watershed/core seeds used to split connected U-Net rescue regions. Higher values create cleaner but fewer seeds.",
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum distance between fallback U-Net probability peaks used as instance seeds. Lower values can split crowded regions more aggressively.",
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Compactness term for watershed instance splitting. Larger values favor compact regions; near-zero follows probability topology more closely.",
+    "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": "Re-watershed a U-Net-primary component only when its mask-derived centerline exceeds the technical overlong trigger.",
+    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": "Technical trigger for a second watershed pass. The default 18 um threshold challenges very improbable fused components; it is not a WT morphology target or an automatic rejection cutoff.",
+    "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": "Approximate spacing for probability-supported watershed markers inside a component above the technical trigger. Child measurements are recalculated from their own masks.",
+    "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": "Minimum measurable child centerline required before an overlong watershed split is accepted. Failed proposals leave the original component intact for review.",
     "UNET_PRIMARY_MIN_COMPONENT_PX": "Technical pixel-noise floor used before U-Net-primary instance measurement. It is not a biological length or shape gate.",
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": "When enabled, Saturn may add detections only in residual space outside accepted U-Net-primary masks. It cannot remove or alter U-Net instances.",
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": "Display-independent exclusion margin around accepted U-Net-primary masks before optional Saturn-only additions are searched.",
@@ -8917,13 +9439,15 @@ PARAM_DESCRIPTIONS = {
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Global-assignment penalty for linking detections with weak U-Net support. Set to 0 to ignore U-Net evidence during assignment.",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Global-assignment penalty for abrupt U-Net probability changes across adjacent slices.",
     "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT": "Hybrid fragment-repair penalty for repairing tracks through weak U-Net support. Set to 0 if U-Net evidence is too conservative.",
-    "AUDIT_MAX_LENGTH_UM": "Audit only. Tracks longer than this are flagged after tracking. This does not change segmentation or tracking itself; it changes the audit-passed subset.",
+    "AUDIT_MAX_LENGTH_UM": "Morphology annotation only. Tracks longer than this are flagged for review but remain in the comparative technical-valid population.",
     "AUDIT_MAX_TORTUOSITY": "Audit only. Flags unusually curved 3D tracks. Lower values make the quality set stricter; higher values keep more bent nuclei.",
-    "AUDIT_MAX_THICKNESS_UM": "Audit only. Flags tracks that look too thick for a nucleus. PSF-sensitive: use mainly for relative WT-versus-mutant comparison under matched imaging settings rather than as a literal physical diameter cutoff.",
+    "AUDIT_MAX_THICKNESS_UM": "Audit only. Flags tracks that look too thick for a nucleus. PSF-sensitive: use mainly for relative comparison between biological groups acquired with matched settings rather than as a literal physical diameter cutoff.",
     "AUDIT_MAX_TAPER_RATIO": "Audit only. Flags tracks with extreme change from thickest to thinnest slice. PSF-sensitive and area-derived: useful for instability screening and relative comparison, not as a literal anatomical ratio.",
     "AUDIT_EXTREME_THICKNESS_UM": "Biological-candidate audit only. Tracks above this very high effective-thickness threshold hard-fail the candidate tier; ordinary thick tracks remain warning-only.",
     "AUDIT_EXTREME_TAPER_RATIO": "Biological-candidate audit only. Tracks above this very high taper threshold hard-fail the candidate tier; ordinary taper tracks remain warning-only.",
-    "AUDIT_MIN_SLICES": "Audit only. Minimum number of slices required to avoid the single-slice flag. For this Leica SP8 stack (z-step ~1.04 um), set to 1 because mature Drosophila sperm nuclei can be biologically valid even when they appear in a single optical slice."
+    "AUDIT_MIN_SLICES": "Morphology annotation only. Keep at 1 because a genuine nucleus may be visible in a single optical slice.",
+    "REPORT_MAX_SLICE_PAGES": "Maximum representative Z-slice pages appended to the biologist-facing PDF. Use 0 for every slice; six keeps a full-stack report concise.",
+    "SAVE_TECHNICAL_REVIEW_OVERLAYS": "Save an additional technical U-Net review image for every slice. Leave off for routine biological studies; enable only during segmentation debugging.",
 }
 
 PARAM_TITLES.update({
@@ -8999,7 +9523,12 @@ PARAM_ENUM_OPTIONS = {
     "UNET_THRESHOLD_MODE": ("soft", "hard"),
     "UNET_CONTEXT_MODE": ("z_minus_z_z_plus",),
     "UNET_INFERENCE_MODE": ("roi_tiled",),
-    "TRACKING_BACKEND": ("legacy", "global_assignment", "hybrid_repair"),
+    "TRACKING_BACKEND": (
+        "legacy",
+        "global_assignment",
+        "hybrid_repair",
+        "unet_primary_assignment",
+    ),
 }
 
 PARAM_EDITOR_VALUE_TYPES = (int, float, bool, str, list)
@@ -9502,10 +10031,23 @@ STUDY_MANIFEST_COLUMNS = [
     "z_max",
     "xy_um_per_pixel",
     "z_um_per_slice",
+    "calibration_metadata_path",
     "acquisition_class",
     "status",
     "message",
     "output_dir",
+]
+
+STUDY_EXCLUSION_COLUMNS = [
+    "candidate_id",
+    "group",
+    "input_dir",
+    "exclusion_stage",
+    "reason_code",
+    "details",
+    "source_file_count",
+    "roi_found",
+    "metadata_found",
 ]
 
 _STUDY_SOURCE_RE = re.compile(
@@ -9643,6 +10185,190 @@ def _study_group_from_folder(folder, study_root):
     return candidate or "Unassigned"
 
 
+def _metadata_length_to_um(value, unit):
+    numeric_value = float(value)
+    normalized_unit = (
+        str(unit or "")
+        .strip()
+        .lower()
+        .replace("\u00b5", "u")
+        .replace("\u03bc", "u")
+    )
+    if not normalized_unit:
+        normalized_unit = "m" if abs(numeric_value) < 0.1 else "um"
+    factors = {
+        "um": 1.0,
+        "micrometer": 1.0,
+        "micrometers": 1.0,
+        "m": 1_000_000.0,
+        "meter": 1_000_000.0,
+        "meters": 1_000_000.0,
+        "nm": 0.001,
+        "nanometer": 0.001,
+        "nanometers": 0.001,
+    }
+    if normalized_unit not in factors:
+        raise ValueError(
+            "Unsupported microscope metadata length unit: "
+            f"{unit!r}"
+        )
+    converted = numeric_value * factors[normalized_unit]
+    if not np.isfinite(converted):
+        raise ValueError(
+            "Microscope metadata contains a non-finite length value: "
+            f"{value!r}"
+        )
+    return float(converted)
+
+
+def _leica_dimension_id(value):
+    return {
+        "X": "X",
+        "Y": "Y",
+        "Z": "Z",
+        "1": "X",
+        "2": "Y",
+        "3": "Z",
+    }.get(str(value or "").strip().upper())
+
+
+def load_leica_calibration_xml(metadata_path):
+    """Load explicit X/Y/Z voxel calibration from a Leica XML file."""
+    metadata_path = pl.Path(metadata_path).expanduser().resolve()
+    if not metadata_path.is_file():
+        raise FileNotFoundError(
+            f"Microscope metadata XML was not found: {metadata_path}"
+        )
+    try:
+        root = ET.parse(metadata_path).getroot()
+    except ET.ParseError as exc:
+        raise ValueError(
+            f"Microscope metadata XML could not be parsed: {metadata_path}"
+        ) from exc
+
+    dimensions = {}
+    for element in root.iter():
+        if str(element.tag).split("}")[-1] != "DimensionDescription":
+            continue
+        dimension_name = _leica_dimension_id(
+            element.attrib.get("DimID")
+        )
+        if dimension_name is None:
+            continue
+        try:
+            count = int(float(element.attrib.get("NumberOfElements", 0)))
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            raise ValueError(
+                f"Invalid NumberOfElements for Leica {dimension_name}"
+            )
+        unit = element.attrib.get("Unit", "")
+        length_value = element.attrib.get("Length")
+        voxel_value = element.attrib.get("Voxel")
+        length_um = (
+            abs(_metadata_length_to_um(length_value, unit))
+            if length_value not in (None, "")
+            else np.nan
+        )
+        voxel_um = (
+            abs(_metadata_length_to_um(voxel_value, unit))
+            if voxel_value not in (None, "")
+            else np.nan
+        )
+        if not np.isfinite(voxel_um) or voxel_um <= 0:
+            if not np.isfinite(length_um) or length_um <= 0:
+                raise ValueError(
+                    f"Leica {dimension_name} requires positive Voxel or Length"
+                )
+            divisor = count - 1 if dimension_name == "Z" and count > 1 else count
+            voxel_um = length_um / divisor
+        if not np.isfinite(length_um) or length_um <= 0:
+            multiplier = count - 1 if dimension_name == "Z" and count > 1 else count
+            length_um = voxel_um * multiplier
+        dimensions[dimension_name] = {
+            "number_of_elements": count,
+            "length_um": float(length_um),
+            "voxel_um": float(voxel_um),
+        }
+
+    missing = sorted({"X", "Y", "Z"} - set(dimensions))
+    if missing:
+        raise ValueError(
+            "Leica metadata does not contain complete X/Y/Z calibration. "
+            f"Missing: {missing}"
+        )
+    x_um = dimensions["X"]["voxel_um"]
+    y_um = dimensions["Y"]["voxel_um"]
+    z_um = dimensions["Z"]["voxel_um"]
+    xy_relative_difference = abs(x_um - y_um) / max(x_um, y_um)
+    if xy_relative_difference > 0.02:
+        raise ValueError(
+            "Leica metadata X and Y voxel sizes differ by more than 2%: "
+            f"X={x_um}, Y={y_um}"
+        )
+    xy_um = float((x_um + y_um) / 2.0)
+    return {
+        "UM_PER_PX_XY": xy_um,
+        "UM_PER_SLICE_Z": float(z_um),
+        "metadata_path": str(metadata_path),
+        "x_um_per_px": float(x_um),
+        "y_um_per_px": float(y_um),
+        "z_um_per_slice": float(z_um),
+        "size_x": int(dimensions["X"]["number_of_elements"]),
+        "size_y": int(dimensions["Y"]["number_of_elements"]),
+        "size_z": int(dimensions["Z"]["number_of_elements"]),
+        "field_x_um": float(dimensions["X"]["length_um"]),
+        "field_y_um": float(dimensions["Y"]["length_um"]),
+        "stack_depth_um": float(dimensions["Z"]["length_um"]),
+    }
+
+
+def apply_microscope_calibration(cfg, metadata_path=""):
+    """Return a copied config with an optional explicit XML calibration."""
+    resolved_cfg = dict(cfg)
+    if not str(metadata_path or "").strip():
+        resolved_cfg["CALIBRATION_SOURCE"] = resolved_cfg.get(
+            "CALIBRATION_SOURCE",
+            "fallback_config",
+        )
+        resolved_cfg["CALIBRATION_METADATA_FILE"] = ""
+        resolved_cfg["_CALIBRATION_PROVENANCE"] = {
+            "status": "manual_or_legacy_fallback",
+            "metadata_path": "",
+            "xy_um_per_pixel": float(resolved_cfg["UM_PER_PX_XY"]),
+            "z_um_per_slice": float(resolved_cfg["UM_PER_SLICE_Z"]),
+            "acquisition_class": "manual or legacy fallback calibration",
+            "auto_leica_calibration": bool(
+                resolved_cfg.get("AUTO_LEICA_CALIBRATION", True)
+            ),
+        }
+        return resolved_cfg, None
+    calibration = load_leica_calibration_xml(metadata_path)
+    resolved_cfg["UM_PER_PX_XY"] = float(
+        calibration["UM_PER_PX_XY"]
+    )
+    resolved_cfg["UM_PER_SLICE_Z"] = float(
+        calibration["UM_PER_SLICE_Z"]
+    )
+    resolved_cfg["CALIBRATION_SOURCE"] = "leica_metadata_xml"
+    resolved_cfg["CALIBRATION_METADATA_FILE"] = str(
+        calibration["metadata_path"]
+    )
+    resolved_cfg["_CALIBRATION_PROVENANCE"] = {
+        "status": "leica_xml",
+        "metadata_path": str(calibration["metadata_path"]),
+        "xy_um_per_pixel": float(calibration["UM_PER_PX_XY"]),
+        "z_um_per_slice": float(calibration["UM_PER_SLICE_Z"]),
+        "acquisition_class": "explicit Leica XML calibration",
+        "auto_leica_calibration": bool(
+            resolved_cfg.get("AUTO_LEICA_CALIBRATION", True)
+        ),
+        "calibration_method": "explicit_voxel_or_dimension_calibration",
+    }
+    return resolved_cfg, calibration
+
+
 def _study_parse_leica_metadata(
     sample_dir,
     project_number,
@@ -9651,8 +10377,6 @@ def _study_parse_leica_metadata(
     fallback_z,
 ):
     """Read the physical calibration and acquisition signature from Leica XML."""
-    import xml.etree.ElementTree as ET
-
     project_token = f"Project{project_number}" if project_number else "Project"
     xml_path = (
         pl.Path(sample_dir)
@@ -9739,6 +10463,320 @@ def _study_parse_leica_metadata(
     return result
 
 
+def resolve_stack_microscope_calibration(
+    cfg,
+    files,
+    input_dir=None,
+    require_metadata=None,
+):
+    """Resolve one stack's physical calibration before any measurements."""
+    if not files:
+        raise ValueError("Cannot resolve calibration without source images")
+
+    require = (
+        bool(cfg.get("REQUIRE_LEICA_METADATA", False))
+        if require_metadata is None
+        else bool(require_metadata)
+    )
+    auto_enabled = bool(cfg.get("AUTO_LEICA_CALIBRATION", True))
+    fallback_xy = float(cfg["UM_PER_PX_XY"])
+    fallback_z = float(cfg["UM_PER_SLICE_Z"])
+    source_dir = pl.Path(input_dir or pl.Path(files[0]).parent).resolve()
+
+    parsed_files = []
+    for file_path in files:
+        parsed = _study_parse_source_name(pl.Path(file_path).name)
+        if parsed and parsed.get("kind") == "leica":
+            parsed_files.append(parsed)
+
+    existing_provenance = cfg.get("_CALIBRATION_PROVENANCE")
+    provenance = {
+        "status": "manual_or_legacy_fallback",
+        "metadata_path": "",
+        "xy_um_per_pixel": fallback_xy,
+        "z_um_per_slice": fallback_z,
+        "acquisition_class": "manual or legacy fallback calibration",
+        "auto_leica_calibration": auto_enabled,
+    }
+    if isinstance(existing_provenance, dict):
+        provenance.update(existing_provenance)
+        provenance["xy_um_per_pixel"] = fallback_xy
+        provenance["z_um_per_slice"] = fallback_z
+        provenance["auto_leica_calibration"] = auto_enabled
+    cfg["CALIBRATION_SOURCE"] = str(
+        cfg.get("CALIBRATION_SOURCE", "fallback_config")
+    )
+    cfg["CALIBRATION_METADATA_FILE"] = str(
+        cfg.get("CALIBRATION_METADATA_FILE", "")
+    )
+    if not auto_enabled:
+        cfg["_CALIBRATION_PROVENANCE"] = provenance
+        return provenance
+
+    if not parsed_files:
+        if require:
+            raise ValueError(
+                "Leica metadata was required, but source filenames are not "
+                "recognized as Leica Project..._Series... images"
+            )
+        cfg["_CALIBRATION_PROVENANCE"] = provenance
+        return provenance
+
+    stack_keys = {
+        (parsed.get("project", ""), int(parsed["series"]))
+        for parsed in parsed_files
+    }
+    if len(stack_keys) != 1:
+        raise ValueError(
+            "Calibration cannot be resolved for a mixed-series file list: "
+            f"{sorted(stack_keys)}"
+        )
+
+    project_number, series_number = next(iter(stack_keys))
+    metadata = _study_parse_leica_metadata(
+        source_dir,
+        project_number,
+        series_number,
+        fallback_xy,
+        fallback_z,
+    )
+    acquisition = str(metadata.get("acquisition_class", ""))
+    metadata_path = str(metadata.get("metadata_path", ""))
+    metadata_valid = bool(metadata_path) and not acquisition.startswith(
+        "metadata parse warning"
+    )
+    if not metadata_valid:
+        message = (
+            f"Leica XML calibration unavailable for {source_dir} / "
+            f"Project{project_number}_Series{series_number:03d}"
+        )
+        if acquisition.startswith("metadata parse warning"):
+            message = f"{message}: {acquisition}"
+        if require:
+            raise ValueError(message)
+        provenance.update(
+            {
+                "status": "leica_metadata_fallback",
+                "acquisition_class": acquisition or message,
+                "metadata_path": metadata_path,
+            }
+        )
+        cfg["_CALIBRATION_PROVENANCE"] = provenance
+        return provenance
+
+    explicit_calibration = None
+    try:
+        explicit_calibration = load_leica_calibration_xml(metadata_path)
+    except ValueError as exc:
+        # Older Leica exports commonly omit a separate Y dimension. Their
+        # X/Z values remain usable through the established parser above.
+        if "complete X/Y/Z calibration" not in str(exc):
+            raise
+
+    if explicit_calibration is not None:
+        cfg["UM_PER_PX_XY"] = float(
+            explicit_calibration["UM_PER_PX_XY"]
+        )
+        cfg["UM_PER_SLICE_Z"] = float(
+            explicit_calibration["UM_PER_SLICE_Z"]
+        )
+        calibration_method = "explicit_voxel_or_dimension_calibration"
+    else:
+        cfg["UM_PER_PX_XY"] = float(metadata["xy_um_per_pixel"])
+        cfg["UM_PER_SLICE_Z"] = float(metadata["z_um_per_slice"])
+        calibration_method = "legacy_leica_xz_calibration"
+    cfg["CALIBRATION_SOURCE"] = "leica_metadata_xml"
+    cfg["CALIBRATION_METADATA_FILE"] = metadata_path
+    provenance.update(
+        {
+            "status": "leica_xml",
+            "metadata_path": metadata_path,
+            "xy_um_per_pixel": cfg["UM_PER_PX_XY"],
+            "z_um_per_slice": cfg["UM_PER_SLICE_Z"],
+            "acquisition_class": acquisition,
+            "calibration_method": calibration_method,
+        }
+    )
+    if explicit_calibration is not None:
+        provenance["metadata_dimensions"] = {
+            key: explicit_calibration[key]
+            for key in (
+                "size_x",
+                "size_y",
+                "size_z",
+                "field_x_um",
+                "field_y_um",
+                "stack_depth_um",
+            )
+        }
+    cfg["_CALIBRATION_PROVENANCE"] = provenance
+    return provenance
+
+
+def save_calibration_provenance(output_dir, cfg):
+    """Write the calibration actually used by segmentation and tracking."""
+    output_path = pl.Path(output_dir) / "calibration_used.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = dict(
+        cfg.get(
+            "_CALIBRATION_PROVENANCE",
+            {
+                "status": "manual_or_legacy_fallback",
+                "metadata_path": "",
+                "xy_um_per_pixel": float(cfg["UM_PER_PX_XY"]),
+                "z_um_per_slice": float(cfg["UM_PER_SLICE_Z"]),
+                "acquisition_class": "manual or legacy fallback calibration",
+                "auto_leica_calibration": bool(
+                    cfg.get("AUTO_LEICA_CALIBRATION", True)
+                ),
+            },
+        )
+    )
+    provenance["xy_um_per_pixel"] = float(cfg["UM_PER_PX_XY"])
+    provenance["z_um_per_slice"] = float(cfg["UM_PER_SLICE_Z"])
+    provenance["calibration_source"] = str(
+        cfg.get("CALIBRATION_SOURCE", provenance.get("status", ""))
+    )
+    provenance["calibration_metadata_file"] = str(
+        cfg.get(
+            "CALIBRATION_METADATA_FILE",
+            provenance.get("metadata_path", ""),
+        )
+    )
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(provenance, handle, indent=2)
+    return output_path
+
+
+def _sha256_file(path):
+    """Return a streaming SHA-256 digest without loading a model into memory."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with pl.Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_settings_file(source, destination):
+    """Copy one provenance input atomically and return its file metadata."""
+    source = pl.Path(source).expanduser().resolve()
+    destination = pl.Path(destination).resolve()
+    if source != destination:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = destination.with_name(destination.name + ".tmp")
+        shutil.copy2(source, temp_path)
+        os.replace(temp_path, destination)
+    return {
+        "original_path": str(source),
+        "copied_path": str(destination),
+        "size_bytes": int(destination.stat().st_size),
+        "sha256": _sha256_file(destination),
+    }
+
+
+def save_analysis_settings_bundle(output_dir, cfg, strict=True):
+    """Archive the exact profile, runtime parameters, and model used by a run."""
+    from datetime import datetime
+
+    output_dir = pl.Path(output_dir).resolve()
+    settings_dir = output_dir / "settings"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    runtime_parameters = {
+        str(key): _json_scalar(value)
+        for key, value in cfg.items()
+        if not str(key).startswith("_")
+    }
+    runtime_path = settings_dir / "runtime_parameters.json"
+    _study_atomic_json(runtime_path, runtime_parameters)
+    files = [
+        {
+            "role": "runtime_parameters",
+            "original_path": "",
+            "copied_path": str(runtime_path),
+            "size_bytes": int(runtime_path.stat().st_size),
+            "sha256": _sha256_file(runtime_path),
+        }
+    ]
+
+    profile_source = str(cfg.get("_ACTIVE_PROFILE_PATH", "")).strip()
+    profile_destination = settings_dir / "analysis_profile_used.json"
+    if profile_source and pl.Path(profile_source).is_file():
+        profile_record = _copy_settings_file(
+            profile_source,
+            profile_destination,
+        )
+        profile_record["role"] = "loaded_analysis_profile"
+    else:
+        _study_atomic_json(profile_destination, runtime_parameters)
+        profile_record = {
+            "role": "generated_analysis_profile",
+            "original_path": "",
+            "copied_path": str(profile_destination),
+            "size_bytes": int(profile_destination.stat().st_size),
+            "sha256": _sha256_file(profile_destination),
+        }
+    files.append(profile_record)
+
+    checkpoint_source = str(cfg.get("UNET_MODEL_PATH", "")).strip()
+    engine = str(cfg.get("SEGMENTATION_ENGINE", "")).strip().lower()
+    checkpoint_required = engine in _UNET_SEGMENTATION_ENGINES
+    if checkpoint_source:
+        checkpoint_path = pl.Path(checkpoint_source).expanduser()
+        if checkpoint_path.is_file():
+            checkpoint_record = _copy_settings_file(
+                checkpoint_path,
+                settings_dir / checkpoint_path.name,
+            )
+            checkpoint_record["role"] = "unet_checkpoint"
+            files.append(checkpoint_record)
+        elif strict and checkpoint_required and cfg.get("_UNET_PROBABILITY_CACHE") is None:
+            raise FileNotFoundError(
+                f"Cannot archive missing U-Net checkpoint: {checkpoint_path}"
+            )
+        else:
+            files.append(
+                {
+                    "role": "unet_checkpoint",
+                    "original_path": str(checkpoint_path),
+                    "copied_path": "",
+                    "status": "missing",
+                }
+            )
+    elif strict and checkpoint_required and cfg.get("_UNET_PROBABILITY_CACHE") is None:
+        raise ValueError(
+            f"{engine} requires a U-Net checkpoint before settings can be archived"
+        )
+
+    calibration_source = output_dir / "calibration_used.json"
+    if calibration_source.is_file():
+        calibration_record = _copy_settings_file(
+            calibration_source,
+            settings_dir / "calibration_used.json",
+        )
+        calibration_record["role"] = "resolved_calibration"
+        files.append(calibration_record)
+
+    manifest = {
+        "pipeline_version": _VERSION,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "segmentation_engine": engine,
+        "active_profile_name": str(
+            cfg.get("_ACTIVE_PROFILE_NAME", "")
+        ).strip(),
+        "files": files,
+    }
+    manifest_path = settings_dir / "settings_manifest.json"
+    _study_atomic_json(manifest_path, manifest)
+    return {
+        "settings_dir": settings_dir,
+        "runtime_parameters": runtime_path,
+        "analysis_profile": profile_destination,
+        "manifest": manifest_path,
+    }
+
+
 def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy", base_cfg=None):
     """Discover top-level source Z-stacks below a study root without reading outputs."""
     study_root = pl.Path(study_root).resolve()
@@ -9797,6 +10835,7 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                 metadata = {
                     "xy_um_per_pixel": float(cfg.get("UM_PER_PX_XY", 1.0)),
                     "z_um_per_slice": float(cfg.get("UM_PER_SLICE_Z", 1.0)),
+                    "metadata_path": "",
                     "acquisition_class": (
                         f"generic filename ({stack_info['kind']}); "
                         "calibration inherited from current settings"
@@ -9824,6 +10863,10 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                     "z_max": max(z_values),
                     "xy_um_per_pixel": float(metadata["xy_um_per_pixel"]),
                     "z_um_per_slice": float(metadata["z_um_per_slice"]),
+                    "calibration_metadata_path": metadata.get(
+                        "metadata_path",
+                        "",
+                    ),
                     "acquisition_class": metadata["acquisition_class"],
                     "status": "pending",
                     "message": "",
@@ -9831,6 +10874,140 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                 }
             )
     return rows
+
+
+def discover_multisample_exclusions(
+    study_root,
+    included_rows=None,
+    roi_filename="analysis_roi_v5_7.npy",
+):
+    """Find specimen-like source folders omitted during stack discovery."""
+    study_root = pl.Path(study_root).resolve()
+    if not study_root.is_dir():
+        return []
+
+    included_dirs = {
+        pl.Path(str(row.get("input_dir", ""))).resolve()
+        for row in (included_rows or [])
+        if str(row.get("input_dir", "")).strip()
+    }
+    source_dirs = set(included_dirs)
+    source_ancestors = set()
+    for source_dir in source_dirs:
+        parent = source_dir.parent
+        while parent != study_root.parent:
+            source_ancestors.add(parent)
+            if parent == study_root:
+                break
+            parent = parent.parent
+
+    exclusions = []
+    candidate_dirs = [study_root]
+    candidate_dirs.extend(path for path in study_root.rglob("*") if path.is_dir())
+    for folder in candidate_dirs:
+        folder = folder.resolve()
+        if (
+            folder in source_dirs
+            or folder in source_ancestors
+            or _study_is_output_directory(folder, study_root)
+        ):
+            continue
+
+        top_level_files = [path for path in folder.iterdir() if path.is_file()]
+        tiff_files = [
+            path
+            for path in top_level_files
+            if path.suffix.lower() in {".tif", ".tiff"}
+        ]
+        parsed_sources = [
+            path for path in tiff_files if _study_parse_source_name(path.name)
+        ]
+        roi_found = (folder / roi_filename).is_file() or any(
+            path.suffix.lower() == ".npy"
+            and path.name.lower().startswith("roi")
+            for path in top_level_files
+        )
+        metadata_found = any(
+            child.is_dir() and child.name.lower() == "metadata"
+            for child in folder.iterdir()
+        )
+        if not (tiff_files or roi_found or metadata_found):
+            continue
+        if parsed_sources:
+            continue
+
+        reason_code = (
+            "unsupported_source_filenames" if tiff_files else "no_source_images"
+        )
+        details = (
+            "Top-level TIFF files were present but none matched a supported "
+            "source-stack filename."
+            if tiff_files
+            else "Specimen-like folder contained metadata or an ROI but no "
+            "top-level source TIFF images."
+        )
+        exclusions.append(
+            {
+                "candidate_id": _study_safe_id(folder.name),
+                "group": _study_group_from_folder(folder, study_root),
+                "input_dir": str(folder),
+                "exclusion_stage": "source_discovery",
+                "reason_code": reason_code,
+                "details": details,
+                "source_file_count": len(tiff_files),
+                "roi_found": bool(roi_found),
+                "metadata_found": bool(metadata_found),
+            }
+        )
+    return exclusions
+
+
+def save_study_exclusion_ledger(
+    rows,
+    path,
+    study_root=None,
+):
+    """Write an auditable ledger of discovery and manifest exclusions."""
+    ledger = []
+    if study_root:
+        ledger.extend(
+            discover_multisample_exclusions(
+                study_root,
+                included_rows=rows,
+            )
+        )
+    for row in rows:
+        include = _study_bool(row.get("include", True))
+        status = str(row.get("status", "")).strip().lower()
+        if include and status != "invalid":
+            continue
+        reason_code = "invalid_manifest_row" if status == "invalid" else "user_excluded"
+        ledger.append(
+            {
+                "candidate_id": _study_safe_id(row.get("sample_id", "")),
+                "group": str(row.get("group", "")).strip(),
+                "input_dir": str(row.get("input_dir", "")).strip(),
+                "exclusion_stage": "manifest_validation",
+                "reason_code": reason_code,
+                "details": str(row.get("message", "")).strip()
+                or (
+                    "Manifest row failed validation."
+                    if status == "invalid"
+                    else "Specimen was excluded by the user or input manifest."
+                ),
+                "source_file_count": int(row.get("slice_count", 0) or 0),
+                "roi_found": pl.Path(str(row.get("roi_path", ""))).is_file(),
+                "metadata_found": bool(
+                    str(row.get("calibration_metadata_path", "")).strip()
+                ),
+            }
+        )
+
+    path = pl.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(ledger, columns=STUDY_EXCLUSION_COLUMNS)
+    frame.to_csv(path, index=False)
+    return str(path)
 
 
 def save_multisample_manifest(rows, path):
@@ -10016,6 +11193,17 @@ def organize_multisample_study_copy(
                 "z_max": max(z_values),
                 "xy_um_per_pixel": float(row["xy_um_per_pixel"]),
                 "z_um_per_slice": float(row["z_um_per_slice"]),
+                "calibration_metadata_path": (
+                    str(
+                        metadata_destination
+                        / pl.Path(
+                            str(row.get("calibration_metadata_path", ""))
+                        ).name
+                    )
+                    if copy_metadata
+                    and str(row.get("calibration_metadata_path", "")).strip()
+                    else str(row.get("calibration_metadata_path", ""))
+                ),
                 "acquisition_class": row.get("acquisition_class", ""),
                 "status": "pending",
                 "message": "" if destination_roi.is_file() else "ROI file missing",
@@ -10180,7 +11368,14 @@ def _study_atomic_json(path, data):
     temp_path = path.with_suffix(path.suffix + ".tmp")
     with temp_path.open("w", encoding="utf-8") as handle:
         json.dump(_json_scalar(data), handle, indent=2)
-    os.replace(temp_path, path)
+    for attempt in range(4):
+        try:
+            os.replace(temp_path, path)
+            break
+        except PermissionError:
+            if attempt == 3:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def _study_next_attempt_dir(sample_root):
@@ -10271,7 +11466,7 @@ def _study_track_source_sets(output_dir):
     if tracked.empty or "track_id" not in tracked.columns or "detection_source" not in tracked.columns:
         return set(), set()
     source = tracked["detection_source"].fillna("saturn_classical").astype(str)
-    tracked = tracked.assign(_is_unet=source.str.startswith("unet_rescued"))
+    tracked = tracked.assign(_is_unet=source.str.startswith("unet_"))
     unet_by_track = tracked.groupby("track_id")["_is_unet"].any()
     unet_tracks = set(unet_by_track[unet_by_track].index.tolist())
     classical_only_tracks = set(unet_by_track[~unet_by_track].index.tolist())
@@ -10496,11 +11691,18 @@ _STUDY_COMPARISON_METRICS = {
 
 
 def _study_reference_group(groups):
-    """Prefer a clearly named WT group as the comparison reference."""
+    """Prefer a clearly named reference or control group."""
     groups = sorted(str(group) for group in groups)
     for group in groups:
         label = group.lower()
-        if "wild" in label or "w1118" in label or re.search(r"(^|[^a-z])wt([^a-z]|$)", label):
+        if (
+            "control" in label
+            or "reference" in label
+            or re.search(r"(^|[^a-z])ctrl([^a-z]|$)", label)
+            or "wild" in label
+            or "w1118" in label
+            or re.search(r"(^|[^a-z])wt([^a-z]|$)", label)
+        ):
             return group
     return groups[0] if groups else ""
 
@@ -10681,9 +11883,18 @@ def _study_specimen_group_comparisons(
 
 
 def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, output_path):
-    """Plot every specimen; do not substitute pooled nucleus-level distributions."""
+    """Plot every specimen and append a plain-language methods page."""
     if comparison_frame.empty:
         return False
+    import textwrap
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    def wrap_explanation(text, width):
+        return "\n".join(
+            textwrap.fill(line, width=width) if line else ""
+            for line in text.splitlines()
+        )
+
     metrics = comparison_frame["metric"].tolist()
     groups = [
         comparison_frame.iloc[0]["reference_group"],
@@ -10738,8 +11949,268 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         fontweight="bold",
     )
     figure.tight_layout(rect=(0, 0, 1, 0.95))
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+
+    explanation = plt.figure(figsize=(13.5, 10.5))
+    explanation.patch.set_facecolor("white")
+    explanation.suptitle(
+        "How to read the specimen-level comparison",
+        fontsize=19,
+        fontweight="bold",
+        y=0.965,
+    )
+    explanation.text(
+        0.05,
+        0.91,
+        wrap_explanation(
+            f"Groups shown: {groups[0]} (reference) and {groups[1]} (comparison).  "
+            "Each colored point is one biological specimen. The black horizontal "
+            "line is the group median. Individual nuclei are not treated as "
+            "independent biological replicates.",
+            145,
+        ),
+        fontsize=11.5,
+        va="top",
+        wrap=True,
+    )
+
+    left_text = (
+        "COUNT AND NORMALIZATION PANELS\n\n"
+        "Primary count\n"
+        "N = number of technical-valid 3D tracks. Morphology warnings remain "
+        "included; obvious leakage, invalid geometry, and unresolved multi-object "
+        "components are excluded.\n\n"
+        "ROI area\n"
+        "A = ROI pixels x (XY calibration in um/pixel)^2\n\n"
+        "Sampled depth and volume\n"
+        "D = included Z slices x Z step (um)\n"
+        "V = A x D\n\n"
+        "Estimated nuclei per 1,000 um2\n"
+        "(N / A) x 1,000\n"
+        "An area-normalized projection-style density. It does not correct for "
+        "different stack depths.\n\n"
+        "Estimated nuclei per 100,000 um3\n"
+        "(N / V) x 100,000\n"
+        "A sampled-volume density. This is preferable when stack depths differ, "
+        "but it can still be influenced by acquisition depth, stack boundaries, "
+        "and cross-slice tracking."
+    )
+    right_text = (
+        "MORPHOLOGY PANELS\n\n"
+        "Specimen median 2D length\n"
+        "For each reconstructed nucleus, take its maximum calibrated centerline "
+        "length across observed slices; then take the specimen median.\n\n"
+        "Specimen median 2D width\n"
+        "Median calibrated mask width for each nucleus, summarized by the "
+        "specimen median.\n\n"
+        "Length / width\n"
+        "Centerline length divided by mask width. Larger values indicate a more "
+        "elongated, slender object.\n\n"
+        "3D length\n"
+        "sqrt(maximum lateral 2D length^2 + Z span^2). This is a calibrated "
+        "projection-plus-Z estimate, not a surface-mesh length.\n\n"
+        "3D tortuosity\n"
+        "Estimated 3D path length / 3D end-to-end distance. A value near 1 is "
+        "straight; larger values are more curved.\n\n"
+        "Volume\n"
+        "Sum of filled-mask pixels across slices x XY pixel area x Z step.\n\n"
+        "Effective thickness\n"
+        "2 x sqrt((volume / 3D length) / pi). This is a diameter proxy and is "
+        "PSF- and segmentation-sensitive.\n\n"
+        "Z span\n"
+        "(last Z index - first Z index) x Z step."
+    )
+    explanation.text(
+        0.05,
+        0.82,
+        wrap_explanation(left_text, 67),
+        fontsize=10.6,
+        va="top",
+        wrap=True,
+        bbox={
+            "boxstyle": "round,pad=0.7",
+            "facecolor": "#F3F7FA",
+            "edgecolor": "#B8C7D1",
+        },
+    )
+    explanation.text(
+        0.52,
+        0.82,
+        wrap_explanation(right_text, 69),
+        fontsize=10.6,
+        va="top",
+        wrap=True,
+        bbox={
+            "boxstyle": "round,pad=0.7",
+            "facecolor": "#F7F7F4",
+            "edgecolor": "#C8C8BC",
+        },
+    )
+    explanation.text(
+        0.05,
+        0.075,
+        wrap_explanation(
+            "INTERPRETATION: Use specimen-level medians and effect sizes for "
+            "reference-versus-comparison analysis. A morphology warning annotates an "
+            "unusual but measurable nucleus and does not remove it. Count-density "
+            "results should be checked for stack-depth sensitivity. Volume and "
+            "effective thickness should be compared only between matched microscope "
+            "settings. Statistical results are exploratory and are reported in "
+            "specimen_group_comparisons.csv.",
+            150,
+        ),
+        fontsize=11,
+        fontweight="bold",
+        va="bottom",
+        wrap=True,
+        bbox={
+            "boxstyle": "round,pad=0.7",
+            "facecolor": "#FFF6E6",
+            "edgecolor": "#D5B36A",
+        },
+    )
+
+    meanings = plt.figure(figsize=(13.5, 10.5))
+    meanings.patch.set_facecolor("white")
+    meanings.suptitle(
+        "What each measurement means biologically",
+        fontsize=19,
+        fontweight="bold",
+        y=0.965,
+    )
+    meanings.text(
+        0.05,
+        0.91,
+        wrap_explanation(
+            "Every panel summarizes one value per specimen. The question below "
+            "each heading describes what that panel can help answer; it does not "
+            "by itself prove a biological mechanism.",
+            145,
+        ),
+        fontsize=11.5,
+        va="top",
+    )
+    measurement_cards = [
+        (
+            "Estimated nuclei per 1,000 um2",
+            "Question: How many nuclei are present per unit of tissue area?",
+            "Meaning: An XY-area density. Higher values mean more reconstructed "
+            "nuclei within the ROI footprint, but deeper stacks can increase this "
+            "number because stack depth is not included.",
+        ),
+        (
+            "Estimated nuclei per 100,000 um3",
+            "Question: How many nuclei are present per unit of sampled 3D volume?",
+            "Meaning: A volume-normalized density. Higher values indicate more "
+            "nuclei within the sampled ROI volume. It adjusts for nominal stack "
+            "depth but remains sensitive to stack boundaries and tracking.",
+        ),
+        (
+            "Specimen median 2D length",
+            "Question: Are the nuclei typically longer in the image plane?",
+            "Meaning: The typical maximum visible centerline length for a nucleus "
+            "across its observed slices. Higher values indicate longer projected "
+            "nuclei; the specimen median limits the influence of extremes.",
+        ),
+        (
+            "Specimen median 2D width",
+            "Question: Are nuclei typically broader or thinner?",
+            "Meaning: The typical calibrated width of the filled nucleus masks. "
+            "Higher values indicate broader nuclei. Width is influenced by optical "
+            "resolution, PSF, focus, and mask boundaries.",
+        ),
+        (
+            "Specimen median 2D length / width",
+            "Question: Are nuclei more elongated or more rounded?",
+            "Meaning: A shape ratio. Higher values indicate long, slender nuclei; "
+            "lower values indicate shorter, broader, or more rounded nuclei. It "
+            "should be interpreted together with length and width.",
+        ),
+        (
+            "Specimen median 3D length",
+            "Question: Are nuclei longer after accounting for their Z orientation?",
+            "Meaning: Combines maximum lateral length with calibrated Z span. It "
+            "can exceed 2D length when a nucleus extends through several planes. "
+            "It is a projection-plus-Z estimate, not a surface trace.",
+        ),
+        (
+            "Specimen median 3D tortuosity",
+            "Question: Are nuclei straighter or more curved?",
+            "Meaning: Path length divided by end-to-end distance. A value near "
+            "1 indicates a straight nucleus; larger values indicate increasing "
+            "curvature or an irregular reconstructed path.",
+        ),
+        (
+            "Specimen median effective thickness",
+            "Question: Is the reconstructed nucleus effectively thicker?",
+            "Meaning: A diameter proxy calculated from volume divided by length. "
+            "Higher values suggest thicker objects, but this is not a direct width "
+            "measurement and is PSF- and segmentation-sensitive.",
+        ),
+        (
+            "Specimen median volume",
+            "Question: How much calibrated 3D mask volume does a typical nucleus occupy?",
+            "Meaning: Filled-mask area accumulated through Z. Higher values can "
+            "reflect longer or thicker nuclei, but volume also depends on mask "
+            "thresholds, Z sampling, and optical resolution.",
+        ),
+        (
+            "Specimen median Z span",
+            "Question: Through how much physical optical depth is a nucleus observed?",
+            "Meaning: Distance from its first to last linked Z plane. Larger values "
+            "indicate greater axial extent or tilt. A single-slice track has zero "
+            "endpoint-to-endpoint Z span and is not automatically invalid.",
+        ),
+    ]
+    x_positions = [0.05, 0.52]
+    y_positions = [0.83, 0.685, 0.54, 0.395, 0.25]
+    for index, (title, question, meaning) in enumerate(measurement_cards):
+        column = index % 2
+        row = index // 2
+        text = (
+            f"{title}\n"
+            f"{wrap_explanation(question, 68)}\n"
+            f"{wrap_explanation(meaning, 68)}"
+        )
+        meanings.text(
+            x_positions[column],
+            y_positions[row],
+            text,
+            fontsize=9.8,
+            va="top",
+            linespacing=1.18,
+            bbox={
+                "boxstyle": "round,pad=0.65",
+                "facecolor": "#F7F9FA" if column == 0 else "#F8F8F3",
+                "edgecolor": "#C4CDD2",
+            },
+        )
+    meanings.text(
+        0.05,
+        0.07,
+        wrap_explanation(
+            "Use the direction and size of the specimen-level shift together "
+            "with confidence intervals, effect sizes, acquisition checks, and "
+            "representative overlays. Do not choose a biological conclusion from "
+            "a p-value or one panel alone.",
+            145,
+        ),
+        fontsize=11,
+        fontweight="bold",
+        va="bottom",
+        bbox={
+            "boxstyle": "round,pad=0.7",
+            "facecolor": "#FFF6E6",
+            "edgecolor": "#D5B36A",
+        },
+    )
+
+    with PdfPages(output_path) as pdf:
+        pdf.savefig(figure, dpi=180, bbox_inches="tight")
+        pdf.savefig(explanation, dpi=180, bbox_inches="tight")
+        pdf.savefig(meanings, dpi=180, bbox_inches="tight")
     plt.close(figure)
+    plt.close(explanation)
+    plt.close(meanings)
     return True
 
 
@@ -10891,6 +12362,7 @@ def run_multisample_study(
     resume=True,
     batch_runner=None,
     stop_requested=None,
+    study_root=None,
 ):
     """Run validated specimens sequentially and resume completed sample attempts."""
     from datetime import datetime
@@ -10914,7 +12386,18 @@ def run_multisample_study(
     output_root = pl.Path(output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     save_multisample_manifest(validated, output_root / "study_manifest.csv")
+    save_study_exclusion_ledger(
+        validated,
+        output_root / "study_exclusion_ledger.csv",
+        study_root=study_root,
+    )
     cfg_template = CONFIG.copy() if base_cfg is None else dict(base_cfg)
+    production_runner = batch_runner is None
+    save_analysis_settings_bundle(
+        output_root,
+        cfg_template,
+        strict=production_runner,
+    )
     config_hash = _study_config_fingerprint(cfg_template)
     state_path = output_root / "study_run_state.json"
     state = {
@@ -10993,6 +12476,26 @@ def run_multisample_study(
                 "DO_TRACKING": True,
             }
         )
+        sample_cfg["_CALIBRATION_PROVENANCE"] = {
+            "status": (
+                "leica_xml"
+                if str(
+                    row.get("calibration_metadata_path", "")
+                ).strip()
+                else "study_manifest"
+            ),
+            "metadata_path": str(
+                row.get("calibration_metadata_path", "")
+            ),
+            "xy_um_per_pixel": float(row["xy_um_per_pixel"]),
+            "z_um_per_slice": float(row["z_um_per_slice"]),
+            "acquisition_class": str(
+                row.get("acquisition_class", "")
+            ),
+            "auto_leica_calibration": bool(
+                sample_cfg.get("AUTO_LEICA_CALIBRATION", True)
+            ),
+        }
         try:
             runner(sample_cfg)
             summary = summarize_study_sample(row, attempt_dir)
@@ -11052,6 +12555,60 @@ def run_multisample_study(
     summaries = _write_study_aggregates(output_root, validated, state)
     return state, pd.DataFrame(summaries)
 
+
+def generate_study_between_sample_analysis(study_output_dir):
+    """Generate the organized biological-results and quality-control packages."""
+    study_output = pl.Path(study_output_dir).resolve()
+    generator = (
+        pl.Path(PROJECT_ROOT)
+        / "scripts"
+        / "generate_v57_biological_comparison.py"
+    )
+    if not generator.is_file():
+        raise FileNotFoundError(
+            f"Between-sample report generator was not found: {generator}"
+        )
+    required = (
+        "specimen_summary.csv",
+        "study_track_records.csv",
+    )
+    missing = [name for name in required if not (study_output / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Study aggregation must finish before report generation. Missing: "
+            + ", ".join(missing)
+        )
+    command = [
+        sys.executable,
+        str(generator),
+        "--study-output",
+        str(study_output),
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(
+            "Between-sample report generation failed"
+            + (f": {detail}" if detail else ".")
+        )
+    package_root = study_output / "between_sample_analysis"
+    paths = {
+        "package_root": package_root,
+        "biological_dir": package_root / "01_biological_results",
+        "qc_dir": package_root / "02_quality_control",
+    }
+    for label, path in paths.items():
+        if not path.is_dir():
+            raise RuntimeError(f"Generated {label} was not found: {path}")
+    return paths
+
+
 # =============================================================================
 
 class SpermGUI:
@@ -11089,52 +12646,130 @@ class SpermGUI:
         knows the new parameters are active.
         """
         def on_apply(new_cfg):
-            CONFIG.update(new_cfg)
+            candidate = CONFIG.copy()
+            candidate.update(new_cfg)
+            try:
+                validate_analysis_runtime_config(candidate)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Invalid Analysis Configuration",
+                    str(exc),
+                    parent=self.root,
+                )
+                return
+            CONFIG.update(candidate)
+            self._refresh_analysis_profile_status()
             self.lbl_roi.config(text="Parameters updated in memory.")
 
         editor = ParameterEditor(self.root, CONFIG, self.default_config, on_apply)
 
+    def _refresh_analysis_profile_status(self):
+        summary = analysis_profile_summary(CONFIG)
+        if hasattr(self, "lbl_params_status"):
+            self.lbl_params_status.config(text=summary, fg="#0f766e")
+        if hasattr(self, "study_profile_var"):
+            self.study_profile_var.set(summary)
+
+    def _select_unet_checkpoint(self):
+        """Select and validate the checkpoint used by all GUI run modes."""
+        from tkinter import filedialog, messagebox
+
+        current = str(CONFIG.get("UNET_MODEL_PATH", "")).strip()
+        initial_dir = (
+            os.path.dirname(current)
+            if current and os.path.isdir(os.path.dirname(current))
+            else os.path.dirname(os.path.abspath(__file__))
+        )
+        filepath = filedialog.askopenfilename(
+            title="Select v5.7 U-Net Checkpoint",
+            filetypes=[
+                ("PyTorch checkpoints", "*.pt *.pth"),
+                ("All Files", "*.*"),
+            ],
+            initialdir=initial_dir,
+        )
+        if not filepath:
+            return
+        candidate = CONFIG.copy()
+        candidate["UNET_MODEL_PATH"] = os.path.abspath(filepath)
+        try:
+            validate_analysis_runtime_config(candidate)
+        except Exception as exc:
+            messagebox.showerror("Checkpoint Error", str(exc), parent=self.root)
+            return
+        CONFIG.update(candidate)
+        self._refresh_analysis_profile_status()
+
     def _load_tuned_params(self):
-        """Load a tuned parameters JSON file and merge into CONFIG."""
+        """Load one analysis profile containing segmentation and tracking settings."""
         from tkinter import filedialog, messagebox
         filepath = filedialog.askopenfilename(
-            title="Select Tuned Parameters JSON",
+            title="Select Saturn v5.7 Analysis Profile",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
             initialdir=os.path.dirname(os.path.abspath(__file__))
         )
         if not filepath:
             return
         try:
-            with open(filepath, 'r') as f:
-                tuned = json.load(f)
-
-            # Only update keys that exist in CONFIG (safety check)
-            applied = []
-            for key, value in tuned.items():
-                if key in CONFIG:
-                    old_val = CONFIG[key]
-                    CONFIG[key] = value
-                    applied.append(f"  {key}: {old_val} -> {value}")
-
-            if applied:
-                n = len(applied)
-                short_name = os.path.basename(filepath)
-                self.lbl_params_status.config(
-                    text=f'OK Loaded {n} params from {short_name}',
-                    fg='green'
+            candidate, applied = load_analysis_profile(filepath, CONFIG)
+            engine = str(candidate.get("SEGMENTATION_ENGINE", "")).lower()
+            checkpoint = str(candidate.get("UNET_MODEL_PATH", "")).strip()
+            if (
+                engine in _UNET_SEGMENTATION_ENGINES
+                and (not checkpoint or not os.path.isfile(checkpoint))
+            ):
+                replacement = filedialog.askopenfilename(
+                    title=(
+                        "Checkpoint path in the profile is missing or moved; "
+                        "select the matching .pt file"
+                    ),
+                    filetypes=[
+                        ("PyTorch checkpoints", "*.pt *.pth"),
+                        ("All Files", "*.*"),
+                    ],
+                    initialdir=os.path.dirname(filepath),
                 )
-                detail = "\n".join(applied)
-                messagebox.showinfo(
-                    "Parameters Loaded",
-                    f"Loaded {n} parameters from:\n{short_name}\n\n"
-                    f"Changes applied:\n{detail}\n\n"
-                    f"Use 'Revert Defaults' to undo."
+                if not replacement:
+                    return
+                candidate, applied = load_analysis_profile(
+                    filepath,
+                    CONFIG,
+                    checkpoint_override=replacement,
                 )
-            else:
-                messagebox.showwarning("No Matching Keys",
-                    f"No recognized CONFIG keys found in {os.path.basename(filepath)}")
+            runtime = validate_analysis_runtime_config(candidate)
+            CONFIG.update(candidate)
+            self._refresh_analysis_profile_status()
+            checkpoint_name = (
+                os.path.basename(runtime["checkpoint_path"])
+                if runtime["checkpoint_path"]
+                else "not required"
+            )
+            messagebox.showinfo(
+                "Analysis Profile Loaded",
+                f"Loaded {len(applied)} settings from:\n"
+                f"{os.path.basename(filepath)}\n\n"
+                f"Segmentation engine: {runtime['segmentation_engine']}\n"
+                f"U-Net checkpoint: {checkpoint_name}\n\n"
+                "This profile is now active for Run Slice, Run Batch, and "
+                "the Study Manager.",
+                parent=self.root,
+            )
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load parameters:\n{e}")
+
+    def _analysis_preflight(self, cfg, operation):
+        """Block a GUI run when its selected analysis inputs are incomplete."""
+        try:
+            validate_analysis_runtime_config(cfg)
+            return True
+        except Exception as exc:
+            messagebox.showerror(
+                f"{operation} Not Ready",
+                f"{exc}\n\nLoad the reviewed analysis-profile JSON and its "
+                "matching U-Net checkpoint in the Parameters section.",
+                parent=self.root,
+            )
+            return False
 
     def _launch_parameter_tuner(self, mode):
         """Launch the external V5.6 ROI-ADAPTIVE tuner without blocking the GUI."""
@@ -11207,10 +12842,88 @@ class SpermGUI:
                 "Tuner Started",
                 f"Started {mode} tuning in a separate process.\n\n"
                 f"Results will be saved to:\n{outdir}\n\n"
-                "When it finishes, use 'Load Tuned Params' to apply a JSON candidate."
+                "When it finishes, use 'Load Analysis Profile' to apply a reviewed JSON."
             )
         except Exception as e:
             messagebox.showerror("Tuner Launch Error", f"Could not launch tuner:\n{e}")
+
+    def _launch_tuner_workspace(self):
+        """Open the v5.7 tuning workspace with the active analysis inputs."""
+        from tkinter import messagebox
+
+        workspace = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "utils",
+            "tuner_gui_Saturnv5_7.py",
+        )
+        if not os.path.isfile(workspace):
+            messagebox.showerror(
+                "Tuning Workspace Missing",
+                f"Could not find:\n{workspace}",
+                parent=self.root,
+            )
+            return
+        command = [sys.executable, workspace]
+        if self.input_dir:
+            command.extend(["--dir", self.input_dir])
+
+        roi_path = ""
+        if self.current_img is not None and (
+            self._loaded_roi_mask is not None or self.roi_active
+        ):
+            try:
+                roi_mask = self.build_roi_mask()
+                if roi_mask is not None and np.any(roi_mask):
+                    roi_dir = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "parameter_tuning_results_v5_7",
+                        "gui_inputs",
+                    )
+                    ensure_dir(roi_dir)
+                    roi_path = os.path.join(
+                        roi_dir,
+                        "active_gui_roi_v5_7.npy",
+                    )
+                    np.save(roi_path, roi_mask.astype(bool))
+            except Exception as exc:
+                messagebox.showwarning(
+                    "ROI Export",
+                    f"The tuning workspace will open without the current ROI:\n{exc}",
+                    parent=self.root,
+                )
+        if roi_path:
+            command.extend(["--roi-mask", roi_path])
+        profile_path = str(CONFIG.get("_ACTIVE_PROFILE_PATH", "")).strip()
+        if profile_path and os.path.isfile(profile_path):
+            command.extend(["--base-params", profile_path])
+        checkpoint = str(CONFIG.get("UNET_MODEL_PATH", "")).strip()
+        if checkpoint and os.path.isfile(checkpoint):
+            command.extend(["--unet-model", checkpoint])
+        manifest = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "parameter_tuning_results_v5_7",
+            "mixed_wt_kj_retune",
+            "mixed_tuner_manifest.csv",
+        )
+        if os.path.isfile(manifest):
+            command.extend(["--manifest", manifest])
+        try:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(
+                command,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                creationflags=creationflags,
+            )
+            self.lbl_params_status.config(
+                text="Tuning workspace opened",
+                fg="#0f766e",
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Tuning Workspace",
+                f"Could not open the tuning workspace:\n{exc}",
+                parent=self.root,
+            )
 
     def _on_sidebar_frame_configure(self, event=None):
         self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox('all'))
@@ -11324,11 +13037,9 @@ class SpermGUI:
     def _revert_to_defaults(self):
         """Revert CONFIG back to the original defaults captured at startup."""
         from tkinter import messagebox
+        CONFIG.clear()
         CONFIG.update(self.default_config)
-        self.lbl_params_status.config(
-            text='Using default parameters',
-            fg='#555'
-        )
+        self._refresh_analysis_profile_status()
         messagebox.showinfo("Reverted", "All parameters have been reverted to their original defaults.")
 
     def __init__(self, root):
@@ -11358,10 +13069,14 @@ class SpermGUI:
         self.study_stop_button = None
         self.study_progress_bar = None
         self.study_status_var = tk.StringVar(value="No study loaded")
+        self.study_profile_var = tk.StringVar(
+            value=analysis_profile_summary(CONFIG)
+        )
         self.study_output_var = tk.StringVar(value="Output: not selected")
         self.study_progress_var = tk.DoubleVar(value=0)
         self.study_progress_text_var = tk.StringVar(value="Progress: 0 / 0 specimens")
         self._study_running = False
+        self._study_report_running = False
         self._study_stop_event = threading.Event()
 
         self.roi_points = []
@@ -11462,9 +13177,23 @@ class SpermGUI:
         tk.Button(params_section, text='Configure Parameters', command=self.open_parameter_editor, bg='#e2e3e5').pack(fill='x', padx=8, pady=(8, 4))
         params_frame = tk.Frame(params_section, bg='#f7f7f7')
         params_frame.pack(fill='x', padx=8, pady=(0, 4))
-        tk.Button(params_frame, text='Load Tuned Params', command=self._load_tuned_params, bg='#d4edda', width=16).pack(side='left', expand=True, fill='x', padx=(0, 2))
+        tk.Button(params_frame, text='Load Analysis Profile', command=self._load_tuned_params, bg='#d4edda', width=18).pack(side='left', expand=True, fill='x', padx=(0, 2))
         tk.Button(params_frame, text='Revert Defaults', command=self._revert_to_defaults, bg='#f8d7da', width=14).pack(side='right', expand=True, fill='x', padx=(2, 0))
-        self.lbl_params_status = tk.Label(params_section, text='Using default parameters', wraplength=260, justify='left', fg='#555', bg="#f7f7f7", font=('Arial', 8))
+        tk.Button(
+            params_section,
+            text="Select U-Net Checkpoint",
+            command=self._select_unet_checkpoint,
+            bg="#e0e7ff",
+        ).pack(fill="x", padx=8, pady=(0, 4))
+        self.lbl_params_status = tk.Label(
+            params_section,
+            text=analysis_profile_summary(CONFIG),
+            wraplength=260,
+            justify='left',
+            fg='#555',
+            bg="#f7f7f7",
+            font=('Arial', 8),
+        )
         self.lbl_params_status.pack(fill='x', padx=8, pady=(0, 8))
 
         tuning_section = self._make_sidebar_section(self.sidebar, "Tuning", default_open=True, accent="#cffafe")
@@ -11472,18 +13201,11 @@ class SpermGUI:
         tuner_frame.pack(fill='x', padx=8, pady=8)
         tk.Button(
             tuner_frame,
-            text='Tune Segmentation',
-            command=lambda: self._launch_parameter_tuner("segmentation"),
+            text='Open Tuning Workspace',
+            command=self._launch_tuner_workspace,
             bg='#cffafe',
-            width=16
-        ).pack(side='left', expand=True, fill='x', padx=(0, 2))
-        tk.Button(
-            tuner_frame,
-            text='Tune Tracking',
-            command=lambda: self._launch_parameter_tuner("tracking"),
-            bg='#e0e7ff',
-            width=14
-        ).pack(side='right', expand=True, fill='x', padx=(2, 0))
+            font=("Arial", 9, "bold"),
+        ).pack(fill='x')
 
         nav_section = self._make_sidebar_section(self.sidebar, "Z Navigation", default_open=True, accent="#fef3c7")
         self.scale_z = tk.Scale(nav_section, from_=0, to=0, orient='horizontal', command=self.on_slide_change, bg="#f7f7f7", highlightthickness=0)
@@ -11623,10 +13345,44 @@ class SpermGUI:
         )
         self.study_stop_button.pack(side="right", padx=4, pady=6)
 
+        report_toolbar = tk.Frame(window, bg="#f8fafc")
+        report_toolbar.pack(fill="x", padx=6, pady=(3, 0))
+        tk.Label(
+            report_toolbar,
+            text="Study results:",
+            bg="#f8fafc",
+            fg="#475569",
+            font=("Arial", 9, "bold"),
+        ).pack(side="left", padx=(2, 6))
+        for text, command in (
+            ("Refresh Analysis Package", self._study_refresh_analysis_package),
+            (
+                "Open Biological Results",
+                lambda: self._study_open_analysis_package("biological"),
+            ),
+            (
+                "Open Quality Control",
+                lambda: self._study_open_analysis_package("qc"),
+            ),
+        ):
+            tk.Button(report_toolbar, text=text, command=command).pack(
+                side="left",
+                padx=4,
+                pady=3,
+            )
+
         status = tk.Frame(window, bg="#f8fafc")
         status.pack(fill="x", padx=8, pady=(6, 2))
         tk.Label(status, textvariable=self.study_status_var, anchor="w", bg="#f8fafc").pack(fill="x")
         tk.Label(status, textvariable=self.study_output_var, anchor="w", bg="#f8fafc", fg="#475569").pack(fill="x")
+        self.study_profile_var.set(analysis_profile_summary(CONFIG))
+        tk.Label(
+            status,
+            textvariable=self.study_profile_var,
+            anchor="w",
+            bg="#f8fafc",
+            fg="#0f766e",
+        ).pack(fill="x")
         progress_row = tk.Frame(status, bg="#f8fafc")
         progress_row.pack(fill="x", pady=(5, 1))
         self.study_progress_bar = ttk.Progressbar(
@@ -11692,8 +13448,12 @@ class SpermGUI:
         self._study_refresh_tree()
 
     def _study_close_window(self):
-        if self._study_running:
-            messagebox.showinfo("Study Running", "The study manager remains open while processing is active.")
+        if self._study_running or self._study_report_running:
+            messagebox.showinfo(
+                "Study Manager Busy",
+                "The study manager remains open while processing or report "
+                "generation is active.",
+            )
             return
         if self.study_window is not None:
             self.study_window.destroy()
@@ -12034,8 +13794,117 @@ class SpermGUI:
             parent=self.study_window,
         )
 
+    def _study_analysis_paths(self):
+        if not self.study_output_dir:
+            return {}
+        package_root = (
+            pl.Path(self.study_output_dir).resolve()
+            / "between_sample_analysis"
+        )
+        return {
+            "package": package_root,
+            "biological": package_root / "01_biological_results",
+            "qc": package_root / "02_quality_control",
+        }
+
+    def _study_open_analysis_package(self, package):
+        paths = self._study_analysis_paths()
+        target = paths.get(package)
+        if target is None or not target.is_dir():
+            messagebox.showwarning(
+                "Analysis Package Not Found",
+                "Generate the study aggregates first, then use Refresh Analysis "
+                "Package.\n\n"
+                f"Expected folder:\n{target or 'No study output selected'}",
+                parent=self.study_window,
+            )
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(target))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Open Folder",
+                f"{type(exc).__name__}: {exc}\n\n{target}",
+                parent=self.study_window,
+            )
+
+    def _study_refresh_analysis_package(self):
+        if self._study_running or self._study_report_running:
+            messagebox.showinfo(
+                "Study Busy",
+                "Wait for the current study or report operation to finish.",
+                parent=self.study_window,
+            )
+            return
+        if not self.study_output_dir:
+            messagebox.showwarning(
+                "No Study Output",
+                "Select the completed study output folder first.",
+                parent=self.study_window,
+            )
+            return
+        package_root = self._study_analysis_paths()["package"]
+        if package_root.exists():
+            proceed = messagebox.askyesno(
+                "Refresh Analysis Package",
+                "Regenerate the biological and QC reports from the current study "
+                "aggregates?\n\n"
+                "Generated PDF, PowerPoint, Excel, figure, and derived-data files "
+                "will be refreshed. Manual edits inside those generated files may "
+                "be overwritten.",
+                parent=self.study_window,
+            )
+            if not proceed:
+                return
+        self._study_report_running = True
+        self.study_status_var.set("Generating biological and QC analysis packages")
+
+        def worker():
+            try:
+                paths = generate_study_between_sample_analysis(
+                    self.study_output_dir
+                )
+                self.root.after(
+                    0,
+                    lambda: self._study_analysis_refresh_finished(paths),
+                )
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                self.root.after(
+                    0,
+                    lambda: self._study_analysis_refresh_failed(detail),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _study_analysis_refresh_finished(self, paths):
+        self._study_report_running = False
+        self.study_status_var.set("Biological and QC analysis packages are ready")
+        messagebox.showinfo(
+            "Analysis Package Ready",
+            "Biological results:\n"
+            f"{paths['biological_dir']}\n\n"
+            "Quality control:\n"
+            f"{paths['qc_dir']}",
+            parent=self.study_window,
+        )
+
+    def _study_analysis_refresh_failed(self, detail):
+        self._study_report_running = False
+        self.study_status_var.set("Analysis package generation failed")
+        messagebox.showerror(
+            "Analysis Package Failed",
+            detail,
+            parent=self.study_window,
+        )
+
     def _study_select_output(self):
-        if self._study_running:
+        if self._study_running or self._study_report_running:
             return
         output_dir = filedialog.askdirectory(
             title="Select or create a separate study output folder",
@@ -12101,10 +13970,15 @@ class SpermGUI:
         if not separate:
             messagebox.showerror("Invalid Output Folder", reason, parent=self.study_window)
             return
+        cfg = CONFIG.copy()
+        if not self._analysis_preflight(cfg, "Multi-Sample Study"):
+            return
         included = sum(_study_bool(row.get("include", True)) for row in self.study_rows)
         proceed = messagebox.askyesno(
             "Run Multi-Sample Study",
-            f"Run or resume {included} independent samples?\n\nOutput:\n{self.study_output_dir}",
+            f"Run or resume {included} independent samples?\n\n"
+            f"{analysis_profile_summary(cfg)}\n\n"
+            f"Output:\n{self.study_output_dir}",
             parent=self.study_window,
         )
         if not proceed:
@@ -12126,7 +14000,6 @@ class SpermGUI:
         self.study_status_var.set(f"Starting {included}-sample study")
         rows = [dict(row) for row in self.study_rows]
         output_dir = self.study_output_dir
-        cfg = CONFIG.copy()
 
         def progress(event):
             self.root.after(0, lambda item=dict(event): self._study_progress_event(item))
@@ -12140,7 +14013,32 @@ class SpermGUI:
                     progress_callback=progress,
                     resume=True,
                     stop_requested=self._study_stop_event,
+                    study_root=self.study_root_dir,
                 )
+                if state.get("run_status") == "complete":
+                    try:
+                        if progress:
+                            progress(
+                                {
+                                    "event": "reporting",
+                                    "sample_id": "",
+                                    "position": included,
+                                    "total": included,
+                                    "message": (
+                                        "generating biological and QC packages"
+                                    ),
+                                }
+                            )
+                        state["_analysis_paths"] = {
+                            key: str(value)
+                            for key, value in generate_study_between_sample_analysis(
+                                output_dir
+                            ).items()
+                        }
+                    except Exception as exc:
+                        state["_analysis_error"] = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
                 self.root.after(0, lambda: self._study_run_finished(state, summary))
             except Exception as exc:
                 detail = f"{type(exc).__name__}: {exc}"
@@ -12215,11 +14113,20 @@ class SpermGUI:
             f"Progress: {min(completed + failed, total)} / {total} specimens"
         )
         stopped = state.get("run_status") == "stopped"
+        analysis_paths = state.get("_analysis_paths", {})
+        analysis_error = state.get("_analysis_error", "")
         self.study_status_var.set(
             (
                 f"Study paused: {completed} complete, {failed} failed"
                 if stopped
-                else f"Study finished: {completed} complete, {failed} failed"
+                else (
+                    f"Study finished: {completed} complete, {failed} failed; "
+                    + (
+                        "analysis package ready"
+                        if analysis_paths
+                        else "analysis package needs refresh"
+                    )
+                )
             )
         )
         self._study_refresh_tree()
@@ -12232,7 +14139,17 @@ class SpermGUI:
                 else "\n"
             )
             + f"Specimen analysis table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}\n\n"
-            + f"Two-group comparison:\n{pl.Path(self.study_output_dir) / 'specimen_group_comparisons.csv'}",
+            + (
+                "Biological results:\n"
+                f"{analysis_paths.get('biological_dir', 'Use Refresh Analysis Package')}\n\n"
+                "Quality control:\n"
+                f"{analysis_paths.get('qc_dir', 'Use Refresh Analysis Package')}"
+            )
+            + (
+                f"\n\nReport-generation warning:\n{analysis_error}"
+                if analysis_error
+                else ""
+            ),
             parent=self.study_window,
         )
 
@@ -12668,6 +14585,14 @@ class SpermGUI:
 
             params = CONFIG.copy()
             params['SAVE_DEBUG_IMAGES'] = False
+            if not self._analysis_preflight(params, "Single-Slice Preview"):
+                self.lbl_roi.config(text="Analysis cancelled: profile not ready")
+                return
+            calibration = resolve_stack_microscope_calibration(
+                params,
+                self.files,
+                input_dir=self.input_dir,
+            )
             roi_mask = self.build_roi_mask()
             preview_z = extract_z_index(
                 self.files[self.current_idx],
@@ -12681,10 +14606,18 @@ class SpermGUI:
             t0 = _t.time()
             log("  v5.7 U-Net-ready single-pass analysis...")
             preview_context = build_stack_preprocess_context(
-                self.files if self.files else [self.files[self.current_idx]],
+                self.files,
                 roi_mask,
                 params,
                 exclusion_mask=None,
+            )
+            files_by_z = {
+                int(extract_z_index(path, sequence_idx=index)): path
+                for index, path in enumerate(self.files)
+            }
+            unet_context = _make_unet_context_from_paths(
+                files_by_z,
+                preview_z,
             )
             log(f"  Temporary preview context: profile={preview_context.selected_clahe_profile}, sampled_z={preview_context.sampled_z_indices}")
             seg1 = segment_slice(
@@ -12694,6 +14627,7 @@ class SpermGUI:
                 preprocess_context=preview_context,
                 exclusion_mask=None,
                 z_idx=preview_z,
+                unet_context_stack=unet_context,
             )
             meas1 = measure_spermatids(seg1, params)
             results = meas1['results']
@@ -12704,6 +14638,14 @@ class SpermGUI:
 
             preview_output_dir = params["OUTPUT_DIR"]
             ensure_dir(preview_output_dir)
+            save_calibration_provenance(preview_output_dir, params)
+            save_analysis_settings_bundle(preview_output_dir, params)
+            log(
+                "  Calibration: "
+                f"XY={params['UM_PER_PX_XY']:.9g} um/pixel, "
+                f"Z={params['UM_PER_SLICE_Z']:.9g} um/slice "
+                f"({calibration['status']})"
+            )
             preview_frame = pd.DataFrame(
                 rows_from_results(results, preview_z, params["UM_PER_PX_XY"])
             )
@@ -12947,12 +14889,17 @@ class SpermGUI:
             messagebox.showinfo('Info', 'No directory loaded.')
             return
 
+        params = CONFIG.copy()
+        if not self._analysis_preflight(params, "Batch Analysis"):
+            return
+
         # Auto-incremental output directory inside selected folder
         out_dir = get_unique_batch_dir(self.input_dir)
         self.last_out_dir = out_dir
 
         # EXPLICIT CONFIRMATION: Show the user where the data will go
         confirm = messagebox.askokcancel("Confirm Output",
+            f"{analysis_profile_summary(params)}\n\n"
             f"Results (Excel, PDF, CSV) will be saved to:\n\n{out_dir}\n\nContinue?")
         if not confirm:
             return
@@ -12967,10 +14914,22 @@ class SpermGUI:
         ensure_dir(overlay_dir)
         ensure_dir(rescue_review_dir)
 
-        params = CONFIG.copy()
         params['OUTPUT_DIR'] = out_dir
         params['SAVE_DEBUG_IMAGES'] = False
         params['DO_TRACKING'] = True
+        calibration = resolve_stack_microscope_calibration(
+            params,
+            self.files,
+            input_dir=self.input_dir,
+        )
+        save_calibration_provenance(out_dir, params)
+        save_analysis_settings_bundle(out_dir, params)
+        print(
+            "Calibration: "
+            f"XY={params['UM_PER_PX_XY']:.9g} um/pixel, "
+            f"Z={params['UM_PER_SLICE_Z']:.9g} um/slice "
+            f"({calibration['status']})"
+        )
 
         roi_mask = self.build_roi_mask()
         exclusion_mask = None
@@ -13064,19 +15023,6 @@ class SpermGUI:
                         orig_rgb = np.stack([orig_rgb]*3, axis=-1)
                     panel = np.hstack([orig_rgb, ov])
                     _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_panel.png"), panel)
-                    rescue_rgb = make_unet_rescue_review_overlay(
-                        full_img,
-                        sl_full,
-                        res,
-                        meas.get("unet_rescue_rejected_reason"),
-                    )
-                    _imwrite(
-                        os.path.join(
-                            rescue_review_dir,
-                            f"z{z_idx:02d}_unet_rescue_review.png",
-                        ),
-                        rescue_rgb,
-                    )
 
                     # ---- LIVE GUI UPDATE ----
                     # Show the side-by-side segmentation panel during batch execution
@@ -13100,6 +15046,20 @@ class SpermGUI:
                         "image": full_img.copy(),
                         "skel_label": sl_full.copy().astype(np.int32),
                     }
+                if params.get("SAVE_TECHNICAL_REVIEW_OVERLAYS", False):
+                    rescue_rgb = make_unet_rescue_review_overlay(
+                        full_img,
+                        sl_full,
+                        res,
+                        meas.get("unet_rescue_rejected_reason"),
+                    )
+                    _imwrite(
+                        os.path.join(
+                            rescue_review_dir,
+                            f"z{z_idx:02d}_unet_rescue_review.png",
+                        ),
+                        rescue_rgb,
+                    )
 
                 if params["SAVE_MASK_TIFS"]:
                     tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_mask.tif"),
@@ -13242,6 +15202,7 @@ class SpermGUI:
                 update_cb,
                 generate_pptx=False,
                 df_tracked=df_trk,
+                max_slice_pages=CONFIG.get("REPORT_MAX_SLICE_PAGES", 6),
             )
             generate_excel_report(out_dir, df, df_sum, ts if not df.empty else None)
 

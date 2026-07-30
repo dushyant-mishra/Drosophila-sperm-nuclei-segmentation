@@ -29,16 +29,28 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 
 VERSION = "v5.7-unet-ready"
+UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND = "global_assignment"
+UNET_PRIMARY_EXPERIMENTAL_TRACKING_BACKEND = "unet_primary_assignment"
 MIN_HYSTERESIS_PERCENTILE_SEPARATION = 4.0
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 module_name = "sperm_segmentation_saturnv5_7"
 module_path = os.path.join(parent_dir, "sperm_segmentation_saturnv5.7.py")
-spec = importlib.util.spec_from_file_location(module_name, module_path)
-segmentation = importlib.util.module_from_spec(spec)
-sys.modules[module_name] = segmentation
-spec.loader.exec_module(segmentation)
+loaded_segmentation = sys.modules.get(module_name)
+if (
+    loaded_segmentation is not None
+    and os.path.abspath(
+        getattr(loaded_segmentation, "__file__", "")
+    )
+    == os.path.abspath(module_path)
+):
+    segmentation = loaded_segmentation
+else:
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    segmentation = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = segmentation
+    spec.loader.exec_module(segmentation)
 
 CONFIG = segmentation.CONFIG.copy()
 DEFAULT_OUTPUT_DIR = Path("parameter_tuning_results_v5_7")
@@ -73,6 +85,12 @@ TRACKING_PARAM_SPACE = [
     ("HYBRID_REPAIR_MIN_OVERLAP", 0.0, 0.15, False),
 ]
 
+UNET_PRIMARY_GLOBAL_TRACKING_PARAM_SPACE = [
+    ("TRACK_MAX_DIST_UM", 3.0, 7.0, False),
+    ("ASSIGNMENT_MAX_COST", 3.0, 9.0, False),
+    ("ASSIGNMENT_DIST_WEIGHT", 0.5, 3.0, False),
+]
+
 TRACKING_CONFIG_KEYS = (
     "TRACKING_BACKEND",
     "TRACK_MAX_DIST_UM",
@@ -95,6 +113,17 @@ TRACKING_CONFIG_KEYS = (
     "HYBRID_REPAIR_MIN_OVERLAP",
     "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM",
     "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT",
+    "UNET_TRACK_MAX_CENTROID_DIST_UM",
+    "UNET_TRACK_MAX_GAP_SLICES",
+    "UNET_TRACK_MAX_COST",
+    "UNET_TRACK_CENTROID_WEIGHT",
+    "UNET_TRACK_BBOX_IOU_WEIGHT",
+    "UNET_TRACK_ORIENTATION_WEIGHT",
+    "UNET_TRACK_AREA_WEIGHT",
+    "UNET_TRACK_PROBABILITY_WEIGHT",
+    "UNET_TRACK_MIN_BBOX_IOU",
+    "UNET_TRACK_MAX_AREA_LOG_RATIO",
+    "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM",
 )
 
 UNET_RESCUE_PARAM_SPACE = [
@@ -110,6 +139,26 @@ UNET_RESCUE_PARAM_SPACE = [
     ("UNET_INSTANCE_SEED_THRESHOLD", 0.30, 0.80, False),
     ("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 3, 10, True),
     ("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0, 0.02, False),
+]
+
+UNET_PRIMARY_PARAM_SPACE = [
+    ("UNET_CANDIDATE_THRESHOLD", 0.02, 0.10, False),
+    ("UNET_SEED_THRESHOLD", 0.20, 0.50, False),
+    ("UNET_PRIMARY_MIN_COMPONENT_PX", 2, 8, True),
+    ("UNET_INSTANCE_SEED_THRESHOLD", 0.30, 0.80, False),
+    ("UNET_INSTANCE_PEAK_MIN_DISTANCE_PX", 3, 10, True),
+    ("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0, 0.02, False),
+]
+
+UNET_PRIMARY_TRACKING_PARAM_SPACE = [
+    ("UNET_TRACK_MAX_CENTROID_DIST_UM", 1.5, 5.0, False),
+    ("UNET_TRACK_MAX_COST", 0.75, 2.25, False),
+    ("UNET_TRACK_CENTROID_WEIGHT", 0.40, 0.90, False),
+    ("UNET_TRACK_BBOX_IOU_WEIGHT", 0.05, 0.40, False),
+    ("UNET_TRACK_ORIENTATION_WEIGHT", 0.0, 0.20, False),
+    ("UNET_TRACK_AREA_WEIGHT", 0.0, 0.15, False),
+    ("UNET_TRACK_PROBABILITY_WEIGHT", 0.0, 0.15, False),
+    ("UNET_TRACK_MAX_AREA_LOG_RATIO", 0.8, 2.0, False),
 ]
 
 PROFILE_CHOICES = ("standard", "low_signal", "high_contrast", "no_clahe", "auto")
@@ -352,6 +401,14 @@ def params_from_vector(x, space):
         out["THRESHOLD_LO"] = min(out["THRESHOLD_LO"], max_lo)
     if "UNET_SEED_THRESHOLD" in out and "UNET_CANDIDATE_THRESHOLD" in out and out["UNET_SEED_THRESHOLD"] <= out["UNET_CANDIDATE_THRESHOLD"]:
         out["UNET_SEED_THRESHOLD"] = min(0.95, out["UNET_CANDIDATE_THRESHOLD"] + 0.10)
+    if (
+        "UNET_INSTANCE_SEED_THRESHOLD" in out
+        and "UNET_SEED_THRESHOLD" in out
+    ):
+        out["UNET_INSTANCE_SEED_THRESHOLD"] = max(
+            out["UNET_INSTANCE_SEED_THRESHOLD"],
+            out["UNET_SEED_THRESHOLD"],
+        )
     return out
 
 
@@ -563,7 +620,6 @@ def summarize_candidate(rows, segs, cfg):
     segmentation_score = (
         technical_score
         + (1e6 if not rows else 0.0)
-        + very_short_frac * 25.0
         + very_long_frac * 1000.0
     )
     unet_rescue_score = (
@@ -573,9 +629,19 @@ def summarize_candidate(rows, segs, cfg):
         + max(0.0, rescue_fraction - 0.42) * 35.0
         + split_ratio_penalty(total_unet_rescued, unet_rescued_split)
     )
+    unet_primary_score = (
+        technical_score
+        + (1e6 if not rows else 0.0)
+        + empty_slice_fraction * 1e5
+        + very_long_frac * 1000.0
+        + max(0.0, mask_occ - 0.30) * 150.0
+        + max(0.0, hyst_occ - 0.45) * 100.0
+    )
     objective = str(cfg.get("TUNING_OBJECTIVE", "")).lower()
     if objective == "unet_rescue":
         score = unet_rescue_score
+    elif objective == "unet_primary":
+        score = unet_primary_score
     elif objective in {"segmentation", "profile"}:
         score = segmentation_score
     elif str(cfg.get("ANALYSIS_MODE", "comparative")).lower() == "comparative":
@@ -587,6 +653,7 @@ def summarize_candidate(rows, segs, cfg):
         "technical_score": float(technical_score),
         "segmentation_score": float(segmentation_score),
         "unet_rescue_score": float(unet_rescue_score),
+        "unet_primary_score": float(unet_primary_score),
         "morphology_prior_score_reported_not_optimized": float(morphology_prior_score),
         "n_2d": int(len(rows)),
         "empty_slice_fraction": empty_slice_fraction,
@@ -676,6 +743,46 @@ def evaluate_unet_rescue_candidate(params, base_cfg=None):
     return summary
 
 
+def evaluate_unet_primary_candidate(params, base_cfg=None):
+    cfg = (base_cfg or CONFIG).copy()
+    cfg.update(params)
+    cfg["SEGMENTATION_ENGINE"] = "unet_primary"
+    cfg["UNET_FAIL_HARD"] = True
+    cfg["UNET_THRESHOLD_MODE"] = "soft"
+    cfg["UNET_RESCUE_ENABLE"] = False
+    cfg["UNET_INSTANCE_SPLIT_ENABLE"] = True
+    cfg["UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE"] = False
+    cfg["UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS"] = True
+    cfg["TRACKING_BACKEND"] = (
+        UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND
+    )
+    cfg["TUNING_OBJECTIVE"] = "unet_primary"
+    rows, segs = segment_eval_images(cfg)
+    summary = summarize_candidate(rows, segs, cfg)
+    summary.update(
+        {k: v for k, v in params.items() if not str(k).startswith("_")}
+    )
+    if cfg.get("_UNET_PROBABILITY_CACHE_DIR"):
+        summary["UNET_PROBABILITY_CACHE_DIR"] = cfg[
+            "_UNET_PROBABILITY_CACHE_DIR"
+        ]
+    summary.update(
+        {
+            "SEGMENTATION_ENGINE": "unet_primary",
+            "UNET_THRESHOLD_MODE": "soft",
+            "UNET_RESCUE_ENABLE": False,
+            "UNET_INSTANCE_SPLIT_ENABLE": True,
+            "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": False,
+            "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": True,
+            "TRACKING_BACKEND": (
+                UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND
+            ),
+        }
+    )
+    results_list.append(summary)
+    return summary
+
+
 def tracking_dataframe_from_segments(segs, cfg):
     rows = []
     for z_idx, (_, measurements) in zip(z_values_eval, segs):
@@ -718,14 +825,26 @@ def summarize_tracking_candidate(detections, tracked, tracks, cfg):
     finite = np.isfinite(lengths) & (lengths > 0)
     multi_slice = n_slices >= 2
     impossible = finite & (lengths > 20.0)
+    effective_join_guard_um = float(
+        segmentation._tracking_max_joined_length_um(cfg)
+    )
     over_guard = finite & multi_slice & (
-        lengths > float(cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0))
+        lengths > effective_join_guard_um
     )
     inflation = lengths / np.maximum(max_2d, 0.1)
     excessive_inflation = np.isfinite(inflation) & (inflation > 1.5)
 
-    methods = tracked.get(
-        "track_link_method", pd.Series("new", index=tracked.index)
+    method_column = (
+        "track_link_method"
+        if "track_link_method" in tracked.columns
+        else "track_link_type"
+        if "track_link_type" in tracked.columns
+        else None
+    )
+    methods = (
+        tracked[method_column]
+        if method_column is not None
+        else pd.Series("new", index=tracked.index)
     ).fillna("unknown").astype(str)
     distances = pd.to_numeric(
         tracked.get(
@@ -737,13 +856,16 @@ def summarize_tracking_candidate(detections, tracked, tracks, cfg):
         tracked.get("track_link_gap_slices", pd.Series(0, index=tracked.index)),
         errors="coerce",
     ).fillna(0)
-    linked = methods != "new"
+    linked = ~methods.isin({"new", "track_start"})
     n_links = int(linked.sum())
     long_link = linked & (
         distances > 0.80 * float(cfg.get("TRACK_MAX_DIST_UM", 6.0))
     )
     gap_link = linked & (gaps > 1)
     repaired = methods == "hybrid_repair"
+    unet_primary_links = methods.isin(
+        {"unet_primary_adjacent", "unet_primary_assignment"}
+    )
 
     single_fraction = float(np.mean(n_slices == 1))
     invalid_fraction = float(np.mean(~technical_valid))
@@ -753,16 +875,15 @@ def summarize_tracking_candidate(detections, tracked, tracks, cfg):
     long_link_fraction = float(long_link.sum() / max(n_links, 1))
     gap_link_fraction = float(gap_link.sum() / max(n_links, 1))
 
-    # Lower is better. Fragmentation is a weak term; impossible or unstable
-    # links dominate so the tuner cannot win merely by merging more objects.
+    # Lower is better. Single-slice tracks and 15-20 um tracks are descriptive
+    # morphology outcomes, not optimization failures in comparative analysis.
+    # Only technical-invalid, impossible, or unstable joins affect this score.
     score = (
         invalid_fraction * 1000.0
         + impossible_fraction * 1000.0
-        + over_guard_fraction * 250.0
         + inflation_fraction * 80.0
         + long_link_fraction * 40.0
         + gap_link_fraction * 20.0
-        + single_fraction * 2.0
     )
     result = {
         "score": float(score),
@@ -781,6 +902,7 @@ def summarize_tracking_candidate(detections, tracked, tracks, cfg):
             np.mean(finite & multi_slice & (lengths > 15.0))
         ),
         "over_20um_fraction": impossible_fraction,
+        "effective_join_guard_um": effective_join_guard_um,
         "over_join_guard_fraction": over_guard_fraction,
         "excessive_length_inflation_fraction": inflation_fraction,
         "median_3d_length_um": float(np.nanmedian(lengths)),
@@ -788,6 +910,7 @@ def summarize_tracking_candidate(detections, tracked, tracks, cfg):
         "long_link_fraction": long_link_fraction,
         "gap_link_fraction": gap_link_fraction,
         "hybrid_repair_links": int(repaired.sum()),
+        "unet_primary_links": int(unet_primary_links.sum()),
         "median_link_distance_um": (
             float(np.nanmedian(distances[linked])) if n_links else 0.0
         ),
@@ -807,6 +930,36 @@ def evaluate_tracking_candidate(detections, params, base_cfg=None):
     summary.update(params)
     results_list.append(summary)
     return summary
+
+
+def evaluate_unet_primary_tracking_candidate(
+    detections,
+    params,
+    base_cfg=None,
+    tracking_backend=UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND,
+):
+    cfg = (base_cfg or CONFIG).copy()
+    cfg["SEGMENTATION_ENGINE"] = "unet_primary"
+    cfg["TRACKING_BACKEND"] = str(tracking_backend)
+    if (
+        cfg["TRACKING_BACKEND"]
+        == UNET_PRIMARY_EXPERIMENTAL_TRACKING_BACKEND
+    ):
+        cfg["UNET_TRACK_MAX_GAP_SLICES"] = 1
+        cfg["UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM"] = min(
+            20.0,
+            float(
+                cfg.get(
+                    "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM",
+                    20.0,
+                )
+            ),
+        )
+    return evaluate_tracking_candidate(
+        detections,
+        params,
+        base_cfg=cfg,
+    )
 
 
 def run_profile_mode(outdir, base_cfg):
@@ -1016,6 +1169,63 @@ def sample_unet_rescue_candidates(space, maxiter, seed, base_cfg):
     return candidates
 
 
+def sample_unet_primary_candidates(space, maxiter, seed, base_cfg):
+    count = max(1, int(maxiter))
+    prioritized = [
+        (
+            "evidence_support_0.05_seed_0.30",
+            candidate_from_config(
+                space,
+                base_cfg,
+                {
+                    "UNET_CANDIDATE_THRESHOLD": 0.05,
+                    "UNET_SEED_THRESHOLD": 0.30,
+                    "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
+                    "UNET_INSTANCE_SEED_THRESHOLD": 0.50,
+                    "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
+                    "UNET_INSTANCE_WATERSHED_COMPACTNESS": 0.001,
+                },
+            ),
+        ),
+        (
+            "faint_recall_review",
+            candidate_from_config(
+                space,
+                base_cfg,
+                {
+                    "UNET_CANDIDATE_THRESHOLD": 0.03,
+                    "UNET_SEED_THRESHOLD": 0.25,
+                    "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
+                    "UNET_INSTANCE_SEED_THRESHOLD": 0.45,
+                    "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 5,
+                    "UNET_INSTANCE_WATERSHED_COMPACTNESS": 0.0,
+                },
+            ),
+        ),
+        ("reviewed_base", candidate_from_config(space, base_cfg)),
+        ("space_midpoint", sample_candidates(space, 1, seed)[0]),
+    ]
+    random_candidates = sample_candidates(
+        space,
+        count + len(prioritized),
+        seed,
+    )[1:]
+    candidates = []
+    seen = set()
+    for role, candidate in prioritized + [
+        (f"deterministic_random_{idx:03d}", candidate)
+        for idx, candidate in enumerate(random_candidates, start=1)
+    ]:
+        signature = tuple(candidate[key] for key, *_ in space)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        candidates.append((role, candidate))
+        if len(candidates) == count:
+            break
+    return candidates
+
+
 def sample_tracking_candidates(space, maxiter, seed, base_cfg):
     count = max(1, int(maxiter))
     prioritized = [
@@ -1047,7 +1257,7 @@ def generate_candidate_review_pdf(
     review_candidates,
     preferred_role=None,
 ):
-    if mode not in {"segmentation", "unet_rescue"} or not records:
+    if mode not in {"segmentation", "unet_rescue", "unet_primary"} or not records:
         return None
     review_count = min(3, max(1, int(review_candidates)), len(records))
     selected = []
@@ -1069,11 +1279,12 @@ def generate_candidate_review_pdf(
     )
     selected = selected[:review_count]
     rendered = []
-    space = (
-        UNET_RESCUE_PARAM_SPACE
-        if mode == "unet_rescue"
-        else SEGMENTATION_PARAM_SPACE
-    )
+    if mode == "unet_rescue":
+        space = UNET_RESCUE_PARAM_SPACE
+    elif mode == "unet_primary":
+        space = UNET_PRIMARY_PARAM_SPACE
+    else:
+        space = SEGMENTATION_PARAM_SPACE
     for record in selected:
         cfg = base_cfg.copy()
         cfg.update({key: record[key] for key, *_ in space})
@@ -1087,6 +1298,22 @@ def generate_candidate_review_pdf(
                     "UNET_RESCUE_SPLIT_RETRY_ENABLE": True,
                     "UNET_INSTANCE_SPLIT_ENABLE": True,
                     "TUNING_OBJECTIVE": "unet_rescue",
+                }
+            )
+        elif mode == "unet_primary":
+            cfg.update(
+                {
+                    "SEGMENTATION_ENGINE": "unet_primary",
+                    "UNET_FAIL_HARD": True,
+                    "UNET_THRESHOLD_MODE": "soft",
+                    "UNET_RESCUE_ENABLE": False,
+                    "UNET_INSTANCE_SPLIT_ENABLE": True,
+                    "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": False,
+                    "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": True,
+                    "TRACKING_BACKEND": (
+                        UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND
+                    ),
+                    "TUNING_OBJECTIVE": "unet_primary",
                 }
             )
         else:
@@ -1136,7 +1363,7 @@ def generate_candidate_review_pdf(
             fig.suptitle(f"Saturn v5.7 {mode} candidate review, Z={z_idx}")
             pdf.savefig(fig, dpi=180)
             plt.close(fig)
-    if mode == "unet_rescue" and selected:
+    if mode in {"unet_rescue", "unet_primary"} and selected:
         selected_record, selected_segs = rendered[0]
         support_n = next_run_number(
             outdir,
@@ -1147,7 +1374,12 @@ def generate_candidate_review_pdf(
             / f"selected_unet_probability_review_v5_7_{support_n:03d}.pdf"
         )
         low = float(selected_record["UNET_CANDIDATE_THRESHOLD"])
-        high = float(selected_record["UNET_RESCUE_THRESHOLD"])
+        high_key = (
+            "UNET_RESCUE_THRESHOLD"
+            if mode == "unet_rescue"
+            else "UNET_SEED_THRESHOLD"
+        )
+        high = float(selected_record[high_key])
         with PdfPages(support_path) as support_pdf:
             for slice_idx, (img, z_idx) in enumerate(
                 zip(images_to_eval, z_values_eval)
@@ -1177,12 +1409,18 @@ def generate_candidate_review_pdf(
                     0.20 * support_rgb[seeds]
                     + 0.80 * np.array([1.0, 0.9, 0.0])
                 )
-                overlay = segmentation.make_unet_rescue_review_overlay(
-                    img,
-                    measurements["skel_label"],
-                    measurements["results"],
-                    measurements.get("unet_rescue_rejected_reason"),
-                )
+                if mode == "unet_rescue":
+                    overlay = segmentation.make_unet_rescue_review_overlay(
+                        img,
+                        measurements["skel_label"],
+                        measurements["results"],
+                        measurements.get("unet_rescue_rejected_reason"),
+                    )
+                else:
+                    overlay = segmentation.make_overlay(
+                        img,
+                        measurements["skel_label"],
+                    )
                 fig, axes = plt.subplots(
                     1,
                     4,
@@ -1210,8 +1448,12 @@ def generate_candidate_review_pdf(
                 )
                 axes[3].imshow(overlay)
                 axes[3].set_title(
-                    "Final: green classical; cyan U-Net; "
-                    "red/magenta technical reject"
+                    "Final U-Net-primary measured instances"
+                    if mode == "unet_primary"
+                    else (
+                        "Final: green classical; cyan U-Net; "
+                        "red/magenta technical reject"
+                    )
                 )
                 for axis in axes:
                     axis.axis("off")
@@ -1244,7 +1486,8 @@ def loadable_parameter_preset(cfg, selected):
             continue
         value = selected.get(key, cfg.get(key))
         preset[key] = segmentation._json_scalar(value)
-    preset["_TUNING_METADATA"] = {
+    microscope_calibration = cfg.get("_TUNER_MICROSCOPE_CALIBRATION")
+    tuning_metadata = {
         "pipeline_version": VERSION,
         "mode": selected.get("mode"),
         "numerical_rank": selected.get("numerical_rank"),
@@ -1256,46 +1499,50 @@ def loadable_parameter_preset(cfg, selected):
             "selected_clahe_profile",
             cfg.get("CLAHE_MODE", "unspecified"),
         ),
+        "calibration_source": str(
+            cfg.get("CALIBRATION_SOURCE", "fallback_config")
+        ),
+        "calibration_metadata_file": str(
+            cfg.get("CALIBRATION_METADATA_FILE", "")
+        ),
+        "xy_um_per_pixel": float(cfg["UM_PER_PX_XY"]),
+        "z_um_per_slice": float(cfg["UM_PER_SLICE_Z"]),
+        "metadata_validation_passed": bool(
+            microscope_calibration is not None
+        ),
         "note": "Numerical candidate for visual inspection; not a finalized biological parameter set.",
     }
+    if isinstance(microscope_calibration, dict):
+        for source_key, output_key in (
+            ("size_x", "metadata_size_x"),
+            ("size_y", "metadata_size_y"),
+            ("size_z", "metadata_size_z"),
+        ):
+            if source_key in microscope_calibration:
+                tuning_metadata[output_key] = int(
+                    microscope_calibration[source_key]
+                )
+    preset["_TUNING_METADATA"] = tuning_metadata
     return preset
 
 
 def apply_auto_microscope_calibration(cfg, image_dir, files):
     """Apply Leica XML calibration for a tuner stratum and fail if unavailable."""
-    if not files:
-        raise ValueError("Cannot infer microscope calibration without source images")
-    parsed = segmentation._study_parse_source_name(Path(files[0]).name)
-    if not parsed or parsed.get("kind") != "leica":
-        raise ValueError(
-            "--auto-calibration requires Leica-style Project..._Series... source names"
-        )
-    metadata = segmentation._study_parse_leica_metadata(
-        Path(image_dir),
-        parsed.get("project", ""),
-        parsed["series"],
-        cfg["UM_PER_PX_XY"],
-        cfg["UM_PER_SLICE_Z"],
+    metadata = segmentation.resolve_stack_microscope_calibration(
+        cfg,
+        files,
+        input_dir=image_dir,
+        require_metadata=True,
     )
-    if not metadata.get("metadata_path"):
-        raise ValueError(
-            "Leica metadata XML was not found for "
-            f"{Path(image_dir).resolve()} / {parsed['label']}"
-        )
-    acquisition_class = str(metadata.get("acquisition_class", ""))
-    if acquisition_class.startswith("metadata parse warning"):
-        raise ValueError(acquisition_class)
-    cfg["UM_PER_PX_XY"] = float(metadata["xy_um_per_pixel"])
-    cfg["UM_PER_SLICE_Z"] = float(metadata["z_um_per_slice"])
     cfg["_TUNER_CALIBRATION_SOURCE"] = metadata["metadata_path"]
-    cfg["_TUNER_ACQUISITION_CLASS"] = acquisition_class
+    cfg["_TUNER_ACQUISITION_CLASS"] = metadata["acquisition_class"]
     print(
         "Microscope calibration: "
         f"XY={cfg['UM_PER_PX_XY']:.9g} um/pixel; "
         f"Z={cfg['UM_PER_SLICE_Z']:.9g} um/slice"
     )
     print(f"Microscope metadata: {metadata['metadata_path']}")
-    print(f"Acquisition: {acquisition_class}")
+    print(f"Acquisition: {metadata['acquisition_class']}")
     return metadata
 
 
@@ -1308,11 +1555,16 @@ def aggregate_stratum_results(
 ):
     if mode == "unet_rescue":
         parameter_space = UNET_RESCUE_PARAM_SPACE
+    elif mode == "unet_primary":
+        parameter_space = UNET_PRIMARY_PARAM_SPACE
+    elif mode == "unet_primary_tracking":
+        parameter_space = UNET_PRIMARY_GLOBAL_TRACKING_PARAM_SPACE
     elif mode == "segmentation":
         parameter_space = SEGMENTATION_PARAM_SPACE
     else:
         raise ValueError(
-            "Shared stratum aggregation supports segmentation or unet_rescue"
+            "Shared stratum aggregation supports segmentation, unet_rescue, "
+            "unet_primary, or unet_primary_tracking"
         )
 
     by_role = {}
@@ -1617,7 +1869,20 @@ def run_self_check():
             segmentation_candidates[0][0] == "reviewed_base",
         )
     )
-    checks.append(("U-Net rescue mode available", "unet_rescue" in ("profile", "segmentation", "tracking", "unet_rescue")))
+    checks.append(
+        (
+            "U-Net rescue mode available",
+            "unet_rescue"
+            in (
+                "profile",
+                "segmentation",
+                "tracking",
+                "unet_rescue",
+                "unet_primary",
+                "unet_primary_tracking",
+            ),
+        )
+    )
     unet_candidates = sample_unet_rescue_candidates(
         UNET_RESCUE_PARAM_SPACE, 2, 1, CONFIG
     )
@@ -1627,6 +1892,30 @@ def run_self_check():
             unet_candidates[0][0] == "evidence_0.05_0.30"
             and unet_candidates[0][1]["UNET_CANDIDATE_THRESHOLD"] == 0.05
             and unet_candidates[0][1]["UNET_RESCUE_THRESHOLD"] == 0.30,
+        )
+    )
+    primary_candidates = sample_unet_primary_candidates(
+        UNET_PRIMARY_PARAM_SPACE, 2, 1, CONFIG
+    )
+    checks.append(
+        (
+            "U-Net-primary evidence candidate first",
+            primary_candidates[0][0]
+            == "evidence_support_0.05_seed_0.30"
+            and primary_candidates[0][1]["UNET_CANDIDATE_THRESHOLD"]
+            == 0.05
+            and primary_candidates[0][1]["UNET_SEED_THRESHOLD"] == 0.30,
+        )
+    )
+    primary_tracking = candidate_from_config(
+        UNET_PRIMARY_TRACKING_PARAM_SPACE,
+        CONFIG,
+    )
+    checks.append(
+        (
+            "U-Net-primary tracking parameters available",
+            "UNET_TRACK_MAX_CENTROID_DIST_UM" in primary_tracking
+            and "UNET_TRACK_MAX_COST" in primary_tracking,
         )
     )
     ctx_calls = []
@@ -1657,7 +1946,18 @@ def run_self_check():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Saturn v5.7 U-Net-ready parameter tuner")
-    parser.add_argument("--mode", choices=["profile", "segmentation", "tracking", "unet_rescue"], default="segmentation")
+    parser.add_argument(
+        "--mode",
+        choices=[
+            "profile",
+            "segmentation",
+            "tracking",
+            "unet_rescue",
+            "unet_primary",
+            "unet_primary_tracking",
+        ],
+        default="segmentation",
+    )
     parser.add_argument("--dir", default=None)
     parser.add_argument("--slices", default="auto")
     parser.add_argument("--auto-slice-count", type=int, default=6)
@@ -1670,7 +1970,28 @@ def main(argv=None):
         action="store_true",
         help="Read per-stratum XY and Z calibration from Leica XML metadata.",
     )
+    parser.add_argument(
+        "--metadata-xml",
+        default=None,
+        help=(
+            "Explicit Leica metadata XML. Apply its calibration before "
+            "preprocessing, segmentation, measurement, and tracking."
+        ),
+    )
     parser.add_argument("--unet-model", default=None)
+    parser.add_argument(
+        "--unet-primary-tracking-backend",
+        choices=[
+            UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND,
+            UNET_PRIMARY_EXPERIMENTAL_TRACKING_BACKEND,
+        ],
+        default=UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND,
+        help=(
+            "Tracking backend used with U-Net-primary detections. "
+            "global_assignment is the production default; "
+            "unet_primary_assignment is experimental."
+        ),
+    )
     parser.add_argument("--unet-cache-dir", default=None)
     parser.add_argument("--rebuild-unet-cache", action="store_true")
     parser.add_argument("--review-candidates", type=int, default=6)
@@ -1694,22 +2015,37 @@ def main(argv=None):
     outdir.mkdir(parents=True, exist_ok=True)
     cfg = CONFIG.copy()
     cfg.update(merge_base_params(args.base_params))
+    if args.base_params:
+        active_profile = Path(args.base_params[-1]).expanduser().resolve()
+        cfg["_ACTIVE_PROFILE_PATH"] = str(active_profile)
+        cfg["_ACTIVE_PROFILE_NAME"] = active_profile.name
     if args.unet_model:
         cfg["UNET_MODEL_PATH"] = args.unet_model
     if args.profile != "auto":
         cfg["CLAHE_MODE"] = args.profile
     if args.aggregate_stratum_results:
         segmentation.validate_config(cfg)
-        if args.mode not in {"segmentation", "unet_rescue"}:
+        segmentation.save_analysis_settings_bundle(outdir, cfg)
+        if args.mode not in {
+            "segmentation",
+            "unet_rescue",
+            "unet_primary",
+            "unet_primary_tracking",
+        }:
             raise SystemExit(
                 "--aggregate-stratum-results supports --mode segmentation "
-                "or --mode unet_rescue"
+                "--mode unet_rescue, --mode unet_primary, or "
+                "--mode unet_primary_tracking"
             )
         if args.unet_model:
             cfg["UNET_MODEL_PATH"] = args.unet_model
         selected_role = args.shared_candidate_role or (
-            "evidence_0.05_0.30"
-            if args.mode == "unet_rescue"
+            (
+                "evidence_0.05_0.30"
+                if args.mode == "unet_rescue"
+                else "evidence_support_0.05_seed_0.30"
+            )
+            if args.mode in {"unet_rescue", "unet_primary"}
             else "reviewed_base"
         )
         preset_path, summaries = aggregate_stratum_results(
@@ -1731,14 +2067,38 @@ def main(argv=None):
     files = list_images(args.dir)
     if not files:
         raise SystemExit(f"No images found in {args.dir}")
-    if args.auto_calibration:
+    if args.metadata_xml:
         try:
-            apply_auto_microscope_calibration(cfg, args.dir, files)
+            cfg, calibration = segmentation.apply_microscope_calibration(
+                cfg,
+                args.metadata_xml,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(f"Explicit microscope calibration failed: {exc}")
+        cfg["_TUNER_CALIBRATION_SOURCE"] = calibration["metadata_path"]
+        cfg["_TUNER_ACQUISITION_CLASS"] = "explicit Leica XML calibration"
+        cfg["_TUNER_MICROSCOPE_CALIBRATION"] = calibration
+        print(
+            "Microscope calibration: "
+            f"XY={cfg['UM_PER_PX_XY']:.9g} um/pixel; "
+            f"Z={cfg['UM_PER_SLICE_Z']:.9g} um/slice"
+        )
+        print(f"Microscope metadata: {calibration['metadata_path']}")
+    elif args.auto_calibration:
+        try:
+            calibration = apply_auto_microscope_calibration(
+                cfg,
+                args.dir,
+                files,
+            )
+            cfg["_TUNER_MICROSCOPE_CALIBRATION"] = calibration.get(
+                "metadata_dimensions"
+            )
         except ValueError as exc:
             raise SystemExit(f"Automatic microscope calibration failed: {exc}")
     segmentation.validate_config(cfg)
     slice_indices = parse_slices_arg(args.slices, len(files), args.auto_slice_count)
-    if args.mode == "tracking" and not require_consecutive(slice_indices):
+    if args.mode in {"tracking", "unet_primary_tracking"} and not require_consecutive(slice_indices):
         raise SystemExit("Tracking mode requires consecutive slices; use an explicit consecutive --slices range")
     print(f"Selected Z/file indices before optimization: {slice_indices}")
 
@@ -1757,7 +2117,7 @@ def main(argv=None):
     globals()["z_values_eval"] = [segmentation.extract_z_index(files[i], sequence_idx=i) for i in slice_indices]
     if len(set(z_values_eval)) != len(z_values_eval):
         raise SystemExit(f"Selected files contain duplicate Z indices: {z_values_eval}")
-    if args.mode == "tracking" and not require_consecutive(z_values_eval):
+    if args.mode in {"tracking", "unet_primary_tracking"} and not require_consecutive(z_values_eval):
         raise SystemExit(
             "Tracking mode requires consecutive source Z indices; selected files "
             f"resolved to {z_values_eval}"
@@ -1768,16 +2128,37 @@ def main(argv=None):
     }
 
     if args.mode == "profile":
+        segmentation.save_analysis_settings_bundle(outdir, cfg)
         best = run_profile_mode(outdir, cfg)
         print(f"Best preprocessing profile: {best['profile']} score={best['score']:.3f}")
         return
 
-    if args.mode == "unet_rescue" and not str(cfg.get("UNET_MODEL_PATH", "")).strip():
-        raise SystemExit("--mode unet_rescue requires --unet-model or a base params JSON with UNET_MODEL_PATH")
-    if args.mode == "unet_rescue" and not Path(cfg["UNET_MODEL_PATH"]).is_file():
+    unet_modes = {
+        "unet_rescue",
+        "unet_primary",
+        "unet_primary_tracking",
+    }
+    if args.mode in unet_modes and not str(cfg.get("UNET_MODEL_PATH", "")).strip():
+        raise SystemExit(
+            f"--mode {args.mode} requires --unet-model or a base params JSON "
+            "with UNET_MODEL_PATH"
+        )
+    if args.mode in unet_modes and not Path(cfg["UNET_MODEL_PATH"]).is_file():
         raise SystemExit(f"U-Net checkpoint not found: {cfg['UNET_MODEL_PATH']}")
-    if args.mode == "unet_rescue":
-        cfg["SEGMENTATION_ENGINE"] = "hybrid"
+    if args.mode in unet_modes:
+        if args.mode == "unet_rescue":
+            cfg["SEGMENTATION_ENGINE"] = "hybrid"
+        else:
+            cfg["SEGMENTATION_ENGINE"] = "unet_primary"
+            cfg["UNET_RESCUE_ENABLE"] = False
+            cfg["UNET_INSTANCE_SPLIT_ENABLE"] = True
+            cfg["UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE"] = False
+            cfg["UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS"] = True
+            cfg["TRACKING_BACKEND"] = (
+                args.unet_primary_tracking_backend
+                if args.mode == "unet_primary_tracking"
+                else UNET_PRIMARY_PRODUCTION_TRACKING_BACKEND
+            )
         cfg["UNET_FAIL_HARD"] = True
         cache_dir = Path(args.unet_cache_dir) if args.unet_cache_dir else outdir / "unet_probability_cache"
         cfg["_UNET_PROBABILITY_CACHE"] = build_unet_probability_cache(
@@ -1791,16 +2172,38 @@ def main(argv=None):
         space = SEGMENTATION_PARAM_SPACE
     elif args.mode == "tracking":
         space = TRACKING_PARAM_SPACE
+    elif args.mode == "unet_primary":
+        space = UNET_PRIMARY_PARAM_SPACE
+    elif args.mode == "unet_primary_tracking":
+        space = (
+            UNET_PRIMARY_TRACKING_PARAM_SPACE
+            if args.unet_primary_tracking_backend
+            == UNET_PRIMARY_EXPERIMENTAL_TRACKING_BACKEND
+            else UNET_PRIMARY_GLOBAL_TRACKING_PARAM_SPACE
+        )
     else:
         space = UNET_RESCUE_PARAM_SPACE
+    segmentation.save_analysis_settings_bundle(outdir, cfg)
     records = []
-    if args.mode == "tracking":
+    if args.mode in {"tracking", "unet_primary_tracking"}:
         rows, segs = segment_eval_images(cfg)
         detections = tracking_dataframe_from_segments(segs, cfg)
         for role, cand in sample_tracking_candidates(
             space, args.maxiter, args.seed, cfg
         ):
-            rec = evaluate_tracking_candidate(detections, cand, base_cfg=cfg)
+            if args.mode == "unet_primary_tracking":
+                rec = evaluate_unet_primary_tracking_candidate(
+                    detections,
+                    cand,
+                    base_cfg=cfg,
+                    tracking_backend=args.unet_primary_tracking_backend,
+                )
+            else:
+                rec = evaluate_tracking_candidate(
+                    detections,
+                    cand,
+                    base_cfg=cfg,
+                )
             rec["candidate_role"] = role
             records.append(rec)
     elif args.mode == "unet_rescue":
@@ -1808,6 +2211,13 @@ def main(argv=None):
             space, args.maxiter, args.seed, cfg
         ):
             rec = evaluate_unet_rescue_candidate(cand, base_cfg=cfg)
+            rec["candidate_role"] = role
+            records.append(rec)
+    elif args.mode == "unet_primary":
+        for role, cand in sample_unet_primary_candidates(
+            space, args.maxiter, args.seed, cfg
+        ):
+            rec = evaluate_unet_primary_candidate(cand, base_cfg=cfg)
             rec["candidate_role"] = role
             records.append(rec)
     else:

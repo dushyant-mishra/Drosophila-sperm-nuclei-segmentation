@@ -67,8 +67,12 @@ python .\sperm_segmentation_saturnv5.7.py
 - `sperm_segmentation_saturnv5.7.py`: GUI, segmentation, tracking, reporting,
   ROI normalization, and multi-sample study manager with group assignment and
   canonical dataset organization.
-- `utils/tune_parameters_Saturnv5_7.py`: v5.7 segmentation and U-Net rescue
-  tuner.
+- `utils/tuner_gui_Saturnv5_7.py`: compact tuning workspace launched from the
+  v5.7 GUI.
+- `utils/tune_parameters_Saturnv5_7.py`: core preprocessing, segmentation,
+  U-Net-primary, and tracking tuner.
+- `scripts/run_v57_mixed_unet_primary_tuning.py`: balanced multi-specimen
+  U-Net-primary and global-tracking tuning workflow.
 - `utils/saturn_unet25d_bridge.py`: lazy checkpoint loading and tiled U-Net
   probability inference.
 - `unet25d/`: dataset preparation, model training, inference, and threshold
@@ -97,6 +101,11 @@ count, length, width, length-to-width ratio, effective thickness, tortuosity,
 Z span, and slices detected. Detailed raw detections, U-Net provenance,
 rejections, and track flags remain available under technical QC without
 defining additional biological populations.
+
+Multi-sample studies also write `study_exclusion_ledger.csv`, which preserves
+specimen folders omitted during discovery and manifest rows excluded before
+analysis. This ledger explains the final biological sample size without
+mixing excluded specimens into the comparison tables.
 
 Do not tune parameters toward a desired genotype count or morphology. Tune and
 validate without using biological-group outcomes.

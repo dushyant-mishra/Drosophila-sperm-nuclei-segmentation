@@ -20,26 +20,6 @@ runner = importlib.util.module_from_spec(runner_spec)
 sys.modules["run_v57"] = runner
 runner_spec.loader.exec_module(runner)
 
-# 1. A hybrid-repair candidate with overlapping current Z memberships is rejected.
-@mock.patch("sperm_segmentation_saturnv5_7.track_across_slices_legacy")
-def test_hybrid_repair_candidate_overlapping_z_rejected(mock_legacy):
-    pass
-
-# 2. The same-Z test uses the complete current union group, not only the two original endpoint tracks.
-@mock.patch("sperm_segmentation_saturnv5_7.track_across_slices_legacy")
-def test_same_z_test_uses_complete_union_group(mock_legacy):
-    pass
-
-# 3. A valid disjoint-Z repair still succeeds.
-@mock.patch("sperm_segmentation_saturnv5_7.track_across_slices_legacy")
-def test_valid_disjoint_z_repair_succeeds(mock_legacy):
-    pass
-
-# 4. A rejected merge does not mutate either union group.
-@mock.patch("sperm_segmentation_saturnv5_7.track_across_slices_legacy")
-def test_rejected_merge_does_not_mutate_union_groups(mock_legacy):
-    pass
-
 # 5. Final duplicate (track_id, z_slice) membership raises RuntimeError.
 @mock.patch("sperm_segmentation_saturnv5_7.track_across_slices_legacy")
 def test_final_duplicate_membership_raises_runtime_error(mock_legacy):
@@ -127,23 +107,6 @@ def test_unet_primary_area_logic():
     df = pd.DataFrame(rows)
     assert df[df["sperm_id"] == 1].iloc[0]["area_px"] == 40.0
     assert df[df["sperm_id"] == 2].iloc[0]["area_px"] == 55.0
-
-# 17. The new audit counter candidate counts match attempts.
-def test_audit_counter_candidate_count():
-    # Placeholder
-    pass
-
-# 18. Evaluated count reflects those not skipped.
-def test_audit_counter_evaluated_count():
-    pass
-
-# 19. Accepted count matches number of targets repaired.
-def test_audit_counter_accepted_count():
-    pass
-
-# 20. Same root skip count functions correctly.
-def test_audit_counter_same_root_count():
-    pass
 
 def _unet_tracking_test_row(
     *,
@@ -371,6 +334,35 @@ def test_runner_accepts_unet_primary_assignment_backend():
     )
 
 
+def test_dispatcher_routes_unet_primary_assignment_backend():
+    frame = pd.DataFrame(
+        [
+            _unet_tracking_test_row(
+                key="z001_i00001",
+                z_slice=1,
+                x=10,
+                y=10,
+            ),
+            _unet_tracking_test_row(
+                key="z002_i00001",
+                z_slice=2,
+                x=11,
+                y=10,
+            ),
+        ]
+    )
+    cfg = _unet_tracking_test_config()
+    cfg["TRACKING_BACKEND"] = "unet_primary_assignment"
+
+    tracked, _ = sperm_seg.track_across_slices(frame, cfg)
+
+    assert tracked["track_link_type"].tolist() == [
+        "track_start",
+        "unet_primary_adjacent",
+    ]
+    assert tracked["track_unet_accepted_link_count"].iloc[0] == 1
+
+
 @mock.patch("scripts.run_v57_unet_primary_tracking_smoke.resolve_target_files")
 @mock.patch("scripts.run_v57_unet_primary_tracking_smoke.load_saturn")
 def test_tracking_smoke_runner_calibration_provenance(mock_load_saturn, mock_resolve, tmp_path):
@@ -401,6 +393,7 @@ def test_tracking_smoke_runner_calibration_provenance(mock_load_saturn, mock_res
             self.input_dir = str(tmp_path)
             self.unet_model = "fake.pt"
             self.base_params = str(base_params)
+            self.metadata_xml = ""
             self.roi_mask = "fake.npy"
             self.exclusion_mask = None
             self.z_values = "33,34,35"
@@ -419,19 +412,25 @@ def test_tracking_smoke_runner_calibration_provenance(mock_load_saturn, mock_res
     mock_saturn.measure_spermatids.return_value = {"results": []}
     mock_saturn.rows_from_results.return_value = []
     mock_saturn.track_across_slices.return_value = (pd.DataFrame(columns=["source_instance_key", "track_id"]), pd.DataFrame())
-    
+    mock_saturn._tracking_max_joined_length_um.return_value = 20.0
+
     mock_load_saturn.return_value = mock_saturn
     mock_resolve.return_value = {33: "fake1.tif", 34: "fake2.tif", 35: "fake3.tif"}
-    
+
     payload = runner.run(MockArgs())
     
     assert payload["xy_um_per_px"] == pytest.approx(0.379)
     assert payload["z_um_per_slice"] == pytest.approx(0.346)
     assert payload["calibration_source"] == "base_parameters_json"
+    assert payload["metadata_validation_passed"] is False
     assert payload["track_max_dist_um"] == pytest.approx(6.8711)
     assert (
         payload["track_technical_max_joined_length_um"]
         == pytest.approx(15.0)
+    )
+    assert (
+        payload["effective_track_max_joined_length_um"]
+        == pytest.approx(20.0)
     )
     assert (
         payload["hybrid_repair_max_link_dist_um"]

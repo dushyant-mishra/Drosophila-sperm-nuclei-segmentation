@@ -56,12 +56,21 @@ def build_parser():
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--unet-model", required=True)
     parser.add_argument("--base-params", required=True)
+    parser.add_argument(
+        "--metadata-xml",
+        default="",
+        help=(
+            "Optional explicit Leica metadata XML. If omitted, Saturn attempts "
+            "stack-local Leica metadata discovery and otherwise preserves the "
+            "base-parameter calibration."
+        ),
+    )
     parser.add_argument("--roi-mask", required=True)
     parser.add_argument("--exclusion-mask", default="")
     parser.add_argument("--z-values", default="33,34,35,36,37")
     parser.add_argument("--outdir", required=True)
     parser.add_argument("--repeat", type=int, default=1)
-    parser.add_argument("--tracking-backend", default="hybrid_repair")
+    parser.add_argument("--tracking-backend", default="global_assignment")
     return parser
 
 def write_csv(path, df):
@@ -411,6 +420,22 @@ def run(args):
 
     target_files = resolve_target_files(files_by_z, targets)
 
+    metadata_xml = str(getattr(args, "metadata_xml", "") or "").strip()
+    microscope_calibration = None
+    if metadata_xml:
+        cfg, microscope_calibration = saturn.apply_microscope_calibration(
+            cfg,
+            metadata_xml,
+        )
+    else:
+        saturn.resolve_stack_microscope_calibration(
+            cfg,
+            files,
+            input_dir=args.input_dir,
+            require_metadata=False,
+        )
+    calibration_path = saturn.save_calibration_provenance(outdir, cfg)
+
     first = saturn.robust_imread(target_files[targets[0]])
     roi = saturn.load_roi_mask_file(args.roi_mask, expected_shape=first.shape)
     exclusion = (
@@ -514,7 +539,16 @@ def run(args):
         "z_um_per_slice": float(
             cfg.get("UM_PER_SLICE_Z", np.nan)
         ),
-        "calibration_source": "base_parameters_json",
+        "calibration_source": str(
+            cfg.get("CALIBRATION_SOURCE", "base_parameters_json")
+        ),
+        "calibration_metadata_file": str(
+            cfg.get("CALIBRATION_METADATA_FILE", "")
+        ),
+        "calibration_provenance_file": str(calibration_path.resolve()),
+        "metadata_validation_passed": bool(
+            microscope_calibration is not None
+        ),
         "calibration_parameter_file": str(
             Path(args.base_params).resolve()
         ),
@@ -526,6 +560,9 @@ def run(args):
                 "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM",
                 np.nan,
             )
+        ),
+        "effective_track_max_joined_length_um": float(
+            saturn._tracking_max_joined_length_um(cfg)
         ),
         "hybrid_repair_max_link_dist_um": float(
             cfg.get(
@@ -555,6 +592,29 @@ def run(args):
         "unet_model": str(Path(args.unet_model).resolve()),
         "total_2d_instances": len(detections_df),
     }
+    if microscope_calibration is not None:
+        payload.update(
+            {
+                "metadata_size_x": int(
+                    microscope_calibration["size_x"]
+                ),
+                "metadata_size_y": int(
+                    microscope_calibration["size_y"]
+                ),
+                "metadata_size_z": int(
+                    microscope_calibration["size_z"]
+                ),
+                "metadata_field_x_um": float(
+                    microscope_calibration["field_x_um"]
+                ),
+                "metadata_field_y_um": float(
+                    microscope_calibration["field_y_um"]
+                ),
+                "metadata_stack_depth_um": float(
+                    microscope_calibration["stack_depth_um"]
+                ),
+            }
+        )
 
     payload["repeat_membership_hashes"] = repeat_hashes
     payload["deterministic_membership_hash"] = (
