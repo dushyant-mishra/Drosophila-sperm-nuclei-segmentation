@@ -369,3 +369,83 @@ def test_runner_accepts_unet_primary_assignment_backend():
         repeat=1,
         tracking_backend="unet_primary_assignment",
     )
+
+
+@mock.patch("scripts.run_v57_unet_primary_tracking_smoke.resolve_target_files")
+@mock.patch("scripts.run_v57_unet_primary_tracking_smoke.load_saturn")
+def test_tracking_smoke_runner_calibration_provenance(mock_load_saturn, mock_resolve, tmp_path):
+    import json
+    import numpy as np
+    import pandas as pd
+    import pytest
+    from scripts import run_v57_unet_primary_tracking_smoke as runner
+
+    base_params = tmp_path / "base_params.json"
+    base_params.write_text(
+        json.dumps(
+            {
+                "UM_PER_PX_XY": 0.379,
+                "UM_PER_SLICE_Z": 0.346,
+                "TRACK_MAX_DIST_UM": 6.8711,
+                "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
+                "HYBRID_REPAIR_MAX_LINK_DIST_UM": 4.8,
+                "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM": 15.0,
+                "UNET_TRACK_MAX_CENTROID_DIST_UM": 3.0,
+                "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 20.0,
+            }
+        )
+    )
+
+    class MockArgs:
+        def __init__(self):
+            self.input_dir = str(tmp_path)
+            self.unet_model = "fake.pt"
+            self.base_params = str(base_params)
+            self.roi_mask = "fake.npy"
+            self.exclusion_mask = None
+            self.z_values = "33,34,35"
+            self.outdir = str(tmp_path / "out")
+            self.repeat = 1
+            self.tracking_backend = "global_assignment"
+
+    mock_saturn = mock.MagicMock()
+    mock_saturn.CONFIG = {"FILE_PATTERN": "*.tif"}
+    mock_saturn.load_batch_files.return_value = (["fake1.tif", "fake2.tif", "fake3.tif"], [33, 34, 35])
+    mock_saturn.robust_imread.return_value = np.zeros((10, 10))
+    mock_saturn.load_roi_mask_file.return_value = np.ones((10, 10), dtype=bool)
+    mock_saturn.build_stack_preprocess_context.return_value = {}
+    mock_saturn._make_unet_context_from_paths.return_value = {}
+    mock_saturn.segment_slice.return_value = np.zeros((10, 10), dtype=int)
+    mock_saturn.measure_spermatids.return_value = {"results": []}
+    mock_saturn.rows_from_results.return_value = []
+    mock_saturn.track_across_slices.return_value = (pd.DataFrame(columns=["source_instance_key", "track_id"]), pd.DataFrame())
+    
+    mock_load_saturn.return_value = mock_saturn
+    mock_resolve.return_value = {33: "fake1.tif", 34: "fake2.tif", 35: "fake3.tif"}
+    
+    payload = runner.run(MockArgs())
+    
+    assert payload["xy_um_per_px"] == pytest.approx(0.379)
+    assert payload["z_um_per_slice"] == pytest.approx(0.346)
+    assert payload["calibration_source"] == "base_parameters_json"
+    assert payload["track_max_dist_um"] == pytest.approx(6.8711)
+    assert (
+        payload["track_technical_max_joined_length_um"]
+        == pytest.approx(15.0)
+    )
+    assert (
+        payload["hybrid_repair_max_link_dist_um"]
+        == pytest.approx(4.8)
+    )
+    assert (
+        payload["hybrid_repair_max_final_length_um"]
+        == pytest.approx(15.0)
+    )
+    assert (
+        payload["unet_track_max_centroid_dist_um"]
+        == pytest.approx(3.0)
+    )
+    assert (
+        payload["unet_track_max_reconstructed_length_um"]
+        == pytest.approx(20.0)
+    )

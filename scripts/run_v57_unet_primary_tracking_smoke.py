@@ -508,6 +508,49 @@ def run(args):
         "repeat": args.repeat,
         "tracking_enabled": True,
         "tracking_backend": args.tracking_backend,
+        "xy_um_per_px": float(
+            cfg.get("UM_PER_PX_XY", np.nan)
+        ),
+        "z_um_per_slice": float(
+            cfg.get("UM_PER_SLICE_Z", np.nan)
+        ),
+        "calibration_source": "base_parameters_json",
+        "calibration_parameter_file": str(
+            Path(args.base_params).resolve()
+        ),
+        "track_max_dist_um": float(
+            cfg.get("TRACK_MAX_DIST_UM", np.nan)
+        ),
+        "track_technical_max_joined_length_um": float(
+            cfg.get(
+                "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM",
+                np.nan,
+            )
+        ),
+        "hybrid_repair_max_link_dist_um": float(
+            cfg.get(
+                "HYBRID_REPAIR_MAX_LINK_DIST_UM",
+                np.nan,
+            )
+        ),
+        "hybrid_repair_max_final_length_um": float(
+            cfg.get(
+                "HYBRID_REPAIR_MAX_FINAL_LENGTH_UM",
+                np.nan,
+            )
+        ),
+        "unet_track_max_centroid_dist_um": float(
+            cfg.get(
+                "UNET_TRACK_MAX_CENTROID_DIST_UM",
+                np.nan,
+            )
+        ),
+        "unet_track_max_reconstructed_length_um": float(
+            cfg.get(
+                "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM",
+                np.nan,
+            )
+        ),
         "base_parameters": str(Path(args.base_params).resolve()),
         "unet_model": str(Path(args.unet_model).resolve()),
         "total_2d_instances": len(detections_df),
