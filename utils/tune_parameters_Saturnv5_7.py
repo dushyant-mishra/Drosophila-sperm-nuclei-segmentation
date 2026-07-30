@@ -1261,6 +1261,44 @@ def loadable_parameter_preset(cfg, selected):
     return preset
 
 
+def apply_auto_microscope_calibration(cfg, image_dir, files):
+    """Apply Leica XML calibration for a tuner stratum and fail if unavailable."""
+    if not files:
+        raise ValueError("Cannot infer microscope calibration without source images")
+    parsed = segmentation._study_parse_source_name(Path(files[0]).name)
+    if not parsed or parsed.get("kind") != "leica":
+        raise ValueError(
+            "--auto-calibration requires Leica-style Project..._Series... source names"
+        )
+    metadata = segmentation._study_parse_leica_metadata(
+        Path(image_dir),
+        parsed.get("project", ""),
+        parsed["series"],
+        cfg["UM_PER_PX_XY"],
+        cfg["UM_PER_SLICE_Z"],
+    )
+    if not metadata.get("metadata_path"):
+        raise ValueError(
+            "Leica metadata XML was not found for "
+            f"{Path(image_dir).resolve()} / {parsed['label']}"
+        )
+    acquisition_class = str(metadata.get("acquisition_class", ""))
+    if acquisition_class.startswith("metadata parse warning"):
+        raise ValueError(acquisition_class)
+    cfg["UM_PER_PX_XY"] = float(metadata["xy_um_per_pixel"])
+    cfg["UM_PER_SLICE_Z"] = float(metadata["z_um_per_slice"])
+    cfg["_TUNER_CALIBRATION_SOURCE"] = metadata["metadata_path"]
+    cfg["_TUNER_ACQUISITION_CLASS"] = acquisition_class
+    print(
+        "Microscope calibration: "
+        f"XY={cfg['UM_PER_PX_XY']:.9g} um/pixel; "
+        f"Z={cfg['UM_PER_SLICE_Z']:.9g} um/slice"
+    )
+    print(f"Microscope metadata: {metadata['metadata_path']}")
+    print(f"Acquisition: {acquisition_class}")
+    return metadata
+
+
 def aggregate_stratum_results(
     paths,
     outdir,
@@ -1390,7 +1428,22 @@ def aggregate_stratum_results(
             "selection_status": "shared_candidate_for_visual_inspection",
         }
     )
-    preset = loadable_parameter_preset(cfg, selected)
+    xy_values = [
+        float(entry["calibration_xy_um_per_pixel"])
+        for entry in selected_entries
+        if entry.get("calibration_xy_um_per_pixel") is not None
+    ]
+    z_values = [
+        float(entry["calibration_z_um_per_slice"])
+        for entry in selected_entries
+        if entry.get("calibration_z_um_per_slice") is not None
+    ]
+    aggregate_cfg = cfg.copy()
+    if xy_values:
+        aggregate_cfg["UM_PER_PX_XY"] = float(np.median(xy_values))
+    if z_values:
+        aggregate_cfg["UM_PER_SLICE_Z"] = float(np.median(z_values))
+    preset = loadable_parameter_preset(aggregate_cfg, selected)
     preset["_TUNING_METADATA"].update(
         {
             "candidate_role": selected_role,
@@ -1400,6 +1453,23 @@ def aggregate_stratum_results(
                 "selected explicitly after cross-stratum review."
             ),
             "aggregation_mode": mode,
+            "calibration_mode": "per_specimen_metadata",
+            "reference_xy_um_per_pixel": aggregate_cfg["UM_PER_PX_XY"],
+            "reference_z_um_per_slice": aggregate_cfg["UM_PER_SLICE_Z"],
+            "source_stratum_calibrations": [
+                {
+                    "result_path": entry["stratum_path"],
+                    "xy_um_per_pixel": entry.get(
+                        "calibration_xy_um_per_pixel"
+                    ),
+                    "z_um_per_slice": entry.get(
+                        "calibration_z_um_per_slice"
+                    ),
+                    "metadata_path": entry.get("calibration_metadata_path", ""),
+                    "acquisition_class": entry.get("acquisition_class", ""),
+                }
+                for entry in selected_entries
+            ],
         }
     )
 
@@ -1595,6 +1665,11 @@ def main(argv=None):
     parser.add_argument("--exclusion-mask", default=None)
     parser.add_argument("--profile", choices=PROFILE_CHOICES, default="auto")
     parser.add_argument("--base-params", action="append", default=[])
+    parser.add_argument(
+        "--auto-calibration",
+        action="store_true",
+        help="Read per-stratum XY and Z calibration from Leica XML metadata.",
+    )
     parser.add_argument("--unet-model", default=None)
     parser.add_argument("--unet-cache-dir", default=None)
     parser.add_argument("--rebuild-unet-cache", action="store_true")
@@ -1623,9 +1698,8 @@ def main(argv=None):
         cfg["UNET_MODEL_PATH"] = args.unet_model
     if args.profile != "auto":
         cfg["CLAHE_MODE"] = args.profile
-    segmentation.validate_config(cfg)
-
     if args.aggregate_stratum_results:
+        segmentation.validate_config(cfg)
         if args.mode not in {"segmentation", "unet_rescue"}:
             raise SystemExit(
                 "--aggregate-stratum-results supports --mode segmentation "
@@ -1657,6 +1731,12 @@ def main(argv=None):
     files = list_images(args.dir)
     if not files:
         raise SystemExit(f"No images found in {args.dir}")
+    if args.auto_calibration:
+        try:
+            apply_auto_microscope_calibration(cfg, args.dir, files)
+        except ValueError as exc:
+            raise SystemExit(f"Automatic microscope calibration failed: {exc}")
+    segmentation.validate_config(cfg)
     slice_indices = parse_slices_arg(args.slices, len(files), args.auto_slice_count)
     if args.mode == "tracking" and not require_consecutive(slice_indices):
         raise SystemExit("Tracking mode requires consecutive slices; use an explicit consecutive --slices range")
@@ -1741,6 +1821,15 @@ def main(argv=None):
             rec["candidate_role"] = role
             records.append(rec)
     records.sort(key=lambda r: r["score"])
+    for record in records:
+        record["calibration_xy_um_per_pixel"] = float(cfg["UM_PER_PX_XY"])
+        record["calibration_z_um_per_slice"] = float(cfg["UM_PER_SLICE_Z"])
+        record["calibration_metadata_path"] = str(
+            cfg.get("_TUNER_CALIBRATION_SOURCE", "")
+        )
+        record["acquisition_class"] = str(
+            cfg.get("_TUNER_ACQUISITION_CLASS", "")
+        )
     for rank, record in enumerate(records, start=1):
         record["numerical_rank"] = rank
     best = records[0] if records else {}

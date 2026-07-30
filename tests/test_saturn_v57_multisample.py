@@ -1090,6 +1090,42 @@ def test_leica_metadata_preserves_padded_series_and_physical_calibration(tmp_pat
     assert "objective=40x" in result["acquisition_class"]
 
 
+def test_leica_metadata_uses_complete_nested_settings_and_n_minus_one_z_spacing(tmp_path):
+    saturn = load_saturn_v57()
+    metadata_dir = tmp_path / "MetaData"
+    metadata_dir.mkdir()
+    (metadata_dir / "Project001_Series015.xml").write_text(
+        """<Root>
+        <DimensionDescription DimID="1" NumberOfElements="1024" Length="0.0003875" />
+        <DimensionDescription DimID="3" NumberOfElements="88" Length="0.00003011802" />
+        <ATLConfocalSettingDefinition
+            Begin="-0.00000230479"
+            End="-0.00003242281"
+            Sections="88"
+            ObjectiveName="HC PL APO CS2 40x/1.30 OIL"
+            Magnification="40"
+            NumericalAperture="1.3"
+            Zoom="0.75"
+            MicroscopeModel="DMI8-CS" />
+        <Detector IsActive="1" Gain="99.998" IsTimeGateActivated="0" />
+        <ATLConfocalSettingDefinition UserSettingName="incomplete nested block" />
+        </Root>""",
+        encoding="utf-8",
+    )
+
+    result = saturn._study_parse_leica_metadata(
+        tmp_path, "001", 15, 9.0, 9.0
+    )
+
+    assert result["xy_um_per_pixel"] == pytest.approx(0.37841796875)
+    assert result["z_um_per_slice"] == pytest.approx(
+        30.11802 / 87.0, rel=1e-6
+    )
+    assert "objective=HC PL APO CS2 40x/1.30 OIL" in result["acquisition_class"]
+    assert "zoom=0.75" in result["acquisition_class"]
+    assert "NA=1.3" in result["acquisition_class"]
+
+
 def test_study_run_isolates_samples_aggregates_and_resumes(tmp_path):
     saturn = load_saturn_v57()
     make_sample(tmp_path / "input", "WT", "WT-1")

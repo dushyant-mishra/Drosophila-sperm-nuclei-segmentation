@@ -23,6 +23,15 @@ candidate roles identical across specimens. The runner first aggregates a
 shared classical 2D candidate, then uses that unchanged preset as the base for
 U-Net rescue tuning and final shared hybrid aggregation.
 
+Each stratum is calibrated independently from its matching Leica XML file
+under `MetaData`. The runner passes `--auto-calibration` to both tuner stages,
+so candidate measurements and physical-unit gates use the same XY pixel size
+and Z spacing that the Study Manager applies during specimen analysis. The
+shared preset stores median reference calibration for standalone inspection
+and records every exact source calibration under
+`_TUNING_METADATA.source_stratum_calibrations`. During a study, the Study
+Manager still overrides those reference values for every specimen.
+
 ## Run
 
 From the project root:
@@ -66,6 +75,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 
 This creates a new run directory. It does not modify the source run or repeat
 classical tuning and U-Net inference.
+
+To rerun classical tuning while safely reusing calibration-independent U-Net
+probability maps from an earlier run, provide `-UnetCacheRunId`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  ".\parameter_tuning_results_v5_7\mixed_wt_kj_retune\run_mixed_tuner.ps1" `
+  -RunId 20260729_calibration_aware `
+  -UnetCacheRunId 20260729_195815
+```
 
 Outputs are written beneath:
 

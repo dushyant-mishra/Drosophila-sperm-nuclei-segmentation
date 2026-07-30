@@ -516,6 +516,10 @@ def test_stratum_aggregation_writes_one_shared_unchanged_preset(tmp_path):
                         "n_2d": 100 + idx,
                         "unet_rescue_fraction": 0.12,
                         "very_long_object_fraction": 0.0,
+                        "calibration_xy_um_per_pixel": 0.38,
+                        "calibration_z_um_per_slice": 0.34 + idx * 0.01,
+                        "calibration_metadata_path": f"stratum_{idx}.xml",
+                        "acquisition_class": "objective=40x; zoom=0.75",
                         **parameter_values,
                     }
                 ]
@@ -538,10 +542,65 @@ def test_stratum_aggregation_writes_one_shared_unchanged_preset(tmp_path):
     assert summaries[0]["stratum_count"] == 2
     assert preset["UNET_MODEL_PATH"] == "epoch_003.pt"
     assert preset["UNET_RESCUE_THRESHOLD"] == 0.30
+    assert preset["UM_PER_PX_XY"] == pytest.approx(0.38)
+    assert preset["UM_PER_SLICE_Z"] == pytest.approx(0.355)
+    assert (
+        preset["_TUNING_METADATA"]["calibration_mode"]
+        == "per_specimen_metadata"
+    )
+    assert len(
+        preset["_TUNING_METADATA"]["source_stratum_calibrations"]
+    ) == 2
     assert (
         preset["_TUNING_METADATA"]["candidate_role"]
         == "evidence_0.05_0.30"
     )
+
+
+def test_auto_microscope_calibration_updates_tuner_config(monkeypatch, tmp_path):
+    tuner = load_tuner()
+    image = tmp_path / "Project001_Series015_z00_ch00.tif"
+    image.touch()
+    observed = {}
+
+    def fake_metadata(sample_dir, project, series, fallback_xy, fallback_z):
+        observed.update(
+            {
+                "sample_dir": Path(sample_dir),
+                "project": project,
+                "series": series,
+                "fallback_xy": fallback_xy,
+                "fallback_z": fallback_z,
+            }
+        )
+        return {
+            "xy_um_per_pixel": 0.37841796875,
+            "z_um_per_slice": 0.3461841,
+            "acquisition_class": "objective=40x; zoom=0.75",
+            "metadata_path": str(
+                tmp_path / "MetaData" / "Project001_Series015.xml"
+            ),
+        }
+
+    monkeypatch.setattr(
+        tuner.segmentation,
+        "_study_parse_leica_metadata",
+        fake_metadata,
+    )
+    cfg = tuner.CONFIG.copy()
+
+    result = tuner.apply_auto_microscope_calibration(
+        cfg, tmp_path, [image]
+    )
+
+    assert observed["project"] == "001"
+    assert observed["series"] == 15
+    assert cfg["UM_PER_PX_XY"] == pytest.approx(0.37841796875)
+    assert cfg["UM_PER_SLICE_Z"] == pytest.approx(0.3461841)
+    assert cfg["_TUNER_CALIBRATION_SOURCE"].endswith(
+        "Project001_Series015.xml"
+    )
+    assert result["acquisition_class"] == "objective=40x; zoom=0.75"
 
 
 def test_segmentation_stratum_aggregation_writes_shared_2d_preset(tmp_path):

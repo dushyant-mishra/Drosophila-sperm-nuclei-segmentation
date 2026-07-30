@@ -7,6 +7,7 @@ param(
     [string]$RunId = "",
     [switch]$UnetOnly,
     [string]$ClassicalRunId = "",
+    [string]$UnetCacheRunId = "",
     [switch]$Resume,
     [switch]$ValidateOnly
 )
@@ -103,6 +104,7 @@ if (Test-Path -LiteralPath $RunRoot) {
         unet_candidate_count = $UnetCandidateCount
         segmentation_candidate_role = $SegmentationCandidateRole
         unet_candidate_role = $UnetCandidateRole
+        unet_cache_run_id = $UnetCacheRunId
     }
     foreach ($key in $resumeChecks.Keys) {
         if ([string]$existingMetadata.$key -ne [string]$resumeChecks[$key]) {
@@ -132,6 +134,7 @@ if (Test-Path -LiteralPath $RunRoot) {
         manifest = $ManifestPath
         unet_only = [bool]$UnetOnly
         classical_source_run_id = $ClassicalRunId
+        unet_cache_run_id = $UnetCacheRunId
     }
     $metadata | ConvertTo-Json -Depth 4 |
         Set-Content -LiteralPath (Join-Path $RunRoot "run_metadata.json") -Encoding UTF8
@@ -161,6 +164,7 @@ function Invoke-StratumTuning {
         "--dir", $Row.image_dir,
         "--slices", $Row.selected_z_indices,
         "--roi-mask", $Row.roi_path,
+        "--auto-calibration",
         "--base-params", $BasePreset,
         "--outdir", $OutputDirectory,
         "--maxiter", $CandidateCount,
@@ -278,10 +282,20 @@ $unetResults = @()
 foreach ($row in $validatedRows) {
     $stratumOut = Join-Path $unetRoot $row.specimen_id
     $cacheDirectory = ""
-    if ($UnetOnly) {
+    $cacheSourceRunId = $UnetCacheRunId
+    if (-not $cacheSourceRunId -and $UnetOnly) {
+        $cacheSourceRunId = $ClassicalRunId
+    }
+    if ($cacheSourceRunId) {
         $cacheDirectory = Join-Path (
-            Join-Path $ResultsRoot $ClassicalRunId
+            Join-Path $ResultsRoot $cacheSourceRunId
         ) "02_unet_rescue\$($row.specimen_id)\unet_probability_cache"
+        if (-not (Test-Path -LiteralPath $cacheDirectory -PathType Container)) {
+            throw (
+                "U-Net probability cache not found for $($row.specimen_id) " +
+                "in run ${cacheSourceRunId}: $cacheDirectory"
+            )
+        }
     }
     $unetResults += Invoke-StratumTuning `
         -Mode "unet_rescue" `

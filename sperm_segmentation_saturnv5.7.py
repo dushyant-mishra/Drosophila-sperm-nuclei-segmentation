@@ -8285,16 +8285,39 @@ def _study_parse_leica_metadata(
     try:
         root = ET.parse(xml_path).getroot()
         dimensions = {}
-        settings = {}
-        detector = {}
+        setting_candidates = []
+        detector_candidates = []
         for elem in root.iter():
             tag = elem.tag.split("}")[-1]
             if tag == "DimensionDescription" and "DimID" in elem.attrib:
                 dimensions[int(elem.attrib["DimID"])] = elem.attrib
             elif tag == "ATLConfocalSettingDefinition":
-                settings = elem.attrib
+                setting_candidates.append(elem.attrib)
             elif tag == "Detector" and elem.attrib.get("IsActive") == "1":
-                detector = elem.attrib
+                detector_candidates.append(elem.attrib)
+
+        def setting_score(candidate):
+            fields = (
+                "Begin",
+                "End",
+                "Sections",
+                "ObjectiveName",
+                "Magnification",
+                "NumericalAperture",
+                "Zoom",
+                "MicroscopeModel",
+            )
+            return sum(bool(str(candidate.get(field, "")).strip()) for field in fields)
+
+        settings = max(setting_candidates, key=setting_score, default={})
+        detector = next(
+            (
+                candidate
+                for candidate in detector_candidates
+                if abs(float(candidate.get("Gain", 0) or 0)) > 0
+            ),
+            detector_candidates[0] if detector_candidates else {},
+        )
 
         dim_x = dimensions.get(1, {})
         if dim_x.get("NumberOfElements") and dim_x.get("Length"):
@@ -8308,15 +8331,22 @@ def _study_parse_leica_metadata(
         end = settings.get("End")
         if n_z > 1 and begin is not None and end is not None:
             result["z_um_per_slice"] = abs(float(end) - float(begin)) * 1_000_000.0 / (n_z - 1)
-        elif n_z > 0 and dim_z.get("Length"):
-            result["z_um_per_slice"] = abs(float(dim_z["Length"])) * 1_000_000.0 / n_z
+        elif n_z > 1 and dim_z.get("Length"):
+            result["z_um_per_slice"] = (
+                abs(float(dim_z["Length"])) * 1_000_000.0 / (n_z - 1)
+            )
 
         objective = settings.get("ObjectiveName", "unknown").strip()
         zoom = settings.get("Zoom", "unknown")
+        magnification = settings.get("Magnification", "unknown")
+        numerical_aperture = settings.get("NumericalAperture", "unknown")
+        microscope = settings.get("MicroscopeModel", "unknown")
         gain = detector.get("Gain", "unknown")
         time_gate = detector.get("IsTimeGateActivated", "unknown")
         result["acquisition_class"] = (
-            f"objective={objective}; zoom={zoom}; gain={gain}; time_gate={time_gate}"
+            f"microscope={microscope}; objective={objective}; "
+            f"magnification={magnification}; NA={numerical_aperture}; "
+            f"zoom={zoom}; gain={gain}; time_gate={time_gate}"
         )
     except Exception as exc:
         result["acquisition_class"] = f"metadata parse warning: {exc}"
