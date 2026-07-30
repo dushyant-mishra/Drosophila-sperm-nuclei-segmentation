@@ -334,15 +334,14 @@ Sampled ROI volume (um3) = ROI area x sampled depth
 
 The study table reports, among other fields:
 
-- Raw 2D detections per `1,000 um2` per slice.
-- 3D tracks per `1,000 um2`.
-- 3D tracks per `100,000 um3`.
-- Biological and quality-track rates using the same denominators.
+- Included estimated nuclei per `1,000 um2`.
+- Included estimated nuclei per `100,000 um3`.
 - Stack span, positive Z range, and Z-boundary track fraction.
 
-Use raw counts for traceability and normalized rates for exposure-aware
-comparison. Neither corrects biological sampling bias, incomplete stacks, poor
-ROIs, or acquisition differences.
+Use `estimated_unique_nuclei` as the specimen count and the normalized versions
+for exposure-aware comparisons. Raw 2D and tracking counts remain in technical
+QC only. Normalization does not correct biological sampling bias, incomplete
+stacks, poor ROIs, or acquisition differences.
 
 ## 12. Standard Batch Outputs
 
@@ -351,7 +350,10 @@ A typical output directory contains:
 ```text
 batch_output/
 |-- overlays/
+|-- analysis_overlays/
 |-- quality_overlays/
+|-- technical_qc/
+|   `-- unet_rescue_overlays/
 |-- plots/
 |-- biologist_results/
 |   |-- sample_summary.csv
@@ -373,10 +375,16 @@ Use `biologist_results/sample_summary.csv` for sample comparisons and
 `analysis_summary.csv` and `analysis_summary.json` provide the same concise
 primary result contract for GUI batch, command-line batch, and Study Manager
 specimen runs. For a full tracked stack, they report the estimated unique
-nuclei and morphology medians from technical-valid tracks. For **Run Slice**,
+nuclei and morphology medians from the included 3D population. The primary
+metrics are count, 3D length, maximum 2D length, 2D width, 2D length-to-width
+ratio, effective thickness, tortuosity, Z span, and slices detected. For
+**Run Slice**,
 they explicitly report a 2D preview population and leave
 `estimated_unique_nuclei` unavailable.
-`track_summary.csv` is the complete technical audit table. The legacy
+`analysis_overlays/` shows only observations contributing to the included
+population, all in green. `quality_overlays/` and `technical_qc/` are
+troubleshooting outputs. `track_summary.csv` is the complete technical audit
+table. The legacy
 `is_biological_candidate` column is identical to `technical_valid`; it is
 retained for compatibility and does not represent another population.
 

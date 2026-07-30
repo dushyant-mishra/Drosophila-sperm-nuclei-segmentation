@@ -510,7 +510,7 @@ def test_analysis_summary_uses_only_technical_valid_tracks(tmp_path):
         cfg={"SEGMENTATION_ENGINE": "hybrid", "UNET_MODEL_PATH": "best.pt"},
     )
 
-    assert summary["analysis_population"] == "technical-valid 3D tracks"
+    assert summary["analysis_population"] == "included estimated nuclei"
     assert summary["estimated_unique_nuclei"] == 2
     assert summary["median_3d_length_um"] == 11.0
     assert summary["median_maximum_2d_length_um"] == 10.0
@@ -586,7 +586,57 @@ def test_completed_tracking_with_no_detections_reports_zero_not_missing():
 
     assert summary["biological_count_available"] is True
     assert summary["estimated_unique_nuclei"] == 0
-    assert summary["analysis_population"] == "technical-valid 3D tracks"
+    assert summary["analysis_population"] == "included estimated nuclei"
+
+
+def test_analysis_overlay_shows_only_included_tracks():
+    saturn = load_saturn_v57()
+    image = np.zeros((24, 32), dtype=np.uint8)
+    labels = np.zeros(image.shape, dtype=np.int32)
+    labels[8, 5:12] = 1
+    labels[16, 18:26] = 2
+    slice_tracks = pd.DataFrame(
+        {
+            "sperm_id": [1, 2],
+            "track_id": [10, 20],
+        }
+    )
+
+    overlay = saturn.make_analysis_overlay(
+        image,
+        labels,
+        slice_tracks,
+        {10},
+    )
+
+    assert overlay[8, 8, 1] > overlay[8, 8, 0]
+    assert np.array_equal(overlay[16, 21], [0, 0, 0])
+
+
+def test_primary_summary_includes_width_and_elongation():
+    saturn = load_saturn_v57()
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2],
+            "technical_valid": [True, True],
+            "total_3d_length_um": [9.5, 10.5],
+            "max_length_2d": [9.0, 10.0],
+            "median_width_2d": [2.0, 2.4],
+            "median_length_width_ratio_2d": [4.5, 4.2],
+            "thickness_um": [2.1, 2.3],
+            "tortuosity_3d": [1.0, 1.1],
+            "z_span_um": [1.0, 2.0],
+        }
+    )
+
+    summary = saturn.build_analysis_summary(
+        pd.DataFrame(),
+        tracks,
+        run_scope="full_stack_3d",
+    )
+
+    assert summary["median_2d_width_um"] == pytest.approx(2.2)
+    assert summary["median_2d_length_width_ratio"] == pytest.approx(4.35)
 
 
 def test_post_detection_qc_medians_exclude_technical_failures(tmp_path):
@@ -664,6 +714,8 @@ def test_biologist_results_uses_only_technical_valid_tracks(tmp_path):
             "technical_valid": [True, True, False],
             "total_3d_length_um": [10.0, 14.0, 30.0],
             "max_length_2d": [9.0, 13.0, 29.0],
+            "median_width_2d": [2.0, 2.4, 8.0],
+            "median_length_width_ratio_2d": [4.5, 5.4, 3.6],
             "thickness_um": [2.0, 2.4, 8.0],
             "tortuosity_3d": [1.0, 1.2, 4.0],
             "z_span_um": [2.0, 3.0, 10.0],
@@ -678,8 +730,11 @@ def test_biologist_results_uses_only_technical_valid_tracks(tmp_path):
 
     assert summary.loc[0, "estimated_unique_nuclei"] == 2
     assert summary.loc[0, "median_3d_length_um"] == 12.0
+    assert summary.loc[0, "median_2d_width_um"] == 2.2
+    assert summary.loc[0, "median_2d_length_width_ratio"] == 4.95
     assert len(nuclei) == 2
     assert set(nuclei["estimated_nucleus_id"]) == {1, 2}
+    assert "median_2d_width_um" in nuclei.columns
 
 
 def test_track_exports_do_not_duplicate_analysis_population(tmp_path):
@@ -723,9 +778,62 @@ def test_excel_uses_one_track_audit_sheet_without_candidate_duplicate(tmp_path):
         workbook_xml = workbook.read("xl/workbook.xml").decode("utf-8")
 
     assert 'name="Biologist_Results"' in workbook_xml
+    assert 'name="Technical_QC"' in workbook_xml
+    assert 'name="Population_Summary"' not in workbook_xml
     assert 'name="3D_Track_Audit"' in workbook_xml
     assert 'name="3D_Biological_Candidates"' not in workbook_xml
     assert 'name="3D_Morphometrics"' not in workbook_xml
+
+
+def test_batch_pdf_accepts_primary_biology_contract(tmp_path):
+    saturn = load_saturn_v57()
+    detections = pd.DataFrame(
+        {
+            "z_slice": [0],
+            "length_um_geodesic": [9.5],
+            "width_um": [2.1],
+            "length_width_ratio": [4.52],
+            "detection_source": ["saturn_classical"],
+        }
+    )
+    slice_summary = pd.DataFrame(
+        {
+            "z_slice": [0],
+            "n_spermatids": [1],
+            "median_length_um": [9.5],
+        }
+    )
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1],
+            "technical_valid": [True],
+            "z_start": [0],
+            "z_end": [0],
+            "total_3d_length_um": [9.5],
+            "max_length_2d": [9.5],
+            "median_width_2d": [2.1],
+            "median_length_width_ratio_2d": [4.52],
+            "thickness_um": [2.0],
+            "tortuosity_3d": [1.0],
+            "z_span_um": [0.0],
+            "volume_um3": [28.0],
+            "pitch_deg": [0.0],
+            "taper_ratio": [1.0],
+            "nearest_neighbor_um": [np.nan],
+            "n_slices": [1],
+        }
+    )
+
+    saturn.generate_batch_report(
+        tmp_path,
+        detections,
+        slice_summary,
+        0.25,
+        tracks,
+        generate_pptx=False,
+    )
+
+    assert (tmp_path / f"batch_report_{saturn._VERSION}.pdf").is_file()
 
 
 def make_sample(root, group, sample_id, roi=True):

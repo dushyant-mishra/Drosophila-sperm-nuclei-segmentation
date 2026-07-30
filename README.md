@@ -86,14 +86,17 @@ python .\sperm_segmentation_saturnv5.7.py
 4. Load the reviewed v5.7 parameters and U-Net checkpoint when using hybrid
    inference.
 5. Run segmentation and cross-slice tracking.
-6. Review equal-thickness overlays, QC populations, normalization warnings,
-   and specimen-level outputs before biological comparison.
+6. Review the green `analysis_overlays`, normalization warnings, and
+   specimen-level outputs before biological comparison. Consult technical QC
+   only when troubleshooting.
 
 `Run Slice` is a visual 2D candidate preview, not a unique-nucleus count.
 Completed stack runs write `analysis_summary.csv` and `analysis_summary.json`
-with the primary technical-valid 3D population. Detailed raw detections and
-track flags remain available as QC outputs without defining additional
-biological populations.
+with one included estimated-nucleus population. The primary outputs report
+count, length, width, length-to-width ratio, effective thickness, tortuosity,
+Z span, and slices detected. Detailed raw detections, U-Net provenance,
+rejections, and track flags remain available under technical QC without
+defining additional biological populations.
 
 Do not tune parameters toward a desired genotype count or morphology. Tune and
 validate without using biological-group outcomes.

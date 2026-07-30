@@ -2742,6 +2742,37 @@ def make_quality_overlay(img_raw, skel_label, slice_tracks, track_quality_map):
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
+def make_analysis_overlay(img_raw, skel_label, slice_tracks, included_track_ids):
+    """Draw only observations belonging to the primary 3D analysis population."""
+    base = normalize_display(img_raw)
+    rgb = np.stack([base, base, base], axis=-1)
+    if skel_label is None or int(np.max(skel_label)) <= 0:
+        return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+
+    included_labels = []
+    if slice_tracks is not None and not slice_tracks.empty:
+        for _, row in slice_tracks.iterrows():
+            try:
+                label = int(row["sperm_id"])
+                track_id = int(row["track_id"])
+            except Exception:
+                continue
+            if track_id in included_track_ids:
+                included_labels.append(label)
+
+    footprint = np.ones(
+        (_OVERLAY_DISPLAY_DILATION_SIZE,) * 2,
+        dtype=bool,
+    )
+    display_mask = morphology.binary_dilation(
+        np.isin(skel_label, included_labels),
+        footprint,
+    )
+    color = np.array([0.0, 0.85, 0.25])
+    rgb[display_mask] = 0.20 * rgb[display_mask] + 0.80 * color
+    return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+
+
 _QUALITY_OVERLAY_LEGEND = {
     "candidate": ("#00d940", "Included estimated nucleus"),
     "warning": ("#ffbf0d", "Included; morphology warning"),
@@ -2897,6 +2928,92 @@ def export_quality_overlays(out_dir, slice_cache, df_tracked, track_summary):
     )
     plt.close(legend_fig)
     return out_path
+
+
+def export_analysis_overlays(out_dir, slice_cache, df_tracked, track_summary):
+    """Save clean overlays containing only included estimated-nucleus observations."""
+    if (
+        not slice_cache
+        or df_tracked is None
+        or df_tracked.empty
+        or track_summary is None
+        or track_summary.empty
+        or "track_id" not in track_summary.columns
+    ):
+        return None
+
+    primary = _technical_valid_track_population(track_summary)
+    included_track_ids = set(
+        pd.to_numeric(primary["track_id"], errors="coerce")
+        .dropna()
+        .astype(int)
+        .tolist()
+    )
+    analysis_dir = os.path.join(out_dir, "analysis_overlays")
+    ensure_dir(analysis_dir)
+
+    max_proj_raw = None
+    max_proj_analysis = None
+    count_rows = []
+    tracked_z = pd.to_numeric(df_tracked["z_slice"], errors="coerce")
+    tracked_ids = pd.to_numeric(df_tracked["track_id"], errors="coerce")
+    for z_idx in sorted(slice_cache):
+        item = slice_cache[z_idx]
+        img = item["image"]
+        skel_label = item["skel_label"]
+        slice_tracks = df_tracked[tracked_z.eq(int(z_idx))].copy()
+        included_count = int(
+            tracked_ids.loc[slice_tracks.index].isin(included_track_ids).sum()
+        )
+        count_rows.append(
+            {
+                "z_slice": int(z_idx),
+                "included_nucleus_observations": included_count,
+            }
+        )
+        analysis_rgb = make_analysis_overlay(
+            img,
+            skel_label,
+            slice_tracks,
+            included_track_ids,
+        )
+        raw_rgb = (normalize_display(img) * 255).astype(np.uint8)
+        if raw_rgb.ndim == 2:
+            raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
+        panel = np.hstack([raw_rgb, analysis_rgb])
+        _imwrite(
+            os.path.join(analysis_dir, f"z{int(z_idx):02d}_analysis_panel.png"),
+            panel,
+        )
+
+        if max_proj_raw is None:
+            max_proj_raw = img.copy().astype(np.float32)
+            max_proj_analysis = analysis_rgb.copy().astype(np.float32)
+        else:
+            max_proj_raw = np.maximum(max_proj_raw, img.astype(np.float32))
+            max_proj_analysis = np.maximum(
+                max_proj_analysis,
+                analysis_rgb.astype(np.float32),
+            )
+
+    pd.DataFrame(count_rows).to_csv(
+        os.path.join(analysis_dir, "analysis_overlay_counts.csv"),
+        index=False,
+    )
+    if max_proj_raw is None:
+        return None
+    raw_projection = (
+        normalize_display(max_proj_raw.astype(np.uint16)) * 255
+    ).astype(np.uint8)
+    if raw_projection.ndim == 2:
+        raw_projection = np.stack([raw_projection] * 3, axis=-1)
+    analysis_projection = np.clip(max_proj_analysis, 0, 255).astype(np.uint8)
+    output_path = os.path.join(out_dir, "analysis_global_z_projection.png")
+    _imwrite(
+        output_path,
+        np.hstack([raw_projection, analysis_projection]),
+    )
+    return output_path
 
 
 # =============================================================================
@@ -3542,6 +3659,10 @@ def track_across_slices_legacy(detections_df, cfg):
         df["euc_um_2d"] = df["length_um_geodesic"] / df["tortuosity"]
     else:
         df["euc_um_2d"] = df["length_um_geodesic"]
+    if "length_width_ratio" not in df.columns:
+        width = pd.to_numeric(df.get("width_um"), errors="coerce")
+        length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
+        df["length_width_ratio"] = length / width.clip(lower=1e-9)
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -3549,6 +3670,8 @@ def track_across_slices_legacy(detections_df, cfg):
         z_start         = ("z_slice",            "min"),
         z_end           = ("z_slice",            "max"),
         max_length_2d   = ("length_um_geodesic", "max"),
+        median_width_2d = ("width_um",            "median"),
+        median_length_width_ratio_2d = ("length_width_ratio", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
         min_area_px     = ("area_px",            "min"),
@@ -3620,7 +3743,8 @@ def track_across_slices_legacy(detections_df, cfg):
     cols_ordered = [
         "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "tortuosity_3d",
         "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
-        "n_slices", "z_start", "z_end", "max_length_2d", "sum_area_px",
+        "n_slices", "z_start", "z_end", "max_length_2d",
+        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end"
     ]
     ts = ts[cols_ordered]
@@ -3721,6 +3845,10 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         df["euc_um_2d"] = df["length_um_geodesic"] / df["tortuosity"]
     else:
         df["euc_um_2d"] = df["length_um_geodesic"]
+    if "length_width_ratio" not in df.columns:
+        width = pd.to_numeric(df.get("width_um"), errors="coerce")
+        length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
+        df["length_width_ratio"] = length / width.clip(lower=1e-9)
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -3728,6 +3856,8 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         z_start         = ("z_slice",            "min"),
         z_end           = ("z_slice",            "max"),
         max_length_2d   = ("length_um_geodesic", "max"),
+        median_width_2d = ("width_um",            "median"),
+        median_length_width_ratio_2d = ("length_width_ratio", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
         min_area_px     = ("area_px",            "min"),
@@ -3800,7 +3930,8 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
     cols_ordered = [
         "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "tortuosity_3d",
         "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
-        "n_slices", "z_start", "z_end", "max_length_2d", "sum_area_px",
+        "n_slices", "z_start", "z_end", "max_length_2d",
+        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end"
     ] + unet_summary_cols
     ts = ts[cols_ordered]
@@ -4531,6 +4662,8 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
         "track_id": "estimated_nucleus_id",
         "total_3d_length_um": "length_3d_um",
         "max_length_2d": "maximum_2d_length_um",
+        "median_width_2d": "median_2d_width_um",
+        "median_length_width_ratio_2d": "median_2d_length_width_ratio",
         "thickness_um": "effective_thickness_um_psf_sensitive",
         "tortuosity_3d": "tortuosity_3d",
         "z_span_um": "z_span_um",
@@ -4548,10 +4681,14 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
         return float(pd.to_numeric(primary[column], errors="coerce").median())
 
     summary = pd.DataFrame([{
-        "analysis_population": "technical-valid 3D tracks",
+        "analysis_population": "included estimated nuclei",
         "estimated_unique_nuclei": int(len(primary)),
         "median_3d_length_um": median("total_3d_length_um"),
         "median_maximum_2d_length_um": median("max_length_2d"),
+        "median_2d_width_um": median("median_width_2d"),
+        "median_2d_length_width_ratio": median(
+            "median_length_width_ratio_2d"
+        ),
         "median_effective_thickness_um_psf_sensitive": median("thickness_um"),
         "median_3d_tortuosity": median("tortuosity_3d"),
         "median_z_span_um": median("z_span_um"),
@@ -4567,7 +4704,7 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
             "==================\n"
             "Use sample_summary*.csv for sample-level comparisons.\n"
             "Use nuclei_for_analysis*.csv for nucleus-level statistics.\n\n"
-            "Primary population: technical-valid 3D tracks (estimated unique nuclei).\n"
+            "Primary population: included estimated nuclei reconstructed in 3D.\n"
             "Morphology-warning tracks remain included because they may represent real biology.\n"
             "Effective thickness is PSF-sensitive and should be compared only between matched acquisitions.\n\n"
             "Do not use raw 2D detections, U-Net contribution counts, warning-free counts,\n"
@@ -4655,6 +4792,10 @@ def build_analysis_summary(
             "candidate_2d_detection_count": int(len(detections)),
             "median_2d_length_um": median(detections, "length_um_geodesic"),
             "median_2d_width_um": median(detections, "width_um"),
+            "median_2d_length_width_ratio": median(
+                detections,
+                "length_width_ratio",
+            ),
             "segmentation_engine": engine,
             "unet_checkpoint": checkpoint,
             **unet_accounting,
@@ -4674,7 +4815,7 @@ def build_analysis_summary(
     return {
         "run_scope": "full_stack_3d" if tracking_completed else "stack_2d_only",
         "analysis_population": (
-            "technical-valid 3D tracks"
+            "included estimated nuclei"
             if tracking_completed
             else "2D candidate detections; no unique-nucleus estimate"
         ),
@@ -4682,6 +4823,11 @@ def build_analysis_summary(
         "estimated_unique_nuclei": int(len(primary)) if tracking_completed else np.nan,
         "median_3d_length_um": median(primary, "total_3d_length_um"),
         "median_maximum_2d_length_um": median(primary, "max_length_2d"),
+        "median_2d_width_um": median(primary, "median_width_2d"),
+        "median_2d_length_width_ratio": median(
+            primary,
+            "median_length_width_ratio_2d",
+        ),
         "median_effective_thickness_um_psf_sensitive": median(primary, "thickness_um"),
         "median_3d_tortuosity": median(primary, "tortuosity_3d"),
         "median_z_span_um": median(primary, "z_span_um"),
@@ -4743,6 +4889,7 @@ def export_analysis_summary(
                 "candidate_2d_detection_count",
                 "median_2d_length_um",
                 "median_2d_width_um",
+                "median_2d_length_width_ratio",
             ]
         )
     else:
@@ -4750,6 +4897,8 @@ def export_analysis_summary(
             [
                 "median_3d_length_um",
                 "median_maximum_2d_length_um",
+                "median_2d_width_um",
+                "median_2d_length_width_ratio",
                 "median_effective_thickness_um_psf_sensitive",
                 "median_3d_tortuosity",
                 "median_z_span_um",
@@ -5234,7 +5383,13 @@ def process_one_image(image_path, cfg, output_dir):
     ensure_dir(output_dir)
     overlay_dir = os.path.join(output_dir, "overlays")
     debug_dir   = os.path.join(output_dir, "debug")
+    rescue_review_dir = os.path.join(
+        output_dir,
+        "technical_qc",
+        "unet_rescue_overlays",
+    )
     ensure_dir(overlay_dir)
+    ensure_dir(rescue_review_dir)
     if cfg["SAVE_DEBUG_IMAGES"]:
         ensure_dir(debug_dir)
 
@@ -5279,7 +5434,13 @@ def process_one_image(image_path, cfg, output_dir):
             results,
             meas.get("unet_rescue_rejected_reason"),
         )
-        _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_unet_rescue_review.png"), rescue_rgb)
+        _imwrite(
+            os.path.join(
+                rescue_review_dir,
+                f"z{z_idx:02d}_unet_rescue_review.png",
+            ),
+            rescue_rgb,
+        )
     if cfg["SAVE_DETAIL_FIGURE"]:
         save_detail_figure(img_raw, overlay_rgb, results,
                            os.path.join(overlay_dir, f"z{z_idx:02d}_detail.png"),
@@ -5336,7 +5497,13 @@ def process_batch(cfg):
     ensure_dir(cfg["OUTPUT_DIR"])
     overlay_dir = os.path.join(cfg["OUTPUT_DIR"], "overlays")
     debug_dir   = os.path.join(cfg["OUTPUT_DIR"], "debug")
+    rescue_review_dir = os.path.join(
+        cfg["OUTPUT_DIR"],
+        "technical_qc",
+        "unet_rescue_overlays",
+    )
     ensure_dir(overlay_dir)
+    ensure_dir(rescue_review_dir)
     if cfg["SAVE_DEBUG_IMAGES"]:
         ensure_dir(debug_dir)
 
@@ -5421,7 +5588,13 @@ def process_batch(cfg):
                 results,
                 meas.get("unet_rescue_rejected_reason"),
             )
-            _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_unet_rescue_review.png"), rescue_rgb)
+            _imwrite(
+                os.path.join(
+                    rescue_review_dir,
+                    f"z{z_idx:02d}_unet_rescue_review.png",
+                ),
+                rescue_rgb,
+            )
 
             if max_proj_raw is None:
                 max_proj_raw = img_2d.copy().astype(np.float32)
@@ -5485,6 +5658,12 @@ def process_batch(cfg):
         # Quality-coded overlays: green = audit-passed, red = audit-flagged.
         if cfg["SAVE_OVERLAYS"]:
             export_quality_overlays(cfg["OUTPUT_DIR"], slice_cache, df_trk, ts)
+            export_analysis_overlays(
+                cfg["OUTPUT_DIR"],
+                slice_cache,
+                df_trk,
+                ts,
+            )
 
         # Export outlier_audit/ folder
         export_outlier_audit(cfg["OUTPUT_DIR"], ts, cfg)
@@ -5588,9 +5767,19 @@ def summarize_unet_rescue_for_reports(df, out_dir=None):
     overlay_count = 0
     probability_map_count = 0
     if out_dir:
-        overlay_dir = os.path.join(out_dir, "overlays")
-        if os.path.isdir(overlay_dir):
-            overlay_count = len([p for p in os.listdir(overlay_dir) if p.endswith("_unet_rescue_review.png")])
+        overlay_directories = [
+            os.path.join(out_dir, "technical_qc", "unet_rescue_overlays"),
+            os.path.join(out_dir, "overlays"),
+        ]
+        for overlay_dir in overlay_directories:
+            if os.path.isdir(overlay_dir):
+                overlay_count += len(
+                    [
+                        name
+                        for name in os.listdir(overlay_dir)
+                        if name.endswith("_unet_rescue_review.png")
+                    ]
+                )
         if os.path.isdir(out_dir):
             probability_map_count = len([p for p in os.listdir(out_dir) if p.endswith("_unet_probability.tif")])
 
@@ -5675,26 +5864,46 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                     if "technical_valid" in df_tracks.columns
                     else df_tracks.copy()
                 )
+                def primary_median(column):
+                    if column not in primary.columns:
+                        return np.nan
+                    return float(
+                        pd.to_numeric(
+                            primary[column],
+                            errors="coerce",
+                        ).median()
+                    )
+
                 biologist_metrics = [
-                    ("Analysis population", "Technical-valid 3D tracks"),
+                    ("Analysis population", "Included estimated nuclei"),
                     ("Estimated unique nuclei", int(len(primary))),
-                    ("Median 3D length (um)", float(primary["total_3d_length_um"].median())),
-                    ("Median maximum 2D length (um)", float(primary["max_length_2d"].median())),
-                    ("Median effective thickness (um; PSF-sensitive)", float(primary["thickness_um"].median())),
-                    ("Median 3D tortuosity", float(primary["tortuosity_3d"].median())),
-                    ("Median Z-span (um)", float(primary["z_span_um"].median())),
-                    ("Median slices detected", float(primary["n_slices"].median())),
+                    ("Median 3D length (um)", primary_median("total_3d_length_um")),
+                    ("Median maximum 2D length (um)", primary_median("max_length_2d")),
+                    ("Median 2D width (um)", primary_median("median_width_2d")),
+                    ("Median 2D length / width", primary_median("median_length_width_ratio_2d")),
+                    ("Median effective thickness (um; PSF-sensitive)", primary_median("thickness_um")),
+                    ("Median 3D tortuosity", primary_median("tortuosity_3d")),
+                    ("Median Z-span (um)", primary_median("z_span_um")),
+                    ("Median slices detected", primary_median("n_slices")),
                 ]
                 for row_index, (label, value) in enumerate(biologist_metrics, start=2):
                     ws_bio.write(row_index, 0, label)
-                    ws_bio.write(row_index, 1, value, num_fmt if isinstance(value, float) else None)
+                    if isinstance(value, float) and not np.isfinite(value):
+                        ws_bio.write_blank(row_index, 1, None)
+                    else:
+                        ws_bio.write(
+                            row_index,
+                            1,
+                            value,
+                            num_fmt if isinstance(value, float) else None,
+                        )
                 ws_bio.write(
-                    12,
+                    14,
                     0,
                     "Raw 2D, U-Net, warning-free, reference-morphology, and rejected-extension counts are technical QC only.",
                 )
                 ws_bio.write(
-                    13,
+                    15,
                     0,
                     "Use effective thickness only for samples acquired with matched microscope settings.",
                 )
@@ -5702,7 +5911,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             ws_bio.set_column('B:B', 24)
 
             # --- Technical sheet: population summary with dynamic formulas ---
-            ws_sum = workbook.add_worksheet('Population_Summary')
+            ws_sum = workbook.add_worksheet('Technical_QC')
             headers = ["Metric", "Average (Formula)", "Median (Formula)", "Std Dev (Formula)"]
             for col, h in enumerate(headers):
                 ws_sum.write(0, col, h, bold)
@@ -5904,30 +6113,31 @@ def generate_batch_report(
             )
             has_candidate_data = not df_candidate_tracks.empty
 
-            # Global Z-Projection Image (Top Center). Prefer audit-coded overlay when available.
-            quality_z_proj_path = os.path.join(out_dir, "quality_global_z_projection.png")
+            # Global Z projection for the one primary analysis population.
+            analysis_z_proj_path = os.path.join(
+                out_dir,
+                "analysis_global_z_projection.png",
+            )
             raw_z_proj_path = os.path.join(out_dir, "global_z_projection.png")
-            z_proj_path = quality_z_proj_path if os.path.exists(quality_z_proj_path) else raw_z_proj_path
+            z_proj_path = (
+                analysis_z_proj_path
+                if os.path.exists(analysis_z_proj_path)
+                else raw_z_proj_path
+            )
             if os.path.exists(z_proj_path):
                 ax_z = fig_sum.add_axes([0.15, 0.62, 0.7, 0.28]) # [left, bottom, width, height]
                 ax_z.imshow(plt.imread(z_proj_path))
-                if z_proj_path == quality_z_proj_path:
-                    ax_z.set_title("Track Audit Z-Projection (green=accepted, yellow=warning, red=technical fail)", fontsize=10)
+                if z_proj_path == analysis_z_proj_path:
+                    ax_z.set_title(
+                        "Included Estimated Nuclei Across the Z Stack",
+                        fontsize=10,
+                    )
                 else:
                     ax_z.set_title("Global Z-Projection (Composite [Original | Overlay])", fontsize=10)
                 ax_z.axis('off')
 
             # Plot 1: Counts per slice
             ax1 = fig_sum.add_subplot(2, 2, 3)
-            ax1.plot(
-                df_summary['z_slice'],
-                df_summary['n_spermatids'],
-                color='lightgray',
-                marker='o',
-                markersize=3,
-                linewidth=1,
-                label='Raw 2D detections'
-            )
             if has_candidate_data and "z_start" in df_candidate_tracks.columns:
                 q_counts = (
                     df_candidate_tracks["z_start"]
@@ -5939,6 +6149,15 @@ def generate_batch_report(
                 ax1.plot(q_counts.index, q_counts.values, 'go-', markersize=4, linewidth=1.5, label='Estimated nuclei by start Z')
                 ax1.set_title("Estimated Unique Nuclei by Z-Start")
             else:
+                ax1.plot(
+                    df_summary['z_slice'],
+                    df_summary['n_spermatids'],
+                    color='forestgreen',
+                    marker='o',
+                    markersize=3,
+                    linewidth=1,
+                    label='2D preview candidates',
+                )
                 ax1.set_title("Raw 2D Detections per Z-Slice")
             ax1.set_xlabel("Z-Index")
             ax1.set_ylabel("Count")
@@ -5994,21 +6213,31 @@ def generate_batch_report(
                     if "technical_valid" in df_tracks.columns
                     else df_tracks.copy()
                 )
+                def report_median(column):
+                    if column not in primary.columns:
+                        return np.nan
+                    return float(
+                        pd.to_numeric(
+                            primary[column],
+                            errors="coerce",
+                        ).median()
+                    )
 
                 ax_metrics = fig_dyn.add_subplot(1, 2, 1)
                 ax_metrics.axis("off")
                 metric_lines = [
                     ("Estimated unique nuclei", f"{len(primary):,}"),
-                    ("Median 3D length", f"{primary['total_3d_length_um'].median():.2f} um"),
-                    ("Median maximum 2D length", f"{primary['max_length_2d'].median():.2f} um"),
-                    ("Median effective thickness*", f"{primary['thickness_um'].median():.2f} um"),
-                    ("Median 3D tortuosity", f"{primary['tortuosity_3d'].median():.3f}"),
+                    ("Median 3D length", f"{report_median('total_3d_length_um'):.2f} um"),
+                    ("Median maximum 2D length", f"{report_median('max_length_2d'):.2f} um"),
+                    ("Median 2D width", f"{report_median('median_width_2d'):.2f} um"),
+                    ("Median 2D length/width", f"{report_median('median_length_width_ratio_2d'):.2f}"),
+                    ("Median effective thickness*", f"{report_median('thickness_um'):.2f} um"),
                 ]
                 y = 0.88
                 for label, value in metric_lines:
-                    ax_metrics.text(0.02, y, label, fontsize=11, color="#444444", va="top")
-                    ax_metrics.text(0.02, y - 0.06, value, fontsize=22, fontweight="bold", color="#145a32", va="top")
-                    y -= 0.17
+                    ax_metrics.text(0.02, y, label, fontsize=10, color="#444444", va="top")
+                    ax_metrics.text(0.02, y - 0.045, value, fontsize=18, fontweight="bold", color="#145a32", va="top")
+                    y -= 0.135
                 ax_metrics.text(
                     0.02,
                     0.02,
@@ -6042,9 +6271,9 @@ def generate_batch_report(
                 fig_dyn.text(
                     0.5,
                     0.035,
-                    "Use this technical-valid 3D-track population for biological comparisons. "
-                    "Raw 2D detections, U-Net provenance, rejected extensions, warning-free counts, "
-                    "and reference-morphology subsets are technical QC only.",
+                    "Use this included estimated-nucleus population for biological comparisons. "
+                    "Detection provenance and excluded technical failures are stored separately "
+                    "and are not alternative biological counts.",
                     ha="center",
                     fontsize=9.5,
                     fontweight="bold",
@@ -6315,10 +6544,6 @@ def generate_batch_report(
             ax_t.set_title("Global Population Statistics Summary", fontsize=14, fontweight='bold', pad=20)
 
             stats_rows = []
-            if not df.empty:
-                l2d = df['length_um_geodesic']
-                stats_rows.append(["2D Fragment Geodesic Length (um)", f"{l2d.mean():.2f}", f"{l2d.median():.2f}", f"{l2d.std():.2f}"])
-
             if df_tracks is not None and not df_tracks.empty:
                 primary = (
                     df_tracks[df_tracks["technical_valid"].astype(bool)].copy()
@@ -6333,6 +6558,12 @@ def generate_batch_report(
                 to = primary['tortuosity_3d']
                 th = primary['thickness_um']
                 stats_rows.append(["3D Length (um)", f"{l3d.mean():.2f}", f"{l3d.median():.2f}", f"{l3d.std():.2f}"])
+                if "median_width_2d" in primary.columns:
+                    width_2d = primary["median_width_2d"]
+                    stats_rows.append(["2D Width (um)", f"{width_2d.mean():.2f}", f"{width_2d.median():.2f}", f"{width_2d.std():.2f}"])
+                if "median_length_width_ratio_2d" in primary.columns:
+                    ratio_2d = primary["median_length_width_ratio_2d"]
+                    stats_rows.append(["2D Length / Width", f"{ratio_2d.mean():.2f}", f"{ratio_2d.median():.2f}", f"{ratio_2d.std():.2f}"])
                 stats_rows.append(["3D Z-Span (um)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
                 stats_rows.append(["3D Volume (um3)*", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append(["3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
@@ -6362,13 +6593,7 @@ def generate_batch_report(
 
             # --- SUBSEQUENT PAGES: PER-SLICE DETAILS (2 panels: [Panel] | [Histogram]) ---
             overlay_dir = os.path.join(out_dir, "overlays")
-            quality_dir = os.path.join(out_dir, "quality_overlays")
-            quality_counts_path = os.path.join(quality_dir, "quality_overlay_counts.csv")
-            quality_counts = (
-                pd.read_csv(quality_counts_path)
-                if os.path.exists(quality_counts_path)
-                else pd.DataFrame()
-            )
+            analysis_dir = os.path.join(out_dir, "analysis_overlays")
             accepted_track_ids = set()
             if (
                     df_candidate_tracks is not None
@@ -6382,18 +6607,25 @@ def generate_batch_report(
                 )
             for idx_p, (row_idx, row) in enumerate(df_summary.iterrows()):
                 z = int(row['z_slice'])
-                quality_panel_path = os.path.join(quality_dir, f"z{z:02d}_quality_panel.png")
+                analysis_panel_path = os.path.join(
+                    analysis_dir,
+                    f"z{z:02d}_analysis_panel.png",
+                )
                 raw_panel_path = os.path.join(overlay_dir, f"z{z:02d}_panel.png")
-                panel_path = quality_panel_path if os.path.exists(quality_panel_path) else raw_panel_path
-                uses_quality_overlay = panel_path == quality_panel_path
+                panel_path = (
+                    analysis_panel_path
+                    if os.path.exists(analysis_panel_path)
+                    else raw_panel_path
+                )
+                uses_analysis_overlay = panel_path == analysis_panel_path
 
                 if not os.path.exists(panel_path):
                     continue
 
                 fig_slice = plt.figure(figsize=(18, 7))
                 fig_slice.suptitle(
-                    f"Z-Slice {z:02d} Analysis [Original | Track-QC Overlay | Distribution]"
-                    if uses_quality_overlay else
+                    f"Z-Slice {z:02d} [Original | Included Nuclei | Length Distribution]"
+                    if uses_analysis_overlay else
                     f"Z-Slice {z:02d} Pre-Tracking Review [Original | Candidate Overlay | Distribution]",
                     fontsize=12,
                     fontweight='bold',
@@ -6403,7 +6635,7 @@ def generate_batch_report(
                 ax_panel = fig_slice.add_subplot(1, 2, 1)
                 ax_panel.imshow(plt.imread(panel_path))
                 if (
-                        uses_quality_overlay
+                        uses_analysis_overlay
                         and df_tracked is not None
                         and not df_tracked.empty
                         and {"z_slice", "track_id"}.issubset(df_tracked.columns)):
@@ -6417,24 +6649,18 @@ def generate_batch_report(
                     slice_data = df[df['z_slice'] == z].copy()
                     panel_count_label = f"Pre-tracking 2D candidates: N={len(slice_data)}"
                 ax_panel.set_title(panel_count_label)
-                if uses_quality_overlay:
-                    active_statuses = {"candidate", "warning", "hard_fail"}
-                    if not quality_counts.empty and "z_slice" in quality_counts.columns:
-                        status_row = quality_counts[
-                            pd.to_numeric(quality_counts["z_slice"], errors="coerce").eq(z)
-                        ]
-                        if not status_row.empty:
-                            active_statuses = {
-                                status
-                                for status in _QUALITY_OVERLAY_LEGEND
-                                if status in status_row.columns
-                                and int(status_row.iloc[0][status]) > 0
-                            }
+                if uses_analysis_overlay:
                     ax_panel.legend(
-                        handles=quality_overlay_legend_handles(active_statuses),
+                        handles=[
+                            Patch(
+                                facecolor="#00d940",
+                                edgecolor="none",
+                                label="Included estimated nucleus observation",
+                            )
+                        ],
                         loc="lower center",
                         bbox_to_anchor=(0.5, -0.12),
-                        ncol=2,
+                        ncol=1,
                         fontsize=8,
                         frameon=True,
                     )
@@ -6456,7 +6682,7 @@ def generate_batch_report(
                     ax_hist.hist(slice_data['length_um_geodesic'], bins=15, color='skyblue', edgecolor='black')
                     ax_hist.set_title(
                         f"Z={z} Included-Observation 2D Lengths"
-                        if uses_quality_overlay else
+                        if uses_analysis_overlay else
                         f"Z={z} Pre-Tracking Candidate 2D Lengths"
                     )
                     ax_hist.set_xlabel("2D geodesic length (um)")
@@ -6472,7 +6698,7 @@ def generate_batch_report(
                         0.5,
                         0.5,
                         "No included track observations"
-                        if uses_quality_overlay else "No detections",
+                        if uses_analysis_overlay else "No detections",
                         ha='center',
                         va='center',
                     )
@@ -8698,6 +8924,11 @@ def summarize_study_sample(row, output_dir):
             aggregations["maximum_2d_length_um"] = ("length_um_geodesic", "max")
         if "width_um" in accepted_detections.columns:
             aggregations["median_2d_width_um"] = ("width_um", "median")
+        if "length_width_ratio" in accepted_detections.columns:
+            aggregations["median_2d_length_width_ratio"] = (
+                "length_width_ratio",
+                "median",
+            )
         if aggregations:
             per_track_2d = accepted_detections.groupby("track_id").agg(**aggregations)
 
@@ -8780,7 +9011,12 @@ def summarize_study_sample(row, output_dir):
         "median_2d_width_um": (
             median(per_track_2d, "median_2d_width_um")
             if "median_2d_width_um" in per_track_2d
-            else median(analysis_tracks, "median_width_um")
+            else median(analysis_tracks, "median_width_2d")
+        ),
+        "median_2d_length_width_ratio": (
+            median(per_track_2d, "median_2d_length_width_ratio")
+            if "median_2d_length_width_ratio" in per_track_2d
+            else median(analysis_tracks, "median_length_width_ratio_2d")
         ),
         "median_3d_length_um": median(analysis_tracks, "total_3d_length_um"),
         "median_3d_tortuosity": median(analysis_tracks, "tortuosity_3d"),
@@ -8805,6 +9041,7 @@ def _study_group_summary(specimen_frame):
         "estimated_nuclei_per_100000_um3",
         "median_2d_length_um",
         "median_2d_width_um",
+        "median_2d_length_width_ratio",
         "median_3d_length_um",
         "median_3d_tortuosity",
         "median_3d_thickness_um",
@@ -8833,6 +9070,7 @@ _STUDY_COMPARISON_METRICS = {
     "estimated_nuclei_per_100000_um3": "Estimated nuclei per 100,000 um3",
     "median_2d_length_um": "Specimen median 2D length (um)",
     "median_2d_width_um": "Specimen median 2D width (um)",
+    "median_2d_length_width_ratio": "Specimen median 2D length / width",
     "median_3d_length_um": "Specimen median 3D length (um)",
     "median_3d_tortuosity": "Specimen median 3D tortuosity",
     "median_3d_thickness_um": "Specimen median effective thickness (um)",
@@ -9196,6 +9434,7 @@ def _write_study_aggregates(output_root, rows, state):
         "estimated_nuclei_per_100000_um3",
         "median_2d_length_um",
         "median_2d_width_um",
+        "median_2d_length_width_ratio",
         "median_3d_length_um",
         "median_3d_tortuosity",
         "median_3d_thickness_um",
@@ -11304,7 +11543,13 @@ class SpermGUI:
 
         ensure_dir(out_dir)
         overlay_dir = os.path.join(out_dir, "overlays")
+        rescue_review_dir = os.path.join(
+            out_dir,
+            "technical_qc",
+            "unet_rescue_overlays",
+        )
         ensure_dir(overlay_dir)
+        ensure_dir(rescue_review_dir)
 
         params = CONFIG.copy()
         params['OUTPUT_DIR'] = out_dir
@@ -11409,7 +11654,13 @@ class SpermGUI:
                         res,
                         meas.get("unet_rescue_rejected_reason"),
                     )
-                    _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_unet_rescue_review.png"), rescue_rgb)
+                    _imwrite(
+                        os.path.join(
+                            rescue_review_dir,
+                            f"z{z_idx:02d}_unet_rescue_review.png",
+                        ),
+                        rescue_rgb,
+                    )
 
                     # ---- LIVE GUI UPDATE ----
                     # Show the side-by-side segmentation panel during batch execution
@@ -11491,6 +11742,12 @@ class SpermGUI:
                 # Generate candidate-coded overlays after audit.
                 if params['SAVE_OVERLAYS']:
                     export_quality_overlays(out_dir, slice_cache, df_trk, ts)
+                    export_analysis_overlays(
+                        out_dir,
+                        slice_cache,
+                        df_trk,
+                        ts,
+                    )
 
                 # Generate outlier_audit/ subfolder automatically
                 export_outlier_audit(out_dir, ts, params)
