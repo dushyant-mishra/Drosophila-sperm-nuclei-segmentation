@@ -73,7 +73,9 @@ def blend_window(tile_h, tile_w):
     return win
 
 
-def predict_tiled_probability(model, context, roi, cfg, device):
+def predict_tiled_probability(
+    model, context, roi, cfg, device, output_key="foreground"
+):
     _, h, w = context.shape
     tile_size = int(cfg.get("unet_tile_size", 256))
     overlap = int(cfg.get("unet_tile_overlap", 64))
@@ -102,7 +104,14 @@ def predict_tiled_probability(model, context, roi, cfg, device):
                     patch = padded
 
                 tensor = torch.from_numpy(patch[None, ...]).to(device)
-                pred = torch.sigmoid(model(tensor))[0, 0].detach().cpu().numpy()
+                output = model(tensor)
+                if isinstance(output, dict):
+                    if output_key not in output:
+                        raise KeyError(
+                            f"Model output does not contain requested head: {output_key}"
+                        )
+                    output = output[output_key]
+                pred = torch.sigmoid(output)[0, 0].detach().cpu().numpy()
                 pred = pred[:ph, :pw].astype(np.float32)
                 win = blend_window(ph, pw)
                 prob_sum[yy : yy + ph, xx : xx + pw] += pred * win

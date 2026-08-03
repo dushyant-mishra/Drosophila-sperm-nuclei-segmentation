@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import tifffile
+import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,3 +141,180 @@ def test_replay_builder_accepts_sreeni_manifest(tmp_path):
     assert coco["images"][0]["height"] == 12
     assert len(coco["annotations"]) == 1
     assert coco["annotations"][0]["segmentation"][0] == manifest["images"][0]["instances"][0]["segmentation"]
+
+
+def test_instance_targets_preserve_touching_annotation_ids_and_cores():
+    prepare = load_prepare_dataset()
+    annotations = [
+        {"id": 101, "segmentation": [[2, 3, 8, 3, 8, 7, 2, 7]]},
+        {"id": 202, "segmentation": [[9, 3, 15, 3, 15, 7, 9, 7]]},
+    ]
+
+    labels, audit = prepare.rasterize_instances(20, 12, annotations)
+    cores, missing = prepare.make_instance_core_labels(
+        labels,
+        {"instance_core_distance_fraction": 0.55, "instance_core_min_distance_px": 1.0},
+    )
+
+    assert sorted(np.unique(labels).tolist()) == [0, 1, 2]
+    assert sorted(np.unique(cores).tolist()) == [0, 1, 2]
+    assert audit["source_instance_ids"] == {1: 101, 2: 202}
+    assert audit["touching_pairs"] == [(1, 2)]
+    assert not missing
+
+
+def test_annotation_tolerant_boundary_keeps_thin_instance_core():
+    prepare = load_prepare_dataset()
+    annotations = [
+        {"id": 1, "segmentation": [[3, 5, 18, 5, 18, 6, 3, 6]]},
+    ]
+    labels, _ = prepare.rasterize_instances(24, 12, annotations)
+    boundary = prepare.make_boundary_ignore_mask(labels, radius=1)
+    cores, missing = prepare.make_instance_core_labels(
+        labels,
+        {"instance_core_distance_fraction": 0.55, "instance_core_min_distance_px": 1.0},
+    )
+    weights = prepare.make_loss_weight_mask(
+        np.ones(labels.shape, dtype=np.uint8),
+        boundary,
+        {"boundary_loss_weight": 0.1},
+    )
+
+    assert np.any(cores == 1)
+    assert not missing
+    assert np.all(weights[boundary] == np.float32(0.1))
+    assert np.all(weights[~boundary] == np.float32(1.0))
+
+
+def test_instance_target_hashes_are_deterministic():
+    prepare = load_prepare_dataset()
+    annotations = [
+        {"id": 9, "segmentation": [[2, 2, 7, 2, 7, 6, 2, 6]]},
+        {"id": 3, "segmentation": [[10, 3, 16, 3, 16, 8, 10, 8]]},
+    ]
+
+    first, first_audit = prepare.rasterize_instances(20, 12, annotations)
+    second, second_audit = prepare.rasterize_instances(20, 12, list(reversed(annotations)))
+
+    assert prepare.array_sha256(first) == prepare.array_sha256(second)
+    assert first_audit == second_audit
+
+
+def test_fractional_boundary_weight_is_applied_once_in_dice_loss():
+    train = load_unet25d_module("train_unet25d")
+    logits = torch.zeros((1, 1, 1, 2), dtype=torch.float32)
+    target = torch.tensor([[[[1.0, 0.0]]]])
+    weights = torch.tensor([[[[0.1, 1.0]]]])
+
+    result = train.dice_loss(logits, target, weights)
+    probability = torch.sigmoid(logits)
+    expected = 1.0 - (
+        2.0 * (probability * target * weights).sum() + 1e-6
+    ) / (
+        (probability * weights).sum()
+        + (target * weights).sum()
+        + 1e-6
+    )
+
+    assert float(result) == pytest.approx(float(expected))
+
+
+def test_zero_weight_boundary_pixel_contributes_no_bce_loss():
+    train = load_unet25d_module("train_unet25d")
+    target = torch.tensor([[[[1.0, 0.0]]]])
+    valid = torch.tensor([[[[1.0, 0.0]]]])
+    first = torch.tensor([[[[0.0, -100.0]]]])
+    second = torch.tensor([[[[0.0, 100.0]]]])
+
+    first_loss = train.masked_bce_loss(first, target, valid)
+    second_loss = train.masked_bce_loss(second, target, valid)
+
+    assert float(first_loss) == pytest.approx(float(second_loss))
+
+
+def test_dual_head_model_returns_foreground_and_core_logits():
+    train = load_unet25d_module("train_unet25d")
+    model = train.build_model(
+        {
+            "architecture": "dual_head_residual_attention_unet",
+            "base_channels": 4,
+            "deep_supervision": False,
+        }
+    )
+
+    outputs = model(torch.zeros((1, 3, 32, 32), dtype=torch.float32))
+
+    assert set(outputs) == {"foreground", "core"}
+    assert outputs["foreground"].shape == (1, 1, 32, 32)
+    assert outputs["core"].shape == (1, 1, 32, 32)
+
+
+def test_dual_head_dataset_returns_distinct_touching_instance_cores(tmp_path):
+    train = load_unet25d_module("train_unet25d")
+    core_labels = np.zeros((16, 16), dtype=np.int32)
+    core_labels[6:8, 4:6] = 1
+    core_labels[6:8, 9:11] = 2
+    mask = core_labels > 0
+    np.savez_compressed(
+        tmp_path / "Project001_Series002_z0001_ch00.npz",
+        image=np.zeros((3, 16, 16), dtype=np.float32),
+        mask=mask.astype(np.uint8),
+        supervision_mask=np.ones((16, 16), dtype=np.float32),
+        instance_core_labels=core_labels,
+    )
+    dataset = train.SpermPatchDataset(
+        tmp_path,
+        patch_size=16,
+        patches_per_image=1,
+        augment=False,
+        seed=1,
+        return_core_target=True,
+    )
+
+    _, _, _, core = dataset[0]
+
+    assert int(core.sum()) == int(mask.sum())
+    assert np.count_nonzero(core.numpy()[0, 6:8, 4:6]) == 4
+    assert np.count_nonzero(core.numpy()[0, 6:8, 9:11]) == 4
+
+
+def test_instance_evaluator_reports_a_merged_prediction():
+    evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
+    reference = np.zeros((12, 16), dtype=np.int32)
+    reference[3:8, 2:7] = 1
+    reference[3:8, 7:12] = 2
+    predicted = np.zeros_like(reference)
+    predicted[3:8, 2:12] = 1
+
+    result = evaluator.instance_metrics(
+        reference,
+        predicted,
+        iou_threshold=0.20,
+        touching_ids={1, 2},
+    )
+
+    assert result["reference_count"] == 2
+    assert result["predicted_count"] == 1
+    assert result["merged_prediction_count"] == 1
+    assert result["instance_true_positive"] == 1
+
+
+def test_core_marker_watershed_splits_connected_foreground():
+    evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
+    foreground = np.zeros((20, 24), dtype=np.float32)
+    foreground[6:14, 3:21] = 0.9
+    core = np.zeros_like(foreground)
+    core[8:12, 5:8] = 0.9
+    core[8:12, 16:19] = 0.9
+
+    labels = evaluator.marker_controlled_instances(
+        foreground,
+        core,
+        foreground_threshold=0.5,
+        core_threshold=0.5,
+        roi=np.ones(foreground.shape, dtype=bool),
+        minimum_area=3,
+    )
+
+    assert int(labels.max()) == 2
+    assert labels[10, 6] != labels[10, 17]

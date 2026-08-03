@@ -1,6 +1,8 @@
 numpy
 pillow
 PyYAML
+scipy
+scikit-image
 torch
 tifffile
 matplotlib

@@ -12,6 +12,9 @@ Available architectures:
 
 - `unet_small`: current lightweight baseline, compatible with the existing `best.pt` checkpoint.
 - `residual_attention_unet`: experimental residual + attention-gated U-Net for noisy/background-heavy slices.
+- `dual_head_residual_attention_unet`: experimental foreground/core model for
+  marker-based separation of touching nuclei. Existing single-head checkpoints
+  can initialize matching layers with `--allow-partial-warm-start`.
 
 ## Quick Start
 
@@ -47,7 +50,7 @@ It ignores only the brightest unlabeled candidate pixels (`97th` percentile)
 and uses less aggressive positive patch sampling than the first partial-label
 experiment.
 
-This config also uses training-only forgiveness for imperfect hand masks:
+The historical config uses training-only forgiveness for imperfect hand masks:
 
 - partial-label-aware loss through `supervision_mask`
 - ignored unlabeled bright pixels
@@ -144,9 +147,32 @@ for faint, intermediate, and bright manually annotated nuclei. This is a
 model-recall diagnostic; it does not replace Saturn instance splitting or
 biological QC.
 
+## Annotation-Tolerant v5.7.1 Experiments
+
+The controlled v5.7.1 experiment preserves every COCO instance instead of
+flattening annotations immediately into one binary union. It generates:
+
+- raw foreground targets;
+- deterministic integer instance labels;
+- per-instance confident cores;
+- one-pixel boundary uncertainty bands;
+- partial-label supervision masks;
+- strict per-image and combined target-audit reports.
+
+Model A retains the historical one-pixel positive-target dilation. Model B
+removes that dilation and downweights uncertain hand-drawn boundaries. Model C
+adds a separate core-prediction head. The optional clDice and deep-supervision
+code is disabled in Model C so architectural effects remain interpretable.
+
+All three arms reuse the existing 5,273 annotations. See
+[V571_ANNOTATION_TOLERANT_AB_KAGGLE.md](V571_ANNOTATION_TOLERANT_AB_KAGGLE.md)
+for the cell-by-cell training and evaluation workflow.
+
 ## Notes
 
-- COCO polygons are rasterized into binary center-slice masks.
+- Legacy configs rasterize COCO polygons into binary center-slice masks. The
+  v5.7.1 annotation-tolerant configs additionally preserve instance labels,
+  cores, and boundary uncertainty.
 - Context slices come from the full TIFF z stack in `images/`.
 - The first experiment is intentionally tiny: 9 train images and 2 technical validation images.
 - This is a proof-of-approach, not yet a production model.

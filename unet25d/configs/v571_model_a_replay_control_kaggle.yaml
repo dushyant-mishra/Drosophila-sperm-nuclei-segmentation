@@ -1,0 +1,55 @@
+project_root: /kaggle/working/v5_7_kj_wt_replay_finetune
+stack_image_dir: /kaggle/working/v5_7_kj_wt_replay_finetune/raw_tiffs
+annotation_manifest: /kaggle/working/v5_7_kj_wt_replay_finetune/annotations/_annotations.coco.json
+valid_z_indices: [190, 200, 210, 220]
+output_dir: /kaggle/working/v571_model_a_replay_control
+checkpoint_mirror_dir: null
+
+z_regex: 'Project001_Series002_z(\d+)_ch00'
+image_pattern: 'Project001_Series002_z{z:04d}_ch00.tif'
+roi_mask_dir: /kaggle/working/v5_7_kj_wt_replay_finetune/roi_masks
+roi_mask_pattern: 'Project001_Series002_z{z:04d}_ch00.npy'
+
+architecture: residual_attention_unet
+target_preparation_mode: legacy_dilated
+train_mask_dilate_px: 1
+boundary_ignore_radius_px: 1
+boundary_loss_weight: 0.1
+instance_core_distance_fraction: 0.55
+instance_core_min_distance_px: 1.0
+strict_target_audit: true
+
+partial_labels: true
+ignore_unlabeled_intensity_percentile: 97.0
+ignore_labeled_dilate_px: 4
+ignore_candidate_dilate_px: 1
+positive_patch_probability: 0.8
+positive_loss_weight: 1.5
+
+patch_size: 256
+patches_per_image: 64
+epochs: 12
+snapshot_epochs: [3, 6, 9, 12]
+batch_size: 8
+base_channels: 24
+learning_rate: 0.00005
+weight_decay: 0.00001
+seed: 793
+
+train_repeat_z_indices: [110, 120, 130, 140, 150, 160, 170, 180, 500, 510, 520]
+train_repeat_factor: 2
+photometric_augment_probability: 0.65
+photometric_gain_range: [0.70, 1.20]
+photometric_gamma_range: [0.85, 1.30]
+photometric_noise_std_max: 0.02
+
+threshold: 0.5
+validation_thresholds: [0.03, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70]
+unet_inference_mode: roi_tiled
+unet_tile_size: 256
+unet_tile_overlap: 64
+unet_roi_padding_px: 32
+unet_outside_roi_zero: true
+unet_candidate_threshold: 0.05
+unet_seed_threshold: 0.30
+infer_z_indices: [190, 200, 210, 220]
