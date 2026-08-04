@@ -55,6 +55,7 @@ photometric_noise_std_max: 0.02
 
 threshold: 0.5
 validation_thresholds: [0.03, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70]
+diagnostic_thresholds: [0.30, 0.50, 0.60]
 unet_inference_mode: roi_tiled
 unet_tile_size: 256
 unet_tile_overlap: 64

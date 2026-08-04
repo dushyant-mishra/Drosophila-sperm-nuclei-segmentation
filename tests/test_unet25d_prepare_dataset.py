@@ -318,6 +318,8 @@ def test_instance_evaluator_reports_a_merged_prediction():
     assert result["reference_count"] == 2
     assert result["predicted_count"] == 1
     assert result["merged_prediction_count"] == 1
+    assert result["merged_reference_count"] == 2
+    assert result["merge_prediction_rate"] == pytest.approx(1.0)
     assert result["instance_true_positive"] == 1
 
 
@@ -364,6 +366,40 @@ def test_core_marker_watershed_splits_connected_foreground():
     assert int(labels.max()) == 2
     assert labels[10, 6] != labels[10, 17]
 
+    labels, foreground_mask, core_mask, markers = (
+        evaluator.marker_controlled_instances(
+            foreground,
+            core,
+            foreground_threshold=0.5,
+            core_threshold=0.5,
+            roi=np.ones(foreground.shape, dtype=bool),
+            minimum_area=3,
+            return_diagnostics=True,
+        )
+    )
+    assert int(labels.max()) == 2
+    assert int(markers.max()) == 2
+    assert np.all(core_mask <= foreground_mask)
+
+
+def test_partial_label_audit_separates_unknown_predictions():
+    evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
+    labels = np.zeros((10, 12), dtype=np.int32)
+    labels[2:5, 1:4] = 1
+    labels[6:9, 8:11] = 2
+    target = np.zeros(labels.shape, dtype=bool)
+    target[2:5, 1:4] = True
+    supervision = np.ones(labels.shape, dtype=bool)
+    supervision[5:, 7:] = False
+
+    audit = evaluator.partial_label_audit(
+        labels, target, supervision, np.ones(labels.shape, dtype=bool)
+    )
+
+    assert audit["prediction_count_predominantly_ignored"] == 1
+    assert audit["unmatched_prediction_count_predominantly_ignored"] == 1
+    assert audit["unmatched_prediction_count_supervised"] == 0
+
 
 def test_model_selection_table_is_review_only():
     evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
@@ -384,11 +420,18 @@ def test_model_selection_table_is_review_only():
         "threshold": 0.3,
         "instance_method": "connected_components",
         "instance_precision": 0.8,
+        "partial_adjusted_instance_precision": 0.82,
         "instance_recall": 0.9,
         "instance_f1": 0.85,
         "count_error": 1,
+        "partial_adjusted_count_error": 0,
+        "partial_unknown_prediction_count": 1,
         "merged_prediction_count": 2,
+        "merged_reference_count": 3,
+        "merge_prediction_rate": 0.2,
         "split_reference_count": 1,
+        "split_prediction_count": 2,
+        "split_reference_rate": 0.1,
         "missed_reference_count": 3,
         "duplicate_prediction_count": 4,
         "touching_instance_recall": 0.75,

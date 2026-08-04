@@ -224,43 +224,65 @@ evaluator = REPO/'unet25d'/'evaluate_annotation_tolerant_ab.py'
 args = [sys.executable, '-u', str(evaluator), '--config-a', str(CONFIG_A), '--config-b', str(CONFIG_B),
         '--reference-dataset', str(output_dirs[1]/'dataset'/'valid'),
         '--group-key', str(PACKAGE/'annotation_key_private.csv'), '--output', str(EVAL_OUT)]
-for label, path in [('baseline',WARM_START)] + [(f'epoch_{n:03d}',output_dirs[0]/'checkpoints'/f'epoch_{n:03d}.pt') for n in (3,6,9,12)]:
+for label, path in [('baseline',WARM_START), ('best',output_dirs[0]/'checkpoints'/'best.pt')] + [(f'epoch_{n:03d}',output_dirs[0]/'checkpoints'/f'epoch_{n:03d}.pt') for n in (3,6,9,12)]:
     args += ['--checkpoint-a', f'{label}={path}']
-for label, path in [('baseline',WARM_START)] + [(f'epoch_{n:03d}',output_dirs[1]/'checkpoints'/f'epoch_{n:03d}.pt') for n in (3,6,9,12)]:
+for label, path in [('baseline',WARM_START), ('best',output_dirs[1]/'checkpoints'/'best.pt')] + [(f'epoch_{n:03d}',output_dirs[1]/'checkpoints'/f'epoch_{n:03d}.pt') for n in (3,6,9,12)]:
     args += ['--checkpoint-b', f'{label}={path}']
 if RUN_MODEL_C:
     args += ['--config-c', str(CONFIG_C)]
-    for label, path in [(f'epoch_{n:03d}',output_dirs[2]/'checkpoints'/f'epoch_{n:03d}.pt') for n in (3,6,9,12)]:
+    for label, path in [('best',output_dirs[2]/'checkpoints'/'best.pt')] + [(f'epoch_{n:03d}',output_dirs[2]/'checkpoints'/f'epoch_{n:03d}.pt') for n in (3,6,9,12)]:
         args += ['--checkpoint-c', f'{label}={path}']
 subprocess.run(args, check=True)
 """
     ),
     code(
-        """# Cell 15 - Inspect the model-selection table; no row is an automatic winner.
-import pandas as pd
+        """# Cell 15 - Enforce diagnostic gates before reviewing model candidates.
+import json, pandas as pd
+metadata = json.loads((EVAL_OUT/'evaluation_metadata.json').read_text())
+required_diagnostics = [
+    EVAL_OUT/'core_watershed_diagnostic_manifest.csv',
+    EVAL_OUT/'merge_split_audit.csv',
+    EVAL_OUT/'partial_label_audit.csv',
+]
+assert all(path.exists() for path in required_diagnostics), required_diagnostics
+assert metadata['diagnostic_gate_pass'], metadata
+
+diagnostics = pd.read_csv(required_diagnostics[0])
+merge_split = pd.read_csv(required_diagnostics[1])
+partial_labels = pd.read_csv(required_diagnostics[2])
+assert len(diagnostics) == metadata['core_watershed_diagnostic_count']
+assert len(merge_split) == metadata['merge_split_audit_row_count']
+assert len(partial_labels) == metadata['partial_label_audit_row_count']
+
+print('Core-marker/watershed diagnostics:', len(diagnostics))
+display(merge_split.groupby(['model','threshold'])[
+    ['merge_prediction_rate','split_reference_rate','touching_instance_recall']
+].mean().reset_index())
+display(partial_labels.groupby(['model','threshold'])[
+    ['ignored_roi_fraction','unmatched_prediction_count_predominantly_ignored',
+     'unmatched_prediction_count_supervised']
+].mean().reset_index())
+
+# Candidate ordering is shown only after all diagnostic gates pass.
 selection = pd.read_csv(EVAL_OUT/'model_selection_table.csv')
-display(selection.sort_values(['instance_recall','boundary_f1_tolerance_1px'], ascending=False).head(30))
-print('Validation limitation: four images from four specimens; visual review remains required.')
+display(selection.sort_values(
+    ['instance_recall','merge_prediction_rate','split_reference_rate'],
+    ascending=[False,True,True],
+).head(30))
+print('No automatic winner: inspect marker and watershed panels before selection.')
+print('Validation limitation: four images from four specimens.')
 """
     ),
     code(
-        """# Cell 16 - Generate fixed-threshold review panels with identical display ranges.
-threshold = 0.30
-valid_samples = sorted((output_dirs[1]/'dataset'/'valid').glob('*.npz'))
-review_models = ['model_a_replay_control__epoch_003','model_b_annotation_tolerant__epoch_003']
-if RUN_MODEL_C: review_models.append('model_c_dual_head__epoch_003')
-fig, axes = plt.subplots(len(valid_samples), 1+len(review_models), figsize=(5*(1+len(review_models)),4*len(valid_samples)))
-axes = np.atleast_2d(axes)
-for row, sample_path in enumerate(valid_samples):
-    with np.load(sample_path) as sample: raw=sample['image'][1]; target=sample['raw_annotation_mask']
-    lo,hi=np.percentile(raw,[1,99.5]); axes[row,0].imshow(raw,cmap='gray',vmin=lo,vmax=hi); axes[row,0].contour(target,[0.5],colors='lime',linewidths=0.7)
-    axes[row,0].set_title(f'{sample_path.stem}: annotation')
-    for col,name in enumerate(review_models,1):
-        probability=np.load(EVAL_OUT/f'{name}_{sample_path.stem}_probability.npy')
-        axes[row,col].imshow(raw,cmap='gray',vmin=lo,vmax=hi); axes[row,col].contour(probability>=threshold,[0.5],colors='cyan',linewidths=0.7)
-        axes[row,col].set_title(name)
-    for ax in axes[row]: ax.axis('off')
-plt.tight_layout(); plt.savefig(EVAL_OUT/'review_overlays_threshold_0_30.png',dpi=180); plt.show()
+        """# Cell 16 - Display the required core-marker and watershed-instance panels.
+from IPython.display import Image as NotebookImage, display
+review = diagnostics[
+    diagnostics['model'].isin(['model_c_dual_head:best','model_c_dual_head:epoch_003'])
+    & diagnostics['threshold'].isin([0.30, 0.60])
+].sort_values(['model','threshold','image'])
+assert not review.empty, 'Required Model C diagnostic panels were not generated'
+for path in review['panel_relative_path']:
+    display(NotebookImage(filename=str(EVAL_OUT/path)))
 """
     ),
     code(

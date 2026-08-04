@@ -5,11 +5,14 @@ import csv
 import json
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import torch
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt
 from scipy.ndimage import binary_erosion, distance_transform_edt, label
 from scipy.optimize import linear_sum_assignment
-from skimage.segmentation import watershed
+from skimage.segmentation import find_boundaries, watershed
 
 from infer_tiled_unet25d import predict_tiled_probability
 from prepare_dataset import decode_binary_mask_rle, dilate_binary, load_config
@@ -90,6 +93,7 @@ def marker_controlled_instances(
     core_threshold,
     roi,
     minimum_area,
+    return_diagnostics=False,
 ):
     foreground = (foreground_probability >= foreground_threshold) & roi
     foreground_labels = remove_small_components(foreground, minimum_area)
@@ -112,13 +116,17 @@ def marker_controlled_instances(
         markers[int(best[0]), int(best[1])] = next_marker
 
     if next_marker == 0:
-        return np.zeros(foreground.shape, dtype=np.int32)
-    return watershed(
-        -foreground_probability,
-        markers=markers,
-        mask=foreground,
-        connectivity=np.ones((3, 3), dtype=np.uint8),
-    ).astype(np.int32)
+        instances = np.zeros(foreground.shape, dtype=np.int32)
+    else:
+        instances = watershed(
+            -foreground_probability,
+            markers=markers,
+            mask=foreground,
+            connectivity=np.ones((3, 3), dtype=np.uint8),
+        ).astype(np.int32)
+    if return_diagnostics:
+        return instances, foreground, core, markers.astype(np.int32)
+    return instances
 
 
 def overlap_table(reference_labels, predicted_labels):
@@ -172,8 +180,16 @@ def _summarize_instance_overlap(
         where=reference_area[:, None] > 0,
     )
     meaningful = overlap_fraction_reference >= 0.10
-    merged_predictions = int(np.sum(meaningful.sum(axis=0) >= 2)) if meaningful.size else 0
-    split_references = int(np.sum(meaningful.sum(axis=1) >= 2)) if meaningful.size else 0
+    merged_columns = meaningful.sum(axis=0) >= 2 if meaningful.size else np.zeros(0, bool)
+    split_rows = meaningful.sum(axis=1) >= 2 if meaningful.size else np.zeros(0, bool)
+    merged_predictions = int(np.sum(merged_columns))
+    split_references = int(np.sum(split_rows))
+    merged_reference_count = int(
+        np.sum(np.any(meaningful[:, merged_columns], axis=1))
+    ) if np.any(merged_columns) else 0
+    split_prediction_count = int(
+        np.sum(np.any(meaningful[split_rows, :], axis=0))
+    ) if np.any(split_rows) else 0
     reference_count = len(reference_area)
     predicted_count = len(predicted_area)
     true_positive = len(matched_reference)
@@ -195,7 +211,11 @@ def _summarize_instance_overlap(
         "count_error": predicted_count - reference_count,
         "count_absolute_error": abs(predicted_count - reference_count),
         "merged_prediction_count": merged_predictions,
+        "merged_reference_count": merged_reference_count,
+        "merge_prediction_rate": safe_divide(merged_predictions, predicted_count),
         "split_reference_count": split_references,
+        "split_prediction_count": split_prediction_count,
+        "split_reference_rate": safe_divide(split_references, reference_count),
         "missed_reference_count": reference_count - true_positive,
         "duplicate_prediction_count": predicted_count - true_positive,
         "touching_reference_count": len(touching_ids),
@@ -276,6 +296,127 @@ def pixel_metrics(predicted, target, valid):
     }
 
 
+def partial_label_audit(predicted_labels, target, supervision, roi):
+    """Describe predictions that cannot be judged from partial annotations."""
+    predicted_labels = np.asarray(predicted_labels, dtype=np.int32)
+    target = np.asarray(target, dtype=bool)
+    roi = np.asarray(roi, dtype=bool)
+    supervised = np.asarray(supervision, dtype=bool) & roi
+    ignored = roi & ~supervised
+    predicted = predicted_labels > 0
+    predominantly_ignored = 0
+    unmatched_predominantly_ignored = 0
+    unmatched_supervised = 0
+    touching_ignored = 0
+    for predicted_id in range(1, int(predicted_labels.max()) + 1):
+        component = predicted_labels == predicted_id
+        area = int(np.count_nonzero(component))
+        if area == 0:
+            continue
+        ignored_fraction = safe_divide(
+            np.count_nonzero(component & ignored), area
+        )
+        overlaps_annotation = bool(np.any(component & target))
+        if np.any(component & ignored):
+            touching_ignored += 1
+        if ignored_fraction >= 0.5:
+            predominantly_ignored += 1
+            if not overlaps_annotation:
+                unmatched_predominantly_ignored += 1
+        elif not overlaps_annotation:
+            unmatched_supervised += 1
+    return {
+        "roi_pixel_count": int(np.count_nonzero(roi)),
+        "supervised_roi_pixel_count": int(np.count_nonzero(supervised)),
+        "ignored_roi_pixel_count": int(np.count_nonzero(ignored)),
+        "supervised_roi_fraction": safe_divide(
+            np.count_nonzero(supervised), np.count_nonzero(roi)
+        ),
+        "ignored_roi_fraction": safe_divide(
+            np.count_nonzero(ignored), np.count_nonzero(roi)
+        ),
+        "predicted_pixel_fraction_supervised": safe_divide(
+            np.count_nonzero(predicted & supervised), np.count_nonzero(supervised)
+        ),
+        "predicted_pixel_fraction_ignored": safe_divide(
+            np.count_nonzero(predicted & ignored), np.count_nonzero(ignored)
+        ),
+        "prediction_count_touching_ignored": touching_ignored,
+        "prediction_count_predominantly_ignored": predominantly_ignored,
+        "unmatched_prediction_count_predominantly_ignored": (
+            unmatched_predominantly_ignored
+        ),
+        "unmatched_prediction_count_supervised": unmatched_supervised,
+    }
+
+
+def save_core_watershed_diagnostic(
+    output_path,
+    raw,
+    reference_labels,
+    roi,
+    foreground_probability,
+    core_probability,
+    foreground,
+    core,
+    markers,
+    predicted_labels,
+    title,
+):
+    """Save the evidence needed to audit marker-driven instance splitting."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    lo, hi = np.percentile(raw[roi], [1, 99.5]) if np.any(roi) else (0, 1)
+    predicted_boundary = find_boundaries(predicted_labels, mode="outer")
+    reference_boundary = find_boundaries(reference_labels, mode="outer")
+    overlay = np.repeat(
+        np.clip((raw - lo) / max(hi - lo, 1e-6), 0, 1)[..., None], 3, axis=2
+    )
+    overlay[reference_boundary] = (0.15, 1.0, 0.15)
+    overlay[predicted_boundary] = (0.0, 0.9, 1.0)
+
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8), constrained_layout=True)
+    panels = [
+        (raw, "Raw center plane", "gray", lo, hi),
+        (foreground_probability, "Foreground probability", "magma", 0, 1),
+        (core_probability, "Core probability", "viridis", 0, 1),
+        (foreground, "Thresholded foreground", "gray", 0, 1),
+        (core, "Thresholded core", "gray", 0, 1),
+        (markers, f"Core markers (n={int(markers.max())})", "nipy_spectral", None, None),
+        (
+            predicted_labels,
+            f"Watershed instances (n={int(predicted_labels.max())})",
+            "nipy_spectral",
+            None,
+            None,
+        ),
+    ]
+    for axis, (panel, panel_title, cmap, vmin, vmax) in zip(axes.ravel()[:7], panels):
+        axis.imshow(panel, cmap=cmap, vmin=vmin, vmax=vmax)
+        axis.set_title(panel_title)
+        axis.axis("off")
+    axes.ravel()[7].imshow(overlay)
+    axes.ravel()[7].set_title("Green reference; cyan watershed")
+    axes.ravel()[7].axis("off")
+    fig.suptitle(title)
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
+def write_core_watershed_arrays(
+    output_path, foreground, core, markers, predicted_labels
+):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        foreground_mask=np.asarray(foreground, dtype=np.uint8),
+        core_mask=np.asarray(core, dtype=np.uint8),
+        core_markers=np.asarray(markers, dtype=np.int32),
+        watershed_instance_labels=np.asarray(predicted_labels, dtype=np.int32),
+    )
+
+
 def load_group_map(path):
     if not path:
         return {}
@@ -338,11 +479,18 @@ def build_model_selection_table(pixel_rows, image_rows):
     ]
     instance_fields = [
         "instance_precision",
+        "partial_adjusted_instance_precision",
         "instance_recall",
         "instance_f1",
         "count_error",
+        "partial_adjusted_count_error",
+        "partial_unknown_prediction_count",
         "merged_prediction_count",
+        "merged_reference_count",
+        "merge_prediction_rate",
         "split_reference_count",
+        "split_prediction_count",
+        "split_reference_rate",
         "missed_reference_count",
         "duplicate_prediction_count",
         "touching_instance_recall",
@@ -445,6 +593,8 @@ def main():
     pixel_rows = []
     image_rows = []
     object_rows = []
+    partial_label_rows = []
+    diagnostic_rows = []
     audit_rows_path = reference_dataset / "target_generation_audit.json"
     audit_by_file = {}
     if audit_rows_path.exists():
@@ -522,6 +672,7 @@ def main():
                     core_probability.astype(np.float32),
                 )
             for threshold in thresholds:
+                marker_diagnostics = None
                 if core_probability is None:
                     predicted = probability >= threshold
                     predicted_labels = remove_small_components(
@@ -530,14 +681,26 @@ def main():
                     )
                     instance_method = "connected_components"
                 else:
-                    predicted_labels = marker_controlled_instances(
+                    diagnostic_thresholds = {
+                        float(value)
+                        for value in cfg.get(
+                            "diagnostic_thresholds", [0.30, 0.50, 0.60]
+                        )
+                    }
+                    result = marker_controlled_instances(
                         probability,
                         core_probability,
                         threshold,
                         float(cfg.get("core_seed_threshold", 0.50)),
                         roi,
                         args.minimum_component_px,
+                        return_diagnostics=threshold in diagnostic_thresholds,
                     )
+                    if threshold in diagnostic_thresholds:
+                        predicted_labels, foreground, core, markers = result
+                        marker_diagnostics = (foreground, core, markers)
+                    else:
+                        predicted_labels = result
                     instance_method = "core_marker_watershed"
                 predicted = predicted_labels > 0
                 valid = roi & partial_valid
@@ -569,6 +732,35 @@ def main():
                     "group": group,
                     "instance_method": instance_method,
                 }
+                partial_audit = partial_label_audit(
+                    predicted_labels, target, partial_valid, roi
+                )
+                unknown_predictions = int(
+                    partial_audit[
+                        "unmatched_prediction_count_predominantly_ignored"
+                    ]
+                )
+                evaluable_predictions = max(
+                    0, int(instances["predicted_count"]) - unknown_predictions
+                )
+                instances.update(
+                    {
+                        "partial_unknown_prediction_count": unknown_predictions,
+                        "evaluable_predicted_count": evaluable_predictions,
+                        "partial_adjusted_instance_precision": safe_divide(
+                            instances["instance_true_positive"],
+                            evaluable_predictions,
+                        ),
+                        "partial_adjusted_count_error": (
+                            evaluable_predictions - instances["reference_count"]
+                        ),
+                        "partial_adjusted_duplicate_prediction_count": max(
+                            0,
+                            evaluable_predictions
+                            - instances["instance_true_positive"],
+                        ),
+                    }
+                )
                 pixel_rows.append(
                     {
                         **base,
@@ -587,6 +779,80 @@ def main():
                         },
                     }
                 )
+                partial_label_rows.append(
+                    {
+                        **base,
+                        **partial_audit,
+                        "partial_unknown_prediction_count": unknown_predictions,
+                        "evaluable_predicted_count": evaluable_predictions,
+                        "partial_adjusted_instance_precision": instances[
+                            "partial_adjusted_instance_precision"
+                        ],
+                        "partial_adjusted_count_error": instances[
+                            "partial_adjusted_count_error"
+                        ],
+                    }
+                )
+                if marker_diagnostics is not None:
+                    foreground, core, markers = marker_diagnostics
+                    threshold_token = f"{threshold:.2f}".replace(".", "_")
+                    diagnostic_root = (
+                        output / "core_watershed_diagnostics" / safe_model_name
+                    )
+                    diagnostic_stem = f"{stem}_threshold_{threshold_token}"
+                    save_core_watershed_diagnostic(
+                        diagnostic_root / f"{diagnostic_stem}.png",
+                        center,
+                        reference_labels,
+                        roi,
+                        probability,
+                        core_probability,
+                        foreground,
+                        core,
+                        markers,
+                        predicted_labels,
+                        (
+                            f"{model_name} | {stem} | threshold={threshold:.2f} | "
+                            f"merges={instances['merged_prediction_count']} | "
+                            f"split references={instances['split_reference_count']}"
+                        ),
+                    )
+                    write_core_watershed_arrays(
+                        diagnostic_root / f"{diagnostic_stem}.npz",
+                        foreground,
+                        core,
+                        markers,
+                        predicted_labels,
+                    )
+                    diagnostic_rows.append(
+                        {
+                            **base,
+                            "panel_path": str(
+                                diagnostic_root / f"{diagnostic_stem}.png"
+                            ),
+                            "array_path": str(
+                                diagnostic_root / f"{diagnostic_stem}.npz"
+                            ),
+                            "panel_relative_path": str(
+                                (diagnostic_root / f"{diagnostic_stem}.png").relative_to(
+                                    output
+                                )
+                            ),
+                            "array_relative_path": str(
+                                (diagnostic_root / f"{diagnostic_stem}.npz").relative_to(
+                                    output
+                                )
+                            ),
+                            "core_marker_count": int(markers.max()),
+                            "watershed_instance_count": int(predicted_labels.max()),
+                            "merged_prediction_count": instances[
+                                "merged_prediction_count"
+                            ],
+                            "split_reference_count": instances[
+                                "split_reference_count"
+                            ],
+                        }
+                    )
                 for reference_id, intensity in object_intensity.items():
                     brightness = (
                         "faint"
@@ -611,6 +877,40 @@ def main():
     write_csv(output / "pixel_boundary_metrics.csv", pixel_rows)
     write_csv(output / "instance_image_metrics.csv", image_rows)
     write_csv(output / "instance_object_metrics.csv", object_rows)
+    write_csv(output / "partial_label_audit.csv", partial_label_rows)
+    write_csv(output / "core_watershed_diagnostic_manifest.csv", diagnostic_rows)
+    write_csv(
+        output / "merge_split_audit.csv",
+        [
+            {
+                key: row[key]
+                for key in [
+                    "model",
+                    "threshold",
+                    "image",
+                    "group",
+                    "instance_method",
+                    "reference_count",
+                    "predicted_count",
+                    "evaluable_predicted_count",
+                    "partial_unknown_prediction_count",
+                    "partial_adjusted_instance_precision",
+                    "partial_adjusted_count_error",
+                    "merged_prediction_count",
+                    "merged_reference_count",
+                    "merge_prediction_rate",
+                    "split_reference_count",
+                    "split_prediction_count",
+                    "split_reference_rate",
+                    "missed_reference_count",
+                    "duplicate_prediction_count",
+                    "touching_reference_count",
+                    "touching_instance_recall",
+                ]
+            }
+            for row in image_rows
+        ],
+    )
     write_csv(
         output / "pixel_boundary_summary.csv",
         aggregate_numeric_rows(
@@ -634,11 +934,18 @@ def main():
             ["model", "threshold", "group"],
             [
                 "instance_precision",
+                "partial_adjusted_instance_precision",
                 "instance_recall",
                 "instance_f1",
                 "count_error",
+                "partial_adjusted_count_error",
+                "partial_unknown_prediction_count",
                 "merged_prediction_count",
+                "merged_reference_count",
+                "merge_prediction_rate",
                 "split_reference_count",
+                "split_prediction_count",
+                "split_reference_rate",
                 "touching_instance_recall",
             ],
         ),
@@ -661,6 +968,10 @@ def main():
         "validation_images": [path.stem for path in sample_paths],
         "iou_threshold": args.iou_threshold,
         "minimum_component_px": args.minimum_component_px,
+        "core_watershed_diagnostic_count": len(diagnostic_rows),
+        "merge_split_audit_row_count": len(image_rows),
+        "partial_label_audit_row_count": len(partial_label_rows),
+        "diagnostic_gate_pass": bool(diagnostic_rows and partial_label_rows),
         "selection_note": (
             "Do not select by Dice alone. Review instance recall, count error, "
             "merges, splits, boundary behavior, threshold stability, brightness, "

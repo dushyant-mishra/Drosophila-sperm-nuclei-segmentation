@@ -168,8 +168,25 @@ subprocess.run(
 The evaluator writes per-pixel, per-image, per-object, and aggregate CSV files,
 plus continuous probability maps. Models A and B use connected components for
 this fixed diagnostic. Model C uses its core map as markers for watershed of the
-foreground map. Review faint/intermediate/bright, touching, WT, and KJ strata
-separately.
+foreground map.
+
+Before ordering model candidates, require all of these outputs:
+
+- `core_watershed_diagnostic_manifest.csv`;
+- `core_watershed_diagnostics/**/*.png`, showing the raw plane, foreground
+  probability, core probability, thresholded foreground, thresholded core,
+  core markers, watershed labels, and reference/prediction boundaries;
+- `core_watershed_diagnostics/**/*.npz`, containing the corresponding marker
+  and instance-label arrays;
+- `merge_split_audit.csv`, with normalized merge and split rates;
+- `partial_label_audit.csv`, separating evaluable false positives from
+  predictions that lie predominantly in intentionally unsupervised regions.
+
+The evaluator records both unadjusted and partial-label-adjusted precision and
+count error. Predictions in ignored regions are unknown, not automatically
+false. Review faint/intermediate/bright, touching, genotype/group, and
+partial-label strata separately. Only after the diagnostic gate passes should
+`model_selection_table.csv` be used to order candidates for visual review.
 
 ## Kaggle Cell 8: Archive Results
 
