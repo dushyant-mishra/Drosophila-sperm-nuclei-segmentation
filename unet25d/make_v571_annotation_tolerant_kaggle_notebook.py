@@ -44,13 +44,17 @@ RUN_MODEL_C = True
 
 packages = [p for p in INPUT.rglob('v5_7_kj_wt_replay_finetune') if p.is_dir()]
 bundles = list(INPUT.rglob('v571_annotation_tolerant_code_bundle.zip'))
+unpacked_repos = [p.parents[1] for p in INPUT.rglob('unet25d/prepare_dataset.py')]
 assert packages, 'Training package directory not found under /kaggle/input'
-assert bundles, 'v571_annotation_tolerant_code_bundle.zip not found under /kaggle/input'
+assert bundles or unpacked_repos, 'Neither the code bundle ZIP nor an unpacked repo/unet25d directory was found'
 
 PACKAGE = packages[0]
 REPO = WORK / 'repo'
 if REPO.exists(): shutil.rmtree(REPO)
-with zipfile.ZipFile(bundles[0]) as handle: handle.extractall(WORK)
+if bundles:
+    with zipfile.ZipFile(bundles[0]) as handle: handle.extractall(WORK)
+else:
+    shutil.copytree(unpacked_repos[0], REPO)
 bundled_checkpoint = REPO/'warm_start'/'epoch_003.pt'
 input_checkpoints = list(INPUT.rglob('epoch_003.pt'))
 WARM_START = input_checkpoints[0] if input_checkpoints else bundled_checkpoint
