@@ -227,3 +227,37 @@ The numerically best checkpoint is the first candidate for visual inspection,
 not an automatic production replacement. Production Saturn thresholds,
 tracking, reporting, and biological results remain frozen until this comparison
 passes visual and morphometry review.
+
+## Blinded Epoch 3 Versus Epoch 12 Review
+
+Build the event-level review from cached Model C outputs only:
+
+```powershell
+.\.venv\Scripts\python.exe .\unet25d\build_blinded_checkpoint_review.py `
+  --cache-dir .\scratch\v571_blinded_cached_outputs\outputs\model_comparison `
+  --reference-dataset .\scratch\v571_local_posthoc_inputs\outputs\model_b_boundary_tolerant\dataset\valid `
+  --group-key .\training_packages\v5_7_kj_wt_replay_finetune\annotation_key_private.csv `
+  --output .\scratch\v571_blinded_epoch003_vs_epoch012_review `
+  --foreground-threshold 0.60 `
+  --core-threshold 0.50 `
+  --minimum-component-px 3 `
+  --seed 5710312
+```
+
+The reviewer package contains Method A and Method B only. Its master CSV links
+every event to a thumbnail, and its PDFs group split, merge, tiny-child,
+supervised-background, ignored-region, and difficult-KJ examples. The method
+key is written outside the reviewer package and remains sealed until all review
+fields are complete. No numerical score selects a checkpoint before reveal.
+
+After review, the required order is: freeze the selected checkpoint and current
+watershed settings; integrate dual-head inference and apparent-width fields;
+run representative-slice smoke tests; run one full WT and one full KJ pilot;
+validate calibrated deterministic tracking; then rerun the biological study.
+
+PSF correction remains behind a disabled experimental switch. Apparent
+perpendicular-chord width is the production width even when PSF records are
+unavailable. Lateral PSF is relevant only to lateral width; axial PSF belongs
+to Z and 3D interpretation. Objects from 15 to 20 um trigger technical review
+for possible merging or fusion but are not automatically rejected, and unusual
+KJ morphology remains measurable.

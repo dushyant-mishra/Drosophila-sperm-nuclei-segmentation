@@ -401,6 +401,39 @@ def test_partial_label_audit_separates_unknown_predictions():
     assert audit["unmatched_prediction_count_supervised"] == 0
 
 
+def test_blinded_checkpoint_assignment_is_deterministic_and_complete():
+    reviewer = load_unet25d_module("build_blinded_checkpoint_review")
+
+    first = reviewer.blinded_assignment("epoch_003", "epoch_012", seed=5710312)
+    second = reviewer.blinded_assignment("epoch_003", "epoch_012", seed=5710312)
+
+    assert first == second
+    assert set(first) == {"Method A", "Method B"}
+    assert set(first.values()) == {"epoch_003", "epoch_012"}
+
+
+def test_blinded_review_relations_detect_split_and_merge():
+    reviewer = load_unet25d_module("build_blinded_checkpoint_review")
+    references = {
+        1: np.zeros((8, 12), dtype=bool),
+        2: np.zeros((8, 12), dtype=bool),
+    }
+    references[1][2:5, 1:6] = True
+    references[2][2:5, 6:11] = True
+    predictions = np.zeros((8, 12), dtype=np.int32)
+    predictions[2:5, 1:3] = 1
+    predictions[2:5, 3:9] = 2
+    predictions[2:5, 9:11] = 3
+
+    reference_to_predictions, prediction_to_references = (
+        reviewer.meaningful_relations(references, predictions, minimum_fraction=0.10)
+    )
+
+    assert reference_to_predictions[1] == [1, 2]
+    assert reference_to_predictions[2] == [2, 3]
+    assert prediction_to_references[2] == [1, 2]
+
+
 def test_model_selection_table_is_review_only():
     evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
     pixel_row = {
