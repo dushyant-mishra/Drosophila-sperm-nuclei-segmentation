@@ -1,0 +1,61 @@
+{
+  "version": "v5.7.1-body-width",
+  "checkpoint": {
+    "path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\model_checkpoints\\v571_model_c_dual_head_epoch003.pt",
+    "size": 4634914,
+    "mtime_ns": 1785831112000000000,
+    "sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25"
+  },
+  "z_values": [
+    48,
+    49,
+    50,
+    51,
+    52
+  ],
+  "image_files_by_z": {
+    "48": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-13\\Project001_Series015_z48_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785210112725254600
+    },
+    "49": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-13\\Project001_Series015_z49_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785210075568121500
+    },
+    "50": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-13\\Project001_Series015_z50_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785210075549477000
+    },
+    "51": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-13\\Project001_Series015_z51_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785210112624838500
+    },
+    "52": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-13\\Project001_Series015_z52_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785210097742081500
+    }
+  },
+  "image_shape": [
+    1024,
+    1024
+  ],
+  "roi_digest": "131de227554348ef3172413bb58d5396c9a1ba6ba194a16c92b6414969f120d9",
+  "exclusion_digest": null,
+  "unet_config": {
+    "UNET_OUTPUT_MODE": "dual_head",
+    "UNET_FOREGROUND_THRESHOLD": 0.6,
+    "UNET_CORE_THRESHOLD": 0.5,
+    "UNET_TILE_SIZE": 256,
+    "UNET_TILE_OVERLAP": 64,
+    "UNET_TILE_BATCH_SIZE": 8,
+    "UNET_ROI_PADDING_PX": 32,
+    "UNET_OUTSIDE_ROI_ZERO": true,
+    "UNET_INFERENCE_MODE": "roi_tiled",
+    "UNET_CONTEXT_MODE": "z_minus_z_z_plus"
+  }
+}

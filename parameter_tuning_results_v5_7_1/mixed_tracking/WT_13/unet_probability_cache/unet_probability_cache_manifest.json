@@ -1,0 +1,61 @@
+{
+  "version": "v5.7.1-body-width",
+  "checkpoint": {
+    "path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\model_checkpoints\\v571_model_c_dual_head_epoch003.pt",
+    "size": 4634914,
+    "mtime_ns": 1785831112000000000,
+    "sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25"
+  },
+  "z_values": [
+    24,
+    25,
+    26,
+    27,
+    28
+  ],
+  "image_files_by_z": {
+    "24": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-13\\Project001_Series013_z24_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785179728739046300
+    },
+    "25": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-13\\Project001_Series013_z25_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785179728588819700
+    },
+    "26": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-13\\Project001_Series013_z26_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785179728938707100
+    },
+    "27": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-13\\Project001_Series013_z27_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785179729043504000
+    },
+    "28": {
+      "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-13\\Project001_Series013_z28_ch00.tif",
+      "size": 1050810,
+      "mtime_ns": 1785179728521937500
+    }
+  },
+  "image_shape": [
+    1024,
+    1024
+  ],
+  "roi_digest": "d880d1c3398a2cb3ed2aafc5a3c765bb835a101a8af4dc505b375a1726caaaec",
+  "exclusion_digest": null,
+  "unet_config": {
+    "UNET_OUTPUT_MODE": "dual_head",
+    "UNET_FOREGROUND_THRESHOLD": 0.6,
+    "UNET_CORE_THRESHOLD": 0.5,
+    "UNET_TILE_SIZE": 256,
+    "UNET_TILE_OVERLAP": 64,
+    "UNET_TILE_BATCH_SIZE": 8,
+    "UNET_ROI_PADDING_PX": 32,
+    "UNET_OUTSIDE_ROI_ZERO": true,
+    "UNET_INFERENCE_MODE": "roi_tiled",
+    "UNET_CONTEXT_MODE": "z_minus_z_z_plus"
+  }
+}

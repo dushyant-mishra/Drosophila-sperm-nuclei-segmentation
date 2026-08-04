@@ -42,6 +42,7 @@ parameter_tuning_results/**/last_drawn_roi*.tif
 parameter_tuning_results/**/tuning_results*.json
 parameter_tuning_results/**/run_*/
 parameter_tuning_results_v5_7/
+parameter_tuning_results_v5_7_1/**/settings/*.pt
 archive/historical_source/saturn_v5_series/tuning_results/**/tuning_results*.json
 
 # Local illustrated reports and microscopy-derived report data

@@ -142,16 +142,26 @@ def predict_probability(context_stack, checkpoint_path, device=None):
     x = robust_normalize_stack(np.asarray(context_stack, dtype=np.float32))
     tensor = torch.from_numpy(x[None, ...]).to(device)
     with torch.inference_mode():
-        prob = torch.sigmoid(model(tensor))[0, 0].detach().cpu().numpy()
+        output = model(tensor)
+        if isinstance(output, dict):
+            output = output["foreground"]
+        prob = torch.sigmoid(output)[0, 0].detach().cpu().numpy()
     return np.clip(prob.astype(np.float32), 0.0, 1.0)
 
 
-def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg=None, device=None):
+def predict_probability_heads_tiled(
+    context_stack,
+    checkpoint_path,
+    roi_mask=None,
+    cfg=None,
+    device=None,
+):
     """
-    Return a stitched full-frame U-Net probability map using ROI-aware tiles.
+    Return stitched full-frame probability maps for every production head.
 
-    The output remains a probability map. Thresholding and geometry measurement
-    stay in Saturn, which protects downstream length/width/count calculations.
+    Single-head checkpoints return ``foreground`` only. Dual-head checkpoints
+    return both ``foreground`` and ``core``. Thresholding and geometry remain
+    in Saturn.
     """
     import torch
 
@@ -185,18 +195,29 @@ def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg
     y0, y1, x0, x1 = _roi_bbox(roi, padding)
     y_starts = _tile_starts(y0, y1, tile_size, overlap)
     x_starts = _tile_starts(x0, x1, tile_size, overlap)
-    prob_sum = np.zeros((h, w), dtype=np.float32)
+    prob_sums = {}
     weight_sum = np.zeros((h, w), dtype=np.float32)
 
     def flush_batch(batch, meta):
         if not batch:
             return
         tensor = torch.from_numpy(np.stack(batch, axis=0)).to(device)
-        preds = torch.sigmoid(model(tensor))[:, 0].detach().cpu().numpy()
-        for pred, (yy, xx, ph, pw) in zip(preds, meta):
-            pred = pred[:ph, :pw].astype(np.float32)
+        output = model(tensor)
+        outputs = output if isinstance(output, dict) else {"foreground": output}
+        if "foreground" not in outputs:
+            raise KeyError("U-Net output is missing the foreground head")
+        prediction_batches = {
+            name: torch.sigmoid(logits)[:, 0].detach().cpu().numpy()
+            for name, logits in outputs.items()
+            if name in {"foreground", "core"}
+        }
+        for batch_index, (yy, xx, ph, pw) in enumerate(meta):
             win = _blend_window(ph, pw)
-            prob_sum[yy:yy + ph, xx:xx + pw] += pred * win
+            for name, predictions in prediction_batches.items():
+                if name not in prob_sums:
+                    prob_sums[name] = np.zeros((h, w), dtype=np.float32)
+                pred = predictions[batch_index, :ph, :pw].astype(np.float32)
+                prob_sums[name][yy:yy + ph, xx:xx + pw] += pred * win
             weight_sum[yy:yy + ph, xx:xx + pw] += win
 
     batch = []
@@ -218,9 +239,29 @@ def predict_probability_tiled(context_stack, checkpoint_path, roi_mask=None, cfg
                     meta = []
         flush_batch(batch, meta)
 
-    prob = np.zeros((h, w), dtype=np.float32)
     valid = weight_sum > 0
-    prob[valid] = prob_sum[valid] / weight_sum[valid]
-    if outside_zero:
-        prob[~roi] = 0.0
-    return np.clip(prob, 0.0, 1.0)
+    probabilities = {}
+    for name, probability_sum in prob_sums.items():
+        probability = np.zeros((h, w), dtype=np.float32)
+        probability[valid] = probability_sum[valid] / weight_sum[valid]
+        if outside_zero:
+            probability[~roi] = 0.0
+        probabilities[name] = np.clip(probability, 0.0, 1.0)
+    return probabilities
+
+
+def predict_probability_tiled(
+    context_stack,
+    checkpoint_path,
+    roi_mask=None,
+    cfg=None,
+    device=None,
+):
+    """Return the foreground head for backward-compatible Saturn callers."""
+    return predict_probability_heads_tiled(
+        context_stack,
+        checkpoint_path,
+        roi_mask=roi_mask,
+        cfg=cfg,
+        device=device,
+    )["foreground"]

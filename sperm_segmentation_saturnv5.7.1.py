@@ -220,6 +220,11 @@ CONFIG = {
     # Runtime U-Net inference uses a trained checkpoint plus [z-1, z, z+1] raw planes.
     "SEGMENTATION_ENGINE": "classical_saturn",  # classical_saturn | unet_assisted | hybrid | unet_primary
     "UNET_MODEL_PATH": "",
+    "UNET_CHECKPOINT_ROLE": "",
+    "UNET_CHECKPOINT_SHA256": "",
+    "UNET_OUTPUT_MODE": "single_head",  # single_head | dual_head
+    "UNET_FOREGROUND_THRESHOLD": 0.60,
+    "UNET_CORE_THRESHOLD": 0.50,
     "UNET_THRESHOLD": 0.10,
     "UNET_THRESHOLD_MODE": "soft",
     "UNET_CANDIDATE_THRESHOLD": 0.05,
@@ -357,6 +362,7 @@ CONFIG = {
     "TRACK_MAX_GAP_SLICES": 1,
     "TRACK_BBOX_PADDING_PX": 2,
     "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
+    "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": True,
 
     # ------ conservative tracking stop-rules ---------------------------------------------------------------------------------------------------------------------------
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": 0.7668,      # Saturn V5 tuned default
@@ -438,6 +444,10 @@ _REQUIRED = {
     "ROI_BOUNDARY_SAFE_RIDGE": bool, "ROI_THRESHOLD_EXCLUDE_BOUNDARY_PX": int,
     "AI_PREPROCESSING_MODE": str,
     "SEGMENTATION_ENGINE": str, "UNET_MODEL_PATH": str,
+    "UNET_CHECKPOINT_ROLE": str, "UNET_CHECKPOINT_SHA256": str,
+    "UNET_OUTPUT_MODE": str,
+    "UNET_FOREGROUND_THRESHOLD": (int, float),
+    "UNET_CORE_THRESHOLD": (int, float),
     "UNET_THRESHOLD": (int, float), "UNET_THRESHOLD_MODE": str,
     "UNET_CANDIDATE_THRESHOLD": (int, float), "UNET_SEED_THRESHOLD": (int, float),
     "UNET_CONTEXT_MODE": str, "UNET_INFERENCE_MODE": str,
@@ -505,6 +515,7 @@ _REQUIRED = {
     "DO_TRACKING": bool, "TRACKING_BACKEND": str, "TRACK_MAX_DIST_UM": (int, float),
     "TRACK_MAX_GAP_SLICES": int,
     "TRACK_BBOX_PADDING_PX": int,
+    "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": bool,
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": float,
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": float,
     "CONSERVATIVE_MAX_AREA_JUMP_RATIO": float,
@@ -632,6 +643,12 @@ def validate_config(cfg):
         errors.append(
             "  UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX must be nonnegative"
         )
+    output_mode = str(cfg.get("UNET_OUTPUT_MODE", "single_head")).strip().lower()
+    if output_mode not in {"single_head", "dual_head"}:
+        errors.append("  UNET_OUTPUT_MODE must be single_head or dual_head")
+    for key in ("UNET_FOREGROUND_THRESHOLD", "UNET_CORE_THRESHOLD"):
+        if not 0 <= float(cfg.get(key, -1)) <= 1:
+            errors.append(f"  {key} must be within [0, 1]")
     if not 0 <= cfg.get("BODY_WIDTH_ENDPOINT_TRIM_FRACTION", -1) < 0.5:
         errors.append(
             "  BODY_WIDTH_ENDPOINT_TRIM_FRACTION must be within [0, 0.5)"
@@ -755,10 +772,24 @@ def validate_analysis_runtime_config(cfg):
         )
     if cache is None and not os.path.isfile(checkpoint):
         raise FileNotFoundError(f"U-Net checkpoint not found: {checkpoint}")
+    expected_sha256 = str(cfg.get("UNET_CHECKPOINT_SHA256", "")).strip().lower()
+    checkpoint_sha256 = ""
+    if cache is None and checkpoint and expected_sha256:
+        if len(expected_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in expected_sha256
+        ):
+            raise ValueError("UNET_CHECKPOINT_SHA256 must be a 64-character SHA-256 digest")
+        checkpoint_sha256 = _sha256_file(checkpoint)
+        if checkpoint_sha256.lower() != expected_sha256:
+            raise ValueError(
+                "The selected U-Net checkpoint does not match the analysis profile. "
+                f"Expected SHA-256 {expected_sha256}, got {checkpoint_sha256}."
+            )
     return {
         "segmentation_engine": engine,
         "unet_required": True,
         "checkpoint_path": os.path.abspath(checkpoint) if checkpoint else "",
+        "checkpoint_sha256": checkpoint_sha256,
     }
 
 
@@ -768,7 +799,13 @@ def analysis_profile_summary(cfg):
     engine = str(cfg.get("SEGMENTATION_ENGINE", "classical")).strip() or "classical"
     checkpoint = str(cfg.get("UNET_MODEL_PATH", "")).strip()
     model_name = os.path.basename(checkpoint) if checkpoint else "none"
-    return f"Profile: {profile_name} | Engine: {engine} | Model: {model_name}"
+    output_mode = str(cfg.get("UNET_OUTPUT_MODE", "single_head")).strip()
+    role = str(cfg.get("UNET_CHECKPOINT_ROLE", "")).strip()
+    role_text = f" ({role})" if role else ""
+    return (
+        f"Profile: {profile_name} | Engine: {engine}/{output_mode} | "
+        f"Model: {model_name}{role_text}"
+    )
 
 
 # =============================================================================
@@ -1799,8 +1836,9 @@ def _save_v56_debug(debug_dir, z_idx, stages, debug_record):
         ("11_skeleton_pruned", stages.get("skel_pruned")),
         ("12_final_detections", stages.get("skel_labeled")),
         ("13_unet_probability", stages.get("unet_probability")),
-        ("14_unet_candidate_mask", stages.get("unet_candidate_mask")),
-        ("15_unet_seed_mask", stages.get("unet_seed_mask")),
+        ("14_unet_core_probability", stages.get("unet_core_probability")),
+        ("15_unet_candidate_mask", stages.get("unet_candidate_mask")),
+        ("16_unet_seed_mask", stages.get("unet_seed_mask")),
     ]
     for name, arr in names:
         path = os.path.join(debug_dir, f"z{int(z_idx or 0):02d}_{name}.png")
@@ -1838,11 +1876,12 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
     model_path = str(cfg.get("UNET_MODEL_PATH", "")).strip()
     empty = np.zeros(full_shape, dtype=np.float32)
     cache = cfg.get("_UNET_PROBABILITY_CACHE")
+    core_cache = cfg.get("_UNET_CORE_PROBABILITY_CACHE")
     has_cached_map = cache is not None and z_idx is not None and any(
         key in cache for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}")
     )
     if engine not in {"unet_assisted", "hybrid", "unet_primary"}:
-        return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
+        return mask_hyst, ridge, empty, empty, empty.astype(bool), empty.astype(bool), {
             "unet_enabled": False,
             "unet_reason": "classical_engine_selected",
         }
@@ -1859,6 +1898,7 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
 
     try:
         unet_prob = None
+        unet_core_prob = None
         cache_hit = False
         if cache is not None and z_idx is not None:
             for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}"):
@@ -1868,15 +1908,33 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
                     break
             if unet_prob is not None and unet_prob.shape != full_shape:
                 raise ValueError(f"cached U-Net probability shape {unet_prob.shape} does not match {full_shape}")
+        if core_cache is not None and z_idx is not None:
+            for key in (int(z_idx), str(int(z_idx)), f"z{int(z_idx):02d}"):
+                if key in core_cache:
+                    unet_core_prob = np.asarray(core_cache[key], dtype=np.float32)
+                    break
+            if unet_core_prob is not None and unet_core_prob.shape != full_shape:
+                raise ValueError(
+                    f"cached U-Net core probability shape {unet_core_prob.shape} "
+                    f"does not match {full_shape}"
+                )
 
         if unet_prob is None:
-            from utils.saturn_unet25d_bridge import predict_probability_tiled
+            from utils.saturn_unet25d_bridge import predict_probability_heads_tiled
 
-            unet_prob = predict_probability_tiled(
+            heads = predict_probability_heads_tiled(
                 unet_context_stack,
                 model_path,
                 roi_mask=roi_mask_full,
                 cfg=cfg,
+            )
+            unet_prob = heads["foreground"]
+            unet_core_prob = heads.get("core")
+        output_mode = str(cfg.get("UNET_OUTPUT_MODE", "single_head")).strip().lower()
+        if output_mode == "dual_head" and unet_core_prob is None:
+            raise ValueError(
+                "The selected production profile requires a dual-head checkpoint, "
+                "but the model did not return a core probability head"
             )
         unet_prob = np.asarray(unet_prob, dtype=np.float32)
         if unet_prob.shape != full_shape:
@@ -1885,6 +1943,17 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
             raise ValueError("U-Net probability map contains non-finite values")
         if float(np.min(unet_prob)) < 0.0 or float(np.max(unet_prob)) > 1.0:
             raise ValueError("U-Net probability map values must be within [0, 1]")
+        if unet_core_prob is not None:
+            unet_core_prob = np.asarray(unet_core_prob, dtype=np.float32)
+            if unet_core_prob.shape != full_shape:
+                raise ValueError(
+                    f"U-Net core probability shape {unet_core_prob.shape} "
+                    f"does not match {full_shape}"
+                )
+            if not np.all(np.isfinite(unet_core_prob)):
+                raise ValueError("U-Net core probability map contains non-finite values")
+            if float(np.min(unet_core_prob)) < 0.0 or float(np.max(unet_core_prob)) > 1.0:
+                raise ValueError("U-Net core probability values must be within [0, 1]")
         y0, y1, x0, x1 = bbox
         prob_crop = unet_prob[y0:y1, x0:x1].astype(np.float32)
         cand_thr = float(cfg.get("UNET_CANDIDATE_THRESHOLD", cfg.get("UNET_THRESHOLD", 0.05)))
@@ -1906,11 +1975,15 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
         full_valid[y0:y1, x0:x1] = valid_crop
         full_prob = unet_prob.astype(np.float32)
         full_prob[~full_valid] = 0.0
+        full_core_prob = empty.copy()
+        if unet_core_prob is not None:
+            full_core_prob = unet_core_prob.astype(np.float32)
+            full_core_prob[~full_valid] = 0.0
         full_candidate = np.zeros(full_shape, dtype=bool)
         full_seed = np.zeros(full_shape, dtype=bool)
         full_candidate[y0:y1, x0:x1] = candidate_crop
         full_seed[y0:y1, x0:x1] = seed_crop
-        return mask_hyst, ridge, full_prob, full_candidate, full_seed, {
+        return mask_hyst, ridge, full_prob, full_core_prob, full_candidate, full_seed, {
             "unet_enabled": True,
             "unet_probability_source": "cache" if cache_hit else "model",
             "unet_engine": engine,
@@ -1922,12 +1995,14 @@ def _apply_unet_candidate_support(mask_hyst, ridge, valid_crop, full_shape, bbox
             "unet_seed_pixels": int(np.count_nonzero(full_seed)),
             "unet_probability_mean_inside_roi": float(np.mean(full_prob[roi_mask_full])) if np.any(roi_mask_full) else 0.0,
             "unet_probability_max_inside_roi": float(np.max(full_prob[roi_mask_full])) if np.any(roi_mask_full) else 0.0,
+            "unet_output_mode": output_mode,
+            "unet_core_head_available": bool(unet_core_prob is not None),
         }
     except Exception as exc:
         if bool(cfg.get("UNET_FAIL_HARD", True)):
             raise RuntimeError(f"U-Net inference failed for z={z_idx}: {exc}") from exc
         print(f"  WARNING: U-Net inference failed for z={z_idx}: {exc}")
-        return mask_hyst, ridge, empty, empty.astype(bool), empty.astype(bool), {
+        return mask_hyst, ridge, empty, empty, empty.astype(bool), empty.astype(bool), {
             "unet_enabled": False,
             "unet_reason": f"error: {exc}",
         }
@@ -2037,7 +2112,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
     mask_hyst = apply_hysteresis_threshold(ridge, th_lo, th_hi)
     mask_hyst &= valid_crop
     classical_mask_hyst = mask_hyst.copy()
-    mask_hyst, ridge, unet_prob, unet_candidate, unet_seed, unet_record = _apply_unet_candidate_support(
+    mask_hyst, ridge, unet_prob, unet_core_prob, unet_candidate, unet_seed, unet_record = _apply_unet_candidate_support(
         mask_hyst,
         ridge,
         valid_crop,
@@ -2059,6 +2134,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
             valid_full,
             cfg,
             classical_mask=full(classical_mask_hyst, bool),
+            core_probability=unet_core_prob,
         )
         primary.update({
             "img_norm": full(img_norm, np.float32),
@@ -2070,6 +2146,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
             "roi_mask": roi_mask_full,
             "exclusion_mask": exclusion_full,
             "unet_probability": unet_prob,
+            "unet_core_probability": unet_core_prob,
             "unet_candidate_mask": unet_candidate,
             "unet_seed_mask": unet_seed,
             "unet_debug": unet_record,
@@ -2235,6 +2312,7 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
         "roi_mask":     roi_mask_full,
         "exclusion_mask": exclusion_full,
         "unet_probability": unet_prob,
+        "unet_core_probability": unet_core_prob,
         "unet_candidate_mask": unet_candidate,
         "unet_seed_mask": unet_seed,
         "unet_debug": unet_record,
@@ -2385,6 +2463,81 @@ def _build_unet_primary_foreground(probability, valid_mask, cfg):
         })
     retained &= valid_mask
     return retained, seed_mask, rejected, audit
+
+
+def _build_dual_head_unet_instances(
+    foreground_probability,
+    core_probability,
+    valid_mask,
+    cfg,
+):
+    """Build Model C instances from fixed foreground and learned-core heads."""
+    foreground_probability = np.asarray(foreground_probability, dtype=np.float32)
+    core_probability = np.asarray(core_probability, dtype=np.float32)
+    valid_mask = np.asarray(valid_mask, dtype=bool)
+    if not (
+        foreground_probability.shape
+        == core_probability.shape
+        == valid_mask.shape
+    ):
+        raise ValueError("Dual-head probability and valid-mask shapes must match")
+
+    foreground_threshold = float(cfg["UNET_FOREGROUND_THRESHOLD"])
+    core_threshold = float(cfg["UNET_CORE_THRESHOLD"])
+    min_area = max(1, int(cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 3)))
+    foreground = (
+        (foreground_probability >= foreground_threshold) & valid_mask
+    )
+    foreground = remove_objects_smaller_than(foreground, min_area)
+    foreground_labels = measure.label(foreground)
+    foreground = foreground_labels > 0
+    core = (core_probability >= core_threshold) & foreground
+    markers = measure.label(core).astype(np.int32)
+
+    # Keep a supported foreground component when its learned core is weak.
+    next_marker = int(markers.max()) + 1
+    for component_id in range(1, int(foreground_labels.max()) + 1):
+        component = foreground_labels == component_id
+        if np.any(markers[component]):
+            continue
+        coordinates = np.argwhere(component)
+        values = foreground_probability[component]
+        selected = coordinates[int(np.argmax(values))]
+        markers[int(selected[0]), int(selected[1])] = next_marker
+        next_marker += 1
+
+    if not np.any(foreground):
+        instances = np.zeros(foreground.shape, dtype=np.int32)
+    else:
+        instances = skseg.watershed(
+            -foreground_probability,
+            markers=markers,
+            mask=foreground,
+            compactness=max(
+                0.0,
+                float(cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0)),
+            ),
+        ).astype(np.int32)
+
+    parent_map = {}
+    for prop in measure.regionprops(instances):
+        parent_values = foreground_labels[instances == prop.label]
+        parent_values = parent_values[parent_values > 0]
+        parent_map[int(prop.label)] = (
+            int(np.bincount(parent_values).argmax())
+            if parent_values.size
+            else 0
+        )
+    audit = [{
+        "foreground_threshold": foreground_threshold,
+        "core_threshold": core_threshold,
+        "foreground_component_count": int(foreground_labels.max()),
+        "core_marker_count": int(markers.max()),
+        "instance_count": int(instances.max()),
+        "disposition": "dual_head_marker_watershed",
+        "technical_reason": "",
+    }]
+    return instances, foreground, core, markers, parent_map, audit
 
 
 def _split_unet_probability_instances(
@@ -2763,40 +2916,65 @@ def _build_unet_primary_segmentation(
     valid_mask,
     cfg,
     classical_mask=None,
+    core_probability=None,
 ):
     """Build filled U-Net instances and mapped centerlines for unet_primary."""
-    foreground, seed_mask, rejected, foreground_audit = (
-        _build_unet_primary_foreground(probability, valid_mask, cfg)
+    dual_head = (
+        str(cfg.get("UNET_OUTPUT_MODE", "single_head")).strip().lower()
+        == "dual_head"
     )
-    instance_seed_threshold = float(
-        cfg.get(
-            "UNET_INSTANCE_SEED_THRESHOLD",
-            cfg.get("UNET_SEED_THRESHOLD", 0.30),
-        )
-    )
-    if not float(cfg["UNET_SEED_THRESHOLD"]) <= instance_seed_threshold <= 1.0:
-        raise ValueError(
-            "UNET_INSTANCE_SEED_THRESHOLD must be at least "
-            "UNET_SEED_THRESHOLD and no greater than 1"
-        )
-    instance_seed_mask = (
-        (np.asarray(probability, dtype=np.float32) >= instance_seed_threshold)
-        & foreground
-    )
-    foreground_parents = measure.label(foreground)
-    for parent_prop in measure.regionprops(foreground_parents):
-        parent = foreground_parents == parent_prop.label
-        if not np.any(instance_seed_mask & parent):
-            instance_seed_mask |= seed_mask & parent
-    instances, split_rejected, split_audit, parent_map = (
-        _split_unet_probability_instances(
-            probability,
+    if dual_head:
+        if core_probability is None:
+            raise ValueError("Dual-head U-Net-primary segmentation requires core_probability")
+        (
+            instances,
             foreground,
+            seed_mask,
             instance_seed_mask,
-            cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 3),
-            compactness=cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0),
+            parent_map,
+            foreground_audit,
+        ) = _build_dual_head_unet_instances(
+            probability,
+            core_probability,
+            valid_mask,
+            cfg,
         )
-    )
+        rejected = np.zeros(foreground.shape, dtype=np.uint8)
+        split_audit = []
+    else:
+        foreground, seed_mask, rejected, foreground_audit = (
+            _build_unet_primary_foreground(probability, valid_mask, cfg)
+        )
+        instance_seed_threshold = float(
+            cfg.get(
+                "UNET_INSTANCE_SEED_THRESHOLD",
+                cfg.get("UNET_SEED_THRESHOLD", 0.30),
+            )
+        )
+        if not float(cfg["UNET_SEED_THRESHOLD"]) <= instance_seed_threshold <= 1.0:
+            raise ValueError(
+                "UNET_INSTANCE_SEED_THRESHOLD must be at least "
+                "UNET_SEED_THRESHOLD and no greater than 1"
+            )
+        instance_seed_mask = (
+            (np.asarray(probability, dtype=np.float32) >= instance_seed_threshold)
+            & foreground
+        )
+        foreground_parents = measure.label(foreground)
+        for parent_prop in measure.regionprops(foreground_parents):
+            parent = foreground_parents == parent_prop.label
+            if not np.any(instance_seed_mask & parent):
+                instance_seed_mask |= seed_mask & parent
+        instances, split_rejected, split_audit, parent_map = (
+            _split_unet_probability_instances(
+                probability,
+                foreground,
+                instance_seed_mask,
+                cfg.get("UNET_PRIMARY_MIN_COMPONENT_PX", 3),
+                compactness=cfg.get("UNET_INSTANCE_WATERSHED_COMPACTNESS", 0.0),
+            )
+        )
+        rejected = np.maximum(rejected, split_rejected)
     overlong_split_audit = []
     for split_pass in range(4):
         instances, parent_map, pass_audit = _refine_overlong_unet_instances(
@@ -2813,7 +2991,6 @@ def _build_unet_primary_segmentation(
             for row in pass_audit
         ):
             break
-    rejected = np.maximum(rejected, split_rejected)
     centerlines, centerline_meta, failures = (
         _centerline_unet_primary_instances(instances)
     )
@@ -2894,15 +3071,29 @@ def _build_unet_primary_segmentation(
         "unet_primary_instance_labels": instances,
         "unet_primary_centerline_labels": centerlines,
         "unet_probability": np.asarray(probability, dtype=np.float32),
+        "unet_core_probability": (
+            np.asarray(core_probability, dtype=np.float32)
+            if core_probability is not None
+            else np.zeros(np.asarray(probability).shape, dtype=np.float32)
+        ),
         "unet_seed_mask": seed_mask,
         "unet_instance_seed_mask": instance_seed_mask,
         "unet_primary_rejected_reason": rejected,
         "unet_primary_component_audit": component_audit,
         "unet_primary_debug": {
             "candidate_pixels": int(np.count_nonzero(
-                (probability >= float(cfg["UNET_CANDIDATE_THRESHOLD"]))
+                (probability >= float(
+                    cfg["UNET_FOREGROUND_THRESHOLD"]
+                    if dual_head
+                    else cfg["UNET_CANDIDATE_THRESHOLD"]
+                ))
                 & valid_mask
             )),
+            "instance_method": (
+                "dual_head_core_marker_watershed"
+                if dual_head
+                else "hysteresis_then_seeded_watershed"
+            ),
             "seed_pixels": int(np.count_nonzero(seed_mask)),
             "hysteresis_component_count": int(measure.label(foreground).max()),
             "split_instance_count": int(
@@ -5412,6 +5603,17 @@ def track_across_slices_global_assignment(detections_df, cfg):
         "area": float(cfg.get("ASSIGNMENT_AREA_WEIGHT", 0.9)),
         "angle": float(cfg.get("ASSIGNMENT_ANGLE_WEIGHT", 0.4)),
     }
+    if (
+        str(cfg.get("ANALYSIS_MODE", "comparative")).strip().lower()
+        == "comparative"
+        and bool(cfg.get("COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL", True))
+    ):
+        # Length, width, and area changes can be the mutant phenotype or the
+        # normal transition from a terminal optical section to the full body.
+        # Keep them measurable instead of rewarding WT-like continuity.
+        weights["length"] = 0.0
+        weights["width"] = 0.0
+        weights["area"] = 0.0
 
     next_tid = 1
     active = {}
@@ -5467,7 +5669,9 @@ def track_across_slices_global_assignment(detections_df, cfg):
                     dy = det["y"] - st["last_y"]
                     dist_um = math.sqrt(dx * dx + dy * dy) * um_xy
                     overlap = _bbox_overlap_fraction(det["bbox"], st.get("last_bbox"))
-                    if dist_um > max_dist_um and overlap <= 0:
+                    # TRACK_MAX_DIST_UM is an absolute technical displacement
+                    # guard. A large or fused bounding box must not bypass it.
+                    if dist_um > max_dist_um:
                         continue
 
                     dist_term = dist_um / max(max_dist_um, 1e-9)
@@ -7678,6 +7882,9 @@ def process_one_image(image_path, cfg, output_dir):
         if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
             tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_unet_probability.tif"),
                              seg["unet_probability"].astype(np.float32))
+        if seg.get("unet_core_probability") is not None and np.any(seg.get("unet_core_probability")):
+            tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_unet_core_probability.tif"),
+                             seg["unet_core_probability"].astype(np.float32))
     if cfg["SAVE_LABEL_TIFS"]:
         tifffile.imwrite(os.path.join(output_dir, f"z{z_idx:02d}_skel_labels.tif"),
                          meas["skel_label"].astype(np.uint16))
@@ -7858,6 +8065,9 @@ def process_batch(cfg):
             if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
                 tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_unet_probability.tif"),
                                  seg["unet_probability"].astype(np.float32))
+            if seg.get("unet_core_probability") is not None and np.any(seg.get("unet_core_probability")):
+                tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_unet_core_probability.tif"),
+                                 seg["unet_core_probability"].astype(np.float32))
         if cfg["SAVE_LABEL_TIFS"]:
             tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_skel_labels.tif"),
                              skel_label.astype(np.uint16))
@@ -9556,7 +9766,9 @@ PARAM_SECTIONS = {
         "UM_PER_PX_XY", "UM_PER_SLICE_Z"
     ],
     "2.5D U-Net Integration": [
-        "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_THRESHOLD_MODE",
+        "SEGMENTATION_ENGINE", "UNET_MODEL_PATH", "UNET_CHECKPOINT_ROLE",
+        "UNET_CHECKPOINT_SHA256", "UNET_OUTPUT_MODE",
+        "UNET_FOREGROUND_THRESHOLD", "UNET_CORE_THRESHOLD", "UNET_THRESHOLD_MODE",
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
         "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX", "UNET_FAIL_HARD",
@@ -9582,6 +9794,9 @@ PARAM_SECTIONS = {
         "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS",
         "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY",
         "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY",
+        "BODY_WIDTH_ENABLE", "BODY_WIDTH_ENDPOINT_TRIM_FRACTION",
+        "BODY_WIDTH_SAMPLE_SPACING_PX", "BODY_WIDTH_SMOOTH_SIGMA_PX",
+        "BODY_WIDTH_MIN_SAMPLES",
         "UNET_TRACKING_SUPPORT", "ASSIGNMENT_UNET_SUPPORT_WEIGHT",
         "ASSIGNMENT_UNET_CONTINUITY_WEIGHT", "HYBRID_REPAIR_UNET_SUPPORT_WEIGHT"
     ],
@@ -9603,7 +9818,7 @@ PARAM_SECTIONS = {
     ],
     "3D Tracking": [
         "DO_TRACKING", "TRACKING_BACKEND", "TRACK_MAX_DIST_UM", "TRACK_MAX_GAP_SLICES", "TRACK_BBOX_PADDING_PX",
-        "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM",
+        "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL",
         "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO", "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO",
         "CONSERVATIVE_MAX_AREA_JUMP_RATIO", "CONSERVATIVE_MAX_TORTUOSITY_JUMP",
         "CONSERVATIVE_MAX_CENTROID_JUMP_UM"
@@ -9662,6 +9877,7 @@ PARAM_TITLES = {
     "TRACK_MAX_DIST_UM": "Maximum slice-to-slice centroid jump (um)",
     "TRACK_MAX_GAP_SLICES": "Maximum missing slices in one track",
     "TRACK_BBOX_PADDING_PX": "Bounding-box overlap padding (px)",
+    "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": "Do not use morphology to veto comparative tracking",
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": "Maximum width change ratio",
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": "Maximum length change ratio",
     "CONSERVATIVE_MAX_AREA_JUMP_RATIO": "Maximum area change ratio",
@@ -9687,6 +9903,11 @@ PARAM_TITLES = {
     "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": "Maximum physically joined nucleus length (um)",
     "SEGMENTATION_ENGINE": "Segmentation engine",
     "UNET_MODEL_PATH": "U-Net checkpoint path",
+    "UNET_CHECKPOINT_ROLE": "Checkpoint role",
+    "UNET_CHECKPOINT_SHA256": "Expected checkpoint SHA-256",
+    "UNET_OUTPUT_MODE": "U-Net output-head mode",
+    "UNET_FOREGROUND_THRESHOLD": "Dual-head foreground threshold",
+    "UNET_CORE_THRESHOLD": "Dual-head core threshold",
     "UNET_THRESHOLD_MODE": "U-Net threshold mode",
     "UNET_CANDIDATE_THRESHOLD": "U-Net candidate threshold",
     "UNET_SEED_THRESHOLD": "U-Net seed threshold",
@@ -9726,6 +9947,11 @@ PARAM_TITLES = {
     "UNET_PRIMARY_RETAIN_MORPHOLOGY_WARNINGS": "Retain U-Net-primary morphology warnings",
     "UNET_PRIMARY_SAVE_FILLED_MASK_OVERLAY": "Save U-Net-primary filled-mask overlay",
     "UNET_PRIMARY_SAVE_INSTANCE_OVERLAY": "Save U-Net-primary instance overlay",
+    "BODY_WIDTH_ENABLE": "Measure apparent mask body width",
+    "BODY_WIDTH_ENDPOINT_TRIM_FRACTION": "Body-width endpoint trim fraction",
+    "BODY_WIDTH_SAMPLE_SPACING_PX": "Body-width sample spacing (px)",
+    "BODY_WIDTH_SMOOTH_SIGMA_PX": "Body-width tangent smoothing (px)",
+    "BODY_WIDTH_MIN_SAMPLES": "Minimum valid body-width chord samples",
     "UNET_TRACKING_SUPPORT": "Use U-Net evidence for 3D linking",
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": "Assignment U-Net support penalty",
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": "Assignment U-Net continuity penalty",
@@ -9744,6 +9970,16 @@ PARAM_TITLES = {
 PARAM_DESCRIPTIONS = {
     "UM_PER_PX_XY": "What it affects: all lateral measurements. Increase only if the microscope pixel size really is larger. Wrong values scale every reported x/y length, width, and distance.",
     "UM_PER_SLICE_Z": "What it affects: z-span, 3D length, pitch angle, and volume. Increase only if the physical slice spacing is larger. This does not change segmentation, only measurement scaling.",
+    "UNET_CHECKPOINT_ROLE": "Human-readable provenance for the selected checkpoint. It does not alter inference.",
+    "UNET_CHECKPOINT_SHA256": "Optional exact checkpoint identity. When supplied, Saturn stops before analysis if the selected model file has a different SHA-256 digest.",
+    "UNET_OUTPUT_MODE": "Choose single_head for legacy foreground-only checkpoints or dual_head for Model C foreground and core outputs.",
+    "UNET_FOREGROUND_THRESHOLD": "Dual-head filled-mask threshold. This defines the apparent instance boundary used for area and body-width measurements.",
+    "UNET_CORE_THRESHOLD": "Dual-head marker threshold. Core regions seed watershed separation inside the foreground mask; they do not trim the final boundary.",
+    "BODY_WIDTH_ENABLE": "Measure apparent central-body width from subpixel mask-contour chords while retaining the legacy distance-transform width separately.",
+    "BODY_WIDTH_ENDPOINT_TRIM_FRACTION": "Fraction removed from each centerline end before width chords are sampled, limiting natural taper influence.",
+    "BODY_WIDTH_SAMPLE_SPACING_PX": "Approximate centerline spacing between perpendicular width measurements.",
+    "BODY_WIDTH_SMOOTH_SIGMA_PX": "Gentle centerline smoothing used only to estimate local tangent direction; it does not alter the instance mask.",
+    "BODY_WIDTH_MIN_SAMPLES": "Minimum successful contour intersections required to report apparent body width.",
     "CLAHE_CLIP": "What it affects: local contrast before thresholding. Increase to pull out dim nuclei, but too high amplifies noise and halos. Decrease if background texture starts getting segmented.",
     "CLAHE_KERNEL": "What it affects: how local the contrast correction is. Smaller values react to finer local contrast; larger values give smoother correction across the field.",
     "BG_SIGMA": "What it affects: background haze removal. Increase to subtract broader blur/haze; decrease if real diffuse signal is being removed together with background.",
@@ -9922,6 +10158,7 @@ PARAM_ENUM_OPTIONS = {
     "SEGMENTATION_ENGINE": (
         "classical_saturn", "hybrid", "unet_assisted", "unet_primary"
     ),
+    "UNET_OUTPUT_MODE": ("single_head", "dual_head"),
     "UNET_THRESHOLD_MODE": ("soft", "hard"),
     "UNET_CONTEXT_MODE": ("z_minus_z_z_plus",),
     "UNET_INFERENCE_MODE": ("roi_tiled",),
@@ -15504,6 +15741,9 @@ class SpermGUI:
                     if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
                         tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_unet_probability.tif"),
                                          seg["unet_probability"].astype(np.float32))
+                    if seg.get("unet_core_probability") is not None and np.any(seg.get("unet_core_probability")):
+                        tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_unet_core_probability.tif"),
+                                         seg["unet_core_probability"].astype(np.float32))
 
                 # Update Progress Bar for each slice
                 self.lbl_batch_op.config(text=f"Batch Segmenting: {idx+1} / {len(self.files)} slices...", fg='blue')
@@ -15724,25 +15964,24 @@ if __name__ == "__main__":
 
     # Load tuned parameters from JSON if provided
     if args.params:
-        import json as _json
         params_path = os.path.abspath(args.params)
         if os.path.exists(params_path):
-            with open(params_path, 'r') as _pf:
-                tuned = _json.load(_pf)
-            applied = 0
-            for key, value in tuned.items():
-                if key in CONFIG:
-                    CONFIG[key] = value
-                    applied += 1
-            print(f"  Loaded {applied} tuned parameters from: {os.path.basename(params_path)}")
+            loaded_cfg, applied = load_analysis_profile(params_path, CONFIG)
+            validate_analysis_runtime_config(loaded_cfg)
+            CONFIG.update(loaded_cfg)
+            print(
+                f"  Loaded {len(applied)} analysis settings from: "
+                f"{os.path.basename(params_path)}"
+            )
+            print(f"  {analysis_profile_summary(CONFIG)}")
         else:
-            print(f"  WARNING: Params file not found: {params_path}")
+            raise FileNotFoundError(f"Params file not found: {params_path}")
 
     if args.roi_mask:
         CONFIG["ROI_MASK_PATH"] = os.path.abspath(args.roi_mask)
         print(f"  Loaded ROI mask path: {CONFIG['ROI_MASK_PATH']}")
 
-    validate_config(CONFIG)
+    validate_analysis_runtime_config(CONFIG)
 
     # Launch GUI by default if no explicit CLI flags are provided
     if args.gui or not (args.batch or args.single or args.z is not None):

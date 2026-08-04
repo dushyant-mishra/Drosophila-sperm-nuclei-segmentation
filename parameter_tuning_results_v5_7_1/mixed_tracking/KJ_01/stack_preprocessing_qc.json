@@ -1,0 +1,115 @@
+{
+  "normalization_low": 20.0,
+  "normalization_high": 233.0,
+  "selected_clahe_clip": 0.025,
+  "selected_clahe_profile": "standard",
+  "contrast_score": 0.3380281690140845,
+  "sampled_z_indices": [
+    33,
+    34,
+    35,
+    36,
+    37
+  ],
+  "roi_percentiles": {
+    "p1": 20.0,
+    "p20": 48.0,
+    "p50": 66.0,
+    "p95": 120.0,
+    "p99.5": 233.0
+  },
+  "saturation_fraction": 0.003166566280178688,
+  "slice_brightness_statistics": [
+    {
+      "z_index": 33,
+      "median": 66.0,
+      "p95": 120.0,
+      "brightness_cv": 0.0,
+      "p95_mean": 120.0
+    },
+    {
+      "z_index": 34,
+      "median": 66.0,
+      "p95": 120.0,
+      "brightness_cv": 0.0,
+      "p95_mean": 120.0
+    },
+    {
+      "z_index": 35,
+      "median": 66.0,
+      "p95": 120.0,
+      "brightness_cv": 0.0,
+      "p95_mean": 120.0
+    },
+    {
+      "z_index": 36,
+      "median": 66.0,
+      "p95": 120.0,
+      "brightness_cv": 0.0,
+      "p95_mean": 120.0
+    },
+    {
+      "z_index": 37,
+      "median": 66.0,
+      "p95": 120.0,
+      "brightness_cv": 0.0,
+      "p95_mean": 120.0
+    }
+  ],
+  "source_dtype": "uint8",
+  "inferred_bit_depth": 8,
+  "resolved_pixel_parameters": {
+    "physical": {
+      "MIN_SKEL_LEN_UM": 6.0,
+      "MAX_GEODESIC_LEN_UM": 20.0,
+      "MAX_WIDTH_UM": 4.624156976151686,
+      "MAX_BRIDGE_UM": 1.5,
+      "MAX_BRANCH_LEN_UM": 2.3,
+      "BG_SIGMA_UM": 6.0,
+      "DENOISE_SIGMA_UM": 0.45,
+      "RIDGE_SIGMAS_UM": [
+        0.6,
+        0.9,
+        1.2,
+        1.5
+      ]
+    },
+    "pixels": {
+      "MIN_SKEL_LEN_PX": 15.855483870967742,
+      "MAX_GEODESIC_LEN_PX": 52.851612903225806,
+      "MAX_WIDTH_PX": 12.219707725366003,
+      "MAX_BRIDGE_PX": 4,
+      "MAX_BRANCH_LEN_PX": 6,
+      "BG_SIGMA": 15.855483870967742,
+      "DENOISE_SIGMA": 1.1891612903225808,
+      "RIDGE_SIGMAS": [
+        1.5855483870967741,
+        2.3783225806451616,
+        3.1710967741935483,
+        3.9638709677419355
+      ]
+    },
+    "source": {
+      "MIN_SKEL_LEN": "physical",
+      "MAX_GEODESIC_LEN": "physical",
+      "MAX_WIDTH": "physical",
+      "MAX_BRIDGE": "physical",
+      "MAX_BRANCH_LEN": "physical",
+      "BG_SIGMA": "physical",
+      "DENOISE_SIGMA": "physical",
+      "RIDGE_SIGMAS": "physical"
+    }
+  },
+  "configuration_provenance": {
+    "version": "v5.7.1-body-width",
+    "preprocess_mode": "roi_adaptive",
+    "legacy_two_pass_roi": false,
+    "warnings": []
+  },
+  "image_shape": [
+    1024,
+    1024
+  ],
+  "roi_pixel_count": 318768,
+  "excluded_pixel_count": 0
+}

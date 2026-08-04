@@ -1,0 +1,7 @@
+SATURN V5.7 U-NET-READY UNET_PRIMARY_TRACKING TUNING SUMMARY
+Analysis mode: comparative
+Comparative mode reports morphology but does not optimize toward WT-like length, width, taper, tortuosity, count, volume, or Z-span.
+Selected Z indices: [48, 49, 50, 51, 52]
+Preprocessing profile: no_clahe
+Numerically lowest score: 9.130782400030828
+Selection status: first candidate for visual inspection; not a finalized biological parameter set.
