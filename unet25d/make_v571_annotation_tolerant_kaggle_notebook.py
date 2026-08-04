@@ -34,37 +34,34 @@ individual nuclei are not independent biological replicates.
 """
     ),
     code(
-        """# Cell 1 - Locate the uploaded training package, checkpoint, and code bundle.
+        """# Cell 1 - Locate Kaggle's already-extracted training package and code.
 from pathlib import Path
-import hashlib, shutil, zipfile
+import hashlib, shutil
 
 INPUT = Path('/kaggle/input')
 WORK = Path('/kaggle/working')
 RUN_MODEL_C = True
 
-packages = [p for p in INPUT.rglob('v5_7_kj_wt_replay_finetune') if p.is_dir()]
-bundles = list(INPUT.rglob('v571_annotation_tolerant_code_bundle.zip'))
-unpacked_repos = [p.parents[1] for p in INPUT.rglob('unet25d/prepare_dataset.py')]
-assert packages, 'Training package directory not found under /kaggle/input'
-assert bundles or unpacked_repos, 'Neither the code bundle ZIP nor an unpacked repo/unet25d directory was found'
+package_markers = list(INPUT.rglob('v5_7_kj_wt_replay_finetune/annotations/_annotations.coco.json'))
+repo_markers = list(INPUT.rglob('repo/unet25d/prepare_dataset.py'))
+assert package_markers, 'Extracted training package was not found under /kaggle/input'
+assert repo_markers, 'Extracted repo/unet25d code was not found under /kaggle/input'
 
-PACKAGE = packages[0]
+PACKAGE = package_markers[0].parents[1]
+INPUT_REPO = repo_markers[0].parents[1]
 REPO = WORK / 'repo'
 if REPO.exists(): shutil.rmtree(REPO)
-if bundles:
-    with zipfile.ZipFile(bundles[0]) as handle: handle.extractall(WORK)
-else:
-    shutil.copytree(unpacked_repos[0], REPO)
+shutil.copytree(INPUT_REPO, REPO)
 bundled_checkpoint = REPO/'warm_start'/'epoch_003.pt'
-input_checkpoints = list(INPUT.rglob('epoch_003.pt'))
-WARM_START = input_checkpoints[0] if input_checkpoints else bundled_checkpoint
+WARM_START = bundled_checkpoint
 assert WARM_START.exists(), 'The known epoch_003.pt warm start is missing'
 EXPECTED_WARM_START_SHA256 = 'afe88f52e1c679d133a4755f4b4c51d17f8b2bef8a9c565e687cc74be0fbaeaf'
 actual_checkpoint_hash = hashlib.sha256(WARM_START.read_bytes()).hexdigest()
 assert actual_checkpoint_hash == EXPECTED_WARM_START_SHA256, (actual_checkpoint_hash, EXPECTED_WARM_START_SHA256)
 print('Package:', PACKAGE)
 print('Warm start:', WARM_START)
-print('Code:', REPO)
+print('Extracted input code:', INPUT_REPO)
+print('Writable code copy:', REPO)
 """
     ),
     code(
