@@ -167,6 +167,13 @@ code is disabled in Model C so architectural effects remain interpretable.
 All three arms reuse the existing 5,273 annotations. See
 [V571_ANNOTATION_TOLERANT_AB_KAGGLE.md](V571_ANNOTATION_TOLERANT_AB_KAGGLE.md)
 for the cell-by-cell training and evaluation workflow.
+The ready-to-upload notebook is
+[`notebooks/v571_annotation_tolerant_unet_kaggle.ipynb`](notebooks/v571_annotation_tolerant_unet_kaggle.ipynb).
+Generate its compact code/checkpoint bundle with:
+
+```powershell
+python package_v571_annotation_tolerant_kaggle.py
+```
 
 ## Notes
 

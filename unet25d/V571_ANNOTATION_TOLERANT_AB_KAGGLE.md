@@ -3,6 +3,12 @@
 This workflow reuses the existing 5,273 COCO instances. It does not require
 redrawing the hand annotations and does not change Saturn production inference.
 
+The canonical runnable workflow is the generated notebook at
+`notebooks/v571_annotation_tolerant_unet_kaggle.ipynb`. Upload
+`Kaggle notebook inputs/v571_annotation_tolerant_code_bundle.zip` as a Kaggle
+dataset; it contains the tested code and the verified `epoch_003.pt` warm start.
+The cells below are a shorter command reference.
+
 ## Experiment Arms
 
 - Model A: replay control, current residual-attention U-Net, one-pixel positive
@@ -93,9 +99,9 @@ for config in (CONFIG_A, CONFIG_B, CONFIG_C):
     )
 
 for output_name in (
-    "v571_model_a_replay_control",
-    "v571_model_b_annotation_tolerant",
-    "v571_model_c_dual_head",
+    "outputs/model_a_replay_control",
+    "outputs/model_b_boundary_tolerant",
+    "outputs/model_c_dual_head",
 ):
     path = Path("/kaggle/working") / output_name / "dataset" / "target_generation_audit_summary.json"
     audit = json.loads(path.read_text())
@@ -146,12 +152,12 @@ subprocess.run(
     [
         sys.executable, str(evaluator),
         "--config-a", str(CONFIG_A),
-        "--checkpoint-a", "/kaggle/working/v571_model_a_replay_control/checkpoints/best.pt",
+        "--checkpoint-a", "/kaggle/working/outputs/model_a_replay_control/checkpoints/best.pt",
         "--config-b", str(CONFIG_B),
-        "--checkpoint-b", "/kaggle/working/v571_model_b_annotation_tolerant/checkpoints/best.pt",
+        "--checkpoint-b", "/kaggle/working/outputs/model_b_boundary_tolerant/checkpoints/best.pt",
         "--config-c", str(CONFIG_C),
-        "--checkpoint-c", "/kaggle/working/v571_model_c_dual_head/checkpoints/best.pt",
-        "--reference-dataset", "/kaggle/working/v571_model_b_annotation_tolerant/dataset/valid",
+        "--checkpoint-c", "/kaggle/working/outputs/model_c_dual_head/checkpoints/best.pt",
+        "--reference-dataset", "/kaggle/working/outputs/model_b_boundary_tolerant/dataset/valid",
         "--group-key", str(PACKAGE / "annotation_key_private.csv"),
         "--output", "/kaggle/working/v571_annotation_tolerant_comparison",
     ],
@@ -173,9 +179,9 @@ import zipfile
 
 archive = Path("/kaggle/working/v571_annotation_tolerant_experiment.zip")
 folders = [
-    Path("/kaggle/working/v571_model_a_replay_control"),
-    Path("/kaggle/working/v571_model_b_annotation_tolerant"),
-    Path("/kaggle/working/v571_model_c_dual_head"),
+    Path("/kaggle/working/outputs/model_a_replay_control"),
+    Path("/kaggle/working/outputs/model_b_boundary_tolerant"),
+    Path("/kaggle/working/outputs/model_c_dual_head"),
     Path("/kaggle/working/v571_annotation_tolerant_comparison"),
 ]
 with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:

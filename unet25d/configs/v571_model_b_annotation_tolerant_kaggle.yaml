@@ -2,7 +2,7 @@ project_root: /kaggle/working/v5_7_kj_wt_replay_finetune
 stack_image_dir: /kaggle/working/v5_7_kj_wt_replay_finetune/raw_tiffs
 annotation_manifest: /kaggle/working/v5_7_kj_wt_replay_finetune/annotations/_annotations.coco.json
 valid_z_indices: [190, 200, 210, 220]
-output_dir: /kaggle/working/v571_model_b_annotation_tolerant
+output_dir: /kaggle/working/outputs/model_b_boundary_tolerant
 checkpoint_mirror_dir: null
 
 z_regex: 'Project001_Series002_z(\d+)_ch00'
@@ -35,6 +35,7 @@ base_channels: 24
 learning_rate: 0.00005
 weight_decay: 0.00001
 seed: 793
+deterministic_training: true
 
 train_repeat_z_indices: [110, 120, 130, 140, 150, 160, 170, 180, 500, 510, 520]
 train_repeat_factor: 2

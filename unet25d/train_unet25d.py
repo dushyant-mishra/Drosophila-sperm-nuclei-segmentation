@@ -503,6 +503,14 @@ def main():
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    deterministic = bool(cfg.get("deterministic_training", False))
+    if deterministic:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("Deterministic PyTorch algorithms requested (warn_only=True).")
 
     out_dir = Path(cfg["output_dir"])
     ckpt_dir = out_dir / "checkpoints"
@@ -600,6 +608,7 @@ def main():
                 {"model": model.state_dict(), "config": cfg, "epoch": epoch, "warm_start": warm_start_info},
                 best_path,
             )
+            shutil.copy2(best_path, ckpt_dir / "best_dice.pt")
         snapshot_path = None
         if epoch in snapshot_epochs:
             snapshot_path = ckpt_dir / f"epoch_{epoch:03d}.pt"

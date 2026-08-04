@@ -102,6 +102,47 @@ def array_sha256(array):
     return digest.hexdigest()
 
 
+def encode_binary_mask_rle(mask):
+    """Encode a binary mask as deterministic bounding-box-local RLE."""
+    binary = np.asarray(mask, dtype=np.uint8)
+    rows, columns = np.nonzero(binary)
+    if not rows.size:
+        return {
+            "size": [int(binary.shape[0]), int(binary.shape[1])],
+            "bbox_yx": [0, 0, 0, 0],
+            "counts": [0],
+        }
+    y0, y1 = int(rows.min()), int(rows.max()) + 1
+    x0, x1 = int(columns.min()), int(columns.max()) + 1
+    pixels = binary[y0:y1, x0:x1].ravel(order="F")
+    transitions = np.flatnonzero(pixels[1:] != pixels[:-1]) + 1
+    boundaries = np.concatenate(([0], transitions, [pixels.size]))
+    counts = np.diff(boundaries)
+    if pixels[0] == 1:
+        counts = np.concatenate(([0], counts))
+    return {
+        "size": [int(binary.shape[0]), int(binary.shape[1])],
+        "bbox_yx": [y0, y1, x0, x1],
+        "counts": counts.astype(int).tolist(),
+    }
+
+
+def decode_binary_mask_rle(rle):
+    height, width = (int(v) for v in rle["size"])
+    bbox = rle.get("bbox_yx", [0, height, 0, width])
+    y0, y1, x0, x1 = (int(value) for value in bbox)
+    output = np.zeros((height, width), dtype=bool)
+    if y1 <= y0 or x1 <= x0:
+        return output
+    counts = np.asarray(rle["counts"], dtype=np.int64)
+    values = np.repeat(np.arange(counts.size, dtype=np.uint8) % 2, counts)
+    expected = (y1 - y0) * (x1 - x0)
+    if values.size != expected:
+        raise ValueError("RLE pixel count does not match its declared bounding box")
+    output[y0:y1, x0:x1] = values.reshape((y1 - y0, x1 - x0), order="F") > 0
+    return output
+
+
 def _polygon_mask(width, height, segmentations):
     image = Image.new("L", (int(width), int(height)), 0)
     draw = ImageDraw.Draw(image)
@@ -157,13 +198,15 @@ def _connected_pair_groups(pairs):
     return groups
 
 
-def rasterize_instances(width, height, annotations):
+def rasterize_instances(width, height, annotations, return_overlap_map=False):
     """Rasterize annotations while retaining deterministic local instance IDs."""
     instance_labels = np.zeros((int(height), int(width)), dtype=np.uint32)
     source_ids = {}
     zero_pixel_source_ids = []
     overlap_pairs = set()
     overlap_pixel_count = 0
+    overlap_count_map = np.zeros((int(height), int(width)), dtype=np.uint16)
+    instance_records = []
     ordered = sorted(annotations, key=lambda item: int(item.get("id", 0)))
     for local_id, annotation in enumerate(ordered, start=1):
         source_id = int(annotation.get("id", local_id))
@@ -178,20 +221,34 @@ def rasterize_instances(width, height, annotations):
         if not np.any(instance):
             zero_pixel_source_ids.append(source_id)
             continue
+        overlap_count_map += instance.astype(np.uint16)
+        instance_records.append(
+            {
+                "local_instance_id": int(local_id),
+                "source_annotation_id": int(source_id),
+                "rle": encode_binary_mask_rle(instance),
+                "pixel_count": int(instance.sum()),
+            }
+        )
         occupied = instance & (instance_labels > 0)
         overlap_pixel_count += int(np.count_nonzero(occupied))
         for existing in np.unique(instance_labels[occupied]):
             overlap_pairs.add(tuple(sorted((int(existing), int(local_id)))))
         instance_labels[instance & (instance_labels == 0)] = local_id
     touching_pairs = _touching_label_pairs(instance_labels)
-    return instance_labels, {
+    audit = {
         "source_instance_ids": source_ids,
         "zero_pixel_source_ids": zero_pixel_source_ids,
         "overlap_pairs": sorted(overlap_pairs),
         "overlap_pixel_count": overlap_pixel_count,
         "touching_pairs": touching_pairs,
         "touching_groups": _connected_pair_groups(touching_pairs),
+        "instance_records": instance_records,
+        "overlap_count_map_sha256": array_sha256(overlap_count_map),
     }
+    if return_overlap_map:
+        return instance_labels, audit, overlap_count_map
+    return instance_labels, audit
 
 
 def make_boundary_ignore_mask(instance_labels, radius=1):
@@ -304,10 +361,11 @@ def rasterize_coco(coco_path, z_regex):
         width = int(im["width"])
         height = int(im["height"])
         annotations = anns_by_image.get(image_id, [])
-        instance_labels, instance_audit = rasterize_instances(
+        instance_labels, instance_audit, overlap_count_map = rasterize_instances(
             width,
             height,
             annotations,
+            return_overlap_map=True,
         )
         samples.append(
             {
@@ -316,6 +374,7 @@ def rasterize_coco(coco_path, z_regex):
                 "instance_labels": instance_labels,
                 "annotation_count": len(annotations),
                 "instance_audit": instance_audit,
+                "overlap_count_map": overlap_count_map,
             }
         )
     return samples
@@ -355,10 +414,11 @@ def rasterize_sreeni_manifest(manifest_path, z_regex):
             }
             for index, instance in enumerate(instances, start=1)
         ]
-        instance_labels, instance_audit = rasterize_instances(
+        instance_labels, instance_audit, overlap_count_map = rasterize_instances(
             width,
             height,
             annotations,
+            return_overlap_map=True,
         )
         samples.append(
             {
@@ -367,6 +427,7 @@ def rasterize_sreeni_manifest(manifest_path, z_regex):
                 "instance_labels": instance_labels,
                 "annotation_count": len(instances),
                 "instance_audit": instance_audit,
+                "overlap_count_map": overlap_count_map,
             }
         )
     return samples
@@ -403,6 +464,8 @@ def write_samples(split_name, samples, cfg):
     out_dir.mkdir(parents=True, exist_ok=True)
     masks_dir = out_dir / "masks_png"
     masks_dir.mkdir(parents=True, exist_ok=True)
+    instance_records_dir = out_dir / "instance_records"
+    instance_records_dir.mkdir(parents=True, exist_ok=True)
     target_mode = str(cfg.get("target_preparation_mode", "legacy_dilated"))
     if target_mode not in {"legacy_dilated", "annotation_tolerant"}:
         raise ValueError(
@@ -420,9 +483,21 @@ def write_samples(split_name, samples, cfg):
         z = int(sample["z"])
         context = load_context(cfg["stack_image_dir"], cfg["image_pattern"], z)
         instance_labels = sample["instance_labels"].astype(np.uint32)
+        if tuple(context.shape[1:]) != tuple(instance_labels.shape):
+            raise ValueError(
+                f"Image dimensions {context.shape[1:]} do not match annotation "
+                f"dimensions {instance_labels.shape}: {sample['file_name']}"
+            )
         roi = load_sample_roi(cfg, z, instance_labels.shape)
+        source_overlap_count = np.asarray(
+            sample.get("overlap_count_map", instance_labels > 0),
+            dtype=np.uint16,
+        )
+        outside_roi_pixels = int(np.count_nonzero((source_overlap_count > 0) & ~roi))
+        overlap_count_map = source_overlap_count.copy()
+        overlap_count_map[~roi] = 0
         instance_labels[~roi] = 0
-        raw_target = (instance_labels > 0).astype(np.uint8)
+        raw_target = (overlap_count_map > 0).astype(np.uint8)
         training_target = (
             raw_target.copy()
             if target_mode == "annotation_tolerant"
@@ -472,6 +547,7 @@ def write_samples(split_name, samples, cfg):
             not source_audit.get("zero_pixel_source_ids", [])
             and not missing_after_roi
             and not missing_core_source_ids
+            and outside_roi_pixels == 0
             and len(local_ids) == int(sample["annotation_count"])
         )
 
@@ -484,6 +560,25 @@ def write_samples(split_name, samples, cfg):
         interior_path = masks_dir / f"{stem}_confident_interior.png"
         instance_path = masks_dir / f"{stem}_instance_labels.tif"
         core_path = masks_dir / f"{stem}_instance_core_labels.tif"
+        overlap_path = masks_dir / f"{stem}_overlap_count.tif"
+        records_path = instance_records_dir / f"{stem}_instances_rle.json"
+
+        roi_instance_records = []
+        for record in source_audit.get("instance_records", []):
+            instance_mask = decode_binary_mask_rle(record["rle"])
+            instance_mask &= roi
+            roi_instance_records.append(
+                {
+                    "local_instance_id": int(record["local_instance_id"]),
+                    "source_annotation_id": int(record["source_annotation_id"]),
+                    "pixel_count": int(instance_mask.sum()),
+                    "rle": encode_binary_mask_rle(instance_mask),
+                }
+            )
+        records_path.write_text(
+            json.dumps(roi_instance_records, separators=(",", ":")),
+            encoding="utf-8",
+        )
 
         np.savez_compressed(
             npz_path,
@@ -492,6 +587,7 @@ def write_samples(split_name, samples, cfg):
             foreground_target=training_target,
             raw_annotation_mask=raw_target,
             instance_labels=instance_labels,
+            overlap_count_map=overlap_count_map,
             confident_interior=confident_interior.astype(np.uint8),
             boundary_ignore_mask=boundary_ignore.astype(np.uint8),
             loss_weight_mask=loss_weights.astype(np.float32),
@@ -511,6 +607,7 @@ def write_samples(split_name, samples, cfg):
         Image.fromarray(confident_interior.astype(np.uint8) * 255).save(interior_path)
         tifffile.imwrite(instance_path, instance_labels.astype(np.uint16))
         tifffile.imwrite(core_path, core_labels.astype(np.uint16))
+        tifffile.imwrite(overlap_path, overlap_count_map.astype(np.uint16))
 
         manifest_rows.append(
             f"{split_name},{sample['file_name']},{z},{npz_path},{mask_path},"
@@ -534,16 +631,28 @@ def write_samples(split_name, samples, cfg):
                 "touching_groups": _connected_pair_groups(touching_pairs),
                 "overlap_pairs": source_audit.get("overlap_pairs", []),
                 "overlap_pixel_count": int(source_audit.get("overlap_pixel_count", 0)),
+                "overlap_union_pixel_count": int(np.count_nonzero(overlap_count_map > 1)),
+                "maximum_overlap_depth": int(overlap_count_map.max()),
+                "outside_roi_pixel_count": outside_roi_pixels,
+                "incorrect_dimensions": False,
                 "foreground_pixels": int(raw_target.sum()),
                 "training_target_pixels": int(training_target.sum()),
                 "confident_interior_pixels": int(confident_interior.sum()),
                 "ignored_boundary_pixels": int(boundary_ignore.sum()),
+                "supervised_background_pixels": int(
+                    np.count_nonzero((loss_weights > 0) & (raw_target == 0))
+                ),
                 "loss_weight_sum": float(loss_weights.sum()),
                 "instance_labels_sha256": array_sha256(instance_labels),
                 "foreground_target_sha256": array_sha256(training_target),
                 "boundary_ignore_sha256": array_sha256(boundary_ignore.astype(np.uint8)),
                 "loss_weight_sha256": array_sha256(loss_weights.astype(np.float32)),
                 "instance_core_labels_sha256": array_sha256(core_labels),
+                "overlap_count_map_sha256": array_sha256(overlap_count_map),
+                "instance_records_sha256": hashlib.sha256(
+                    records_path.read_bytes()
+                ).hexdigest(),
+                "instance_records_path": str(records_path),
                 "audit_pass": bool(audit_pass),
             }
         )
@@ -580,8 +689,13 @@ def write_samples(split_name, samples, cfg):
         "samples_with_overlaps": int(sum(bool(row["overlap_pairs"]) for row in audit_rows)),
         "overlap_pair_count": int(sum(len(row["overlap_pairs"]) for row in audit_rows)),
         "overlap_pixel_count": int(sum(row["overlap_pixel_count"] for row in audit_rows)),
+        "overlap_union_pixel_count": int(sum(row["overlap_union_pixel_count"] for row in audit_rows)),
+        "outside_roi_pixel_count": int(sum(row["outside_roi_pixel_count"] for row in audit_rows)),
+        "incorrect_dimension_count": int(sum(row["incorrect_dimensions"] for row in audit_rows)),
         "foreground_pixel_count": int(sum(row["foreground_pixels"] for row in audit_rows)),
+        "confident_interior_pixel_count": int(sum(row["confident_interior_pixels"] for row in audit_rows)),
         "ignored_boundary_pixel_count": int(sum(row["ignored_boundary_pixels"] for row in audit_rows)),
+        "supervised_background_pixel_count": int(sum(row["supervised_background_pixels"] for row in audit_rows)),
         "audit_failure_count": len(failures),
         "audit_pass": not failures,
         "audit_json": str(audit_json_path),
@@ -651,7 +765,13 @@ def main():
         "touching_pair_count": int(sum(item["touching_pair_count"] for item in split_summaries)),
         "overlap_pair_count": int(sum(item["overlap_pair_count"] for item in split_summaries)),
         "overlap_pixel_count": int(sum(item["overlap_pixel_count"] for item in split_summaries)),
+        "overlap_union_pixel_count": int(sum(item["overlap_union_pixel_count"] for item in split_summaries)),
+        "outside_roi_pixel_count": int(sum(item["outside_roi_pixel_count"] for item in split_summaries)),
+        "incorrect_dimension_count": int(sum(item["incorrect_dimension_count"] for item in split_summaries)),
+        "foreground_pixel_count": int(sum(item["foreground_pixel_count"] for item in split_summaries)),
+        "confident_interior_pixel_count": int(sum(item["confident_interior_pixel_count"] for item in split_summaries)),
         "ignored_boundary_pixel_count": int(sum(item["ignored_boundary_pixel_count"] for item in split_summaries)),
+        "supervised_background_pixel_count": int(sum(item["supervised_background_pixel_count"] for item in split_summaries)),
         "audit_failure_count": int(sum(item["audit_failure_count"] for item in split_summaries)),
         "audit_pass": bool(split_summaries) and all(item["audit_pass"] for item in split_summaries),
         "splits": split_summaries,

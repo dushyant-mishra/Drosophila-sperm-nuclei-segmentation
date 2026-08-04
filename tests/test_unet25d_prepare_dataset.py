@@ -200,6 +200,28 @@ def test_instance_target_hashes_are_deterministic():
     assert first_audit == second_audit
 
 
+def test_overlapping_instances_retain_separate_rle_records_and_overlap_depth():
+    prepare = load_prepare_dataset()
+    annotations = [
+        {"id": 10, "segmentation": [[2, 2, 10, 2, 10, 8, 2, 8]]},
+        {"id": 20, "segmentation": [[7, 3, 15, 3, 15, 9, 7, 9]]},
+    ]
+
+    labels, audit, overlap = prepare.rasterize_instances(
+        20, 12, annotations, return_overlap_map=True
+    )
+    decoded = [
+        prepare.decode_binary_mask_rle(record["rle"])
+        for record in audit["instance_records"]
+    ]
+
+    assert len(decoded) == 2
+    assert np.any(decoded[0] & decoded[1])
+    assert int(overlap.max()) == 2
+    np.testing.assert_array_equal(overlap, decoded[0].astype(int) + decoded[1])
+    assert sorted(np.unique(labels).tolist()) == [0, 1, 2]
+
+
 def test_fractional_boundary_weight_is_applied_once_in_dice_loss():
     train = load_unet25d_module("train_unet25d")
     logits = torch.zeros((1, 1, 1, 2), dtype=torch.float32)
@@ -299,6 +321,29 @@ def test_instance_evaluator_reports_a_merged_prediction():
     assert result["instance_true_positive"] == 1
 
 
+def test_instance_evaluator_uses_overlapping_reference_rles():
+    prepare = load_prepare_dataset()
+    evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
+    first = np.zeros((12, 16), dtype=bool)
+    second = np.zeros_like(first)
+    first[3:8, 2:9] = True
+    second[3:8, 7:14] = True
+    records = [
+        {"local_instance_id": 1, "rle": prepare.encode_binary_mask_rle(first)},
+        {"local_instance_id": 2, "rle": prepare.encode_binary_mask_rle(second)},
+    ]
+    predicted = np.zeros(first.shape, dtype=np.int32)
+    predicted[first] = 1
+    predicted[second & ~first] = 2
+
+    result = evaluator.instance_metrics_from_masks(
+        records, predicted, iou_threshold=0.20, touching_ids={1, 2}
+    )
+
+    assert result["reference_count"] == 2
+    assert result["instance_true_positive"] == 2
+
+
 def test_core_marker_watershed_splits_connected_foreground():
     evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
     foreground = np.zeros((20, 24), dtype=np.float32)
@@ -318,3 +363,39 @@ def test_core_marker_watershed_splits_connected_foreground():
 
     assert int(labels.max()) == 2
     assert labels[10, 6] != labels[10, 17]
+
+
+def test_model_selection_table_is_review_only():
+    evaluator = load_unet25d_module("evaluate_annotation_tolerant_ab")
+    pixel_row = {
+        "model": "model_b:epoch_003",
+        "threshold": 0.3,
+        "instance_method": "connected_components",
+        "pixel_precision": 0.8,
+        "pixel_recall": 0.9,
+        "pixel_dice": 0.85,
+        "pixel_iou": 0.74,
+        "predicted_area_over_annotated_area": 1.05,
+        "boundary_f1_tolerance_1px": 0.8,
+        "mean_symmetric_contour_distance_px": 0.5,
+    }
+    instance_row = {
+        "model": "model_b:epoch_003",
+        "threshold": 0.3,
+        "instance_method": "connected_components",
+        "instance_precision": 0.8,
+        "instance_recall": 0.9,
+        "instance_f1": 0.85,
+        "count_error": 1,
+        "merged_prediction_count": 2,
+        "split_reference_count": 1,
+        "missed_reference_count": 3,
+        "duplicate_prediction_count": 4,
+        "touching_instance_recall": 0.75,
+    }
+
+    table = evaluator.build_model_selection_table([pixel_row], [instance_row])
+
+    assert len(table) == 1
+    assert table[0]["selection_status"] == "candidate_for_visual_review_only"
+    assert table[0]["instance_recall"] == pytest.approx(0.9)

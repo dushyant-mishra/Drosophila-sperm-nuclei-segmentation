@@ -19,11 +19,17 @@ and biological reporting were not changed.
 | Missing cores | 0 |
 | Touching annotation pairs | 1,489 |
 | Overlapping annotation pairs | 1,052 |
+| Pixels covered by more than one annotation | 12,264 |
+| Annotation pixels outside ROI | 0 |
+| Images with incorrect dimensions | 0 |
+| Exact train/validation image hash overlap | 0 |
+| Known train/validation specimen overlap | 0 |
 | Strict audit | PASS |
 
 The overlap counts document polygons that share pixels; they are not silently
-discarded. Pixel ownership is deterministic, and each source annotation retains
-an instance and a core.
+discarded. Every source annotation is retained as a compact RLE record. The
+prepared samples also retain the foreground union, overlap-count map,
+deterministic display label map, and per-instance core map.
 
 ## Model A Versus Model B Targets
 
@@ -58,8 +64,8 @@ whether boundary-aware supervision and core-based instance separation help.
 
 ## Validation Completed
 
-- Full repository suite: 165 tests passed.
-- Focused U-Net target/model suite: 14 tests passed.
+- Full repository suite: 167 tests passed.
+- Focused U-Net target/model suite: 16 tests passed.
 - Real-data strict target preparation: passed for all 29 images.
 - Real-sample dual-head optimization smoke: finite loss and successful update.
 - Production Saturn files were not changed by this experiment.
