@@ -43,7 +43,7 @@
         "repository_release"
       ],
       "known_limitations": [
-        "The below-2-um track population still requires classified sensitivity review",
+        "Below-2-um reconstructed tracks can include genuine short nuclei, optical tips, split fragments, or noise; their specimen-level influence is reported automatically without excluding them from the primary population",
         "Body width is apparent mask width, not PSF-corrected physical chromatin width",
         "Existing repeated 2D ROIs cannot establish anatomical SV volume"
       ],
@@ -130,22 +130,26 @@
     },
     {
       "claim_id": "POP-SHORTTRACK-001",
-      "title": "Below-2-um tracks require technical classification",
-      "status": "proposed",
+      "title": "Below-2-um tracks remain measurable with automated sensitivity analysis",
+      "status": "implemented",
       "risk": "high",
-      "implementation_owner": "unassigned",
-      "statement": "Below-2-um technical-valid tracks must be classified as genuine short nuclei, optical partials, split fragments, missed joins, noise, or ambiguous before any sensitivity exclusion policy is accepted.",
-      "biological_meaning": "Prevents fragment-driven count inflation without deleting genuine unusual mutant morphology.",
+      "implementation_owner": "primary_implementation_agent",
+      "statement": "Below-2-um technical-valid tracks remain in the primary biological population; an automated specimen-level sensitivity calculation reports how counts and summary morphometry would change if they were omitted, without creating a second accepted population or a routine manual-review queue.",
+      "biological_meaning": "Preserves genuine short nuclei and terminal optical sections while making potential fragment sensitivity transparent and reproducible.",
       "population": "technical-valid reconstructed tracks below 2 um",
       "units": ["um", "count", "fraction"],
       "calibration_dependencies": ["Leica XY pixel size", "Leica Z spacing"],
       "source_dependencies": ["raw Z context", "U-Net heads", "instance masks", "tracking audit"],
-      "implementation_evidence": ["V5_7_1_VALIDATION_REPORT.md"],
+      "implementation_evidence": [
+        "sperm_segmentation_saturnv5.7.1.py",
+        "tests/test_saturn_v571_dual_head.py",
+        "V5_7_1_VALIDATION_REPORT.md"
+      ],
       "acceptance_criteria": [
-        "Blinded stratified review includes KJ and WT",
-        "Review distinguishes segmentation, tracking, optical, noise, and biological explanations",
         "Primary technical-valid population is preserved",
-        "Any conservative sensitivity exclusion uses technical evidence rather than WT morphology"
+        "Short 2D observations remain eligible for morphology-neutral cross-slice linking",
+        "Specimen-level count and morphometry sensitivity is computed automatically",
+        "The sensitivity calculation is stored under technical QC and does not create a second user-facing biological population"
       ],
       "required_roles": [
         "measurement_geometry",
@@ -154,7 +158,7 @@
         "statistics_reporting",
         "visual_evidence"
       ],
-      "known_limitations": ["Pilot review may not represent every acquisition condition"],
+      "known_limitations": ["Length alone cannot distinguish a genuine short nucleus from an unresolved fragment"],
       "non_claims": ["Length below 2 um is not automatically technical noise"],
       "supersedes": []
     }

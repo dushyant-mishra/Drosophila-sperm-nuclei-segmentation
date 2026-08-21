@@ -1,0 +1,40 @@
+{
+  "generated_at_utc": "2026-08-21T16:55:51.373783+00:00",
+  "git_commit_at_generation": "fa69c83606c0ebe65b74f11af129cdba8394af17",
+  "pipeline_sha256": "5f6486c61fa16a8da257a1fe1e6deb732f08534032e3c55be35ea61d99a32eca",
+  "generator_sha256": "9da6466d81938496d20b685c7efb4c956a9f516eb4daa6c3580ee07ddb4525af",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "z_index": 35,
+      "source_image": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+      "source_sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0",
+      "roi_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\analysis_roi_v5_7.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "profile_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+      "profile_sha256": "99aa8b5acee479e805b2ca01095214b71eb97fdb0e6819e48c8e888eced3a71f",
+      "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+      "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_remediation_stages\\KJ-01_z035_stages.png",
+      "artifact_sha256": "5d82ac791fa7325f3aa886ee33efed32b2754181c19673b0b6f93b20f17e1ad0",
+      "detection_count": 283,
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345
+    },
+    {
+      "specimen": "WT-01",
+      "z_index": 35,
+      "source_image": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+      "source_sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e",
+      "roi_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\analysis_roi_v5_7.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "profile_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+      "profile_sha256": "99aa8b5acee479e805b2ca01095214b71eb97fdb0e6819e48c8e888eced3a71f",
+      "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+      "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_remediation_stages\\WT-01_z035_stages.png",
+      "artifact_sha256": "4bd86c5d45b03946c7cba68d11bbd31aa4ca935ab280041f1c02a5804f61e2a0",
+      "detection_count": 257,
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909
+    }
+  ]
+}

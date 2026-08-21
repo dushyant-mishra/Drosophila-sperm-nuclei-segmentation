@@ -1,6 +1,6 @@
 # Saturn v5.7.1 Validation Report
 
-Date: 2026-08-04
+Date: 2026-08-21
 
 ## Production candidate
 
@@ -9,97 +9,120 @@ Date: 2026-08-04
 - Profile: `production_profiles/saturn_v5_7_1_model_c_epoch003.json`
 - Checkpoint: `model_checkpoints/v571_model_c_dual_head_epoch003.pt`
 - Checkpoint SHA-256: `7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25`
-- Segmentation: dual-head U-Net primary, foreground threshold 0.60, core threshold 0.50
-- Tracking: morphology-neutral global assignment with a 4.295 um displacement cap
-- Calibration: resolved independently from each specimen's Leica XML metadata
+- Segmentation: dual-head U-Net primary; foreground 0.60; core 0.50
+- Instance repair: foreground-preserving overlong split; 20 um trigger
+- Tracking: morphology-neutral global assignment; 4.295 um displacement cap
+- Gap recovery: one missing Z plane may be bridged
+- Calibration: resolved independently from each specimen's Leica XML
 
-The checkpoint and dual-head thresholds are frozen for this validation. The
-tuner searches tracking behavior only; it does not optimize morphology toward
-a wild-type target.
+The checkpoint and U-Net thresholds are frozen. Comparative tuning does not
+reward similarity to wild-type length, width, shape, or count.
 
-## Mixed tuning
+## Population rules
 
-The same candidate set was evaluated on four strata using each specimen's own
-ROI and metadata calibration:
+The biologist-facing population is `technical_valid`. Short, long, wide,
+curved, irregular, and single-slice nuclei remain measurable morphology. A
+smooth object above 20 um remains visible with a review warning. An object
+above 20 um with a branched connected centerline is a technical multi-object
+merge and is not counted as one nucleus.
 
-| Stratum | Slices | Best individual score |
-| --- | ---: | ---: |
-| KJ-01 | z33-z37 | 25.55 |
-| KJ-13 | z48-z52 | 9.13 |
-| WT-01 | z38-z42 | 9.44 |
-| WT-13 | z24-z28 | 38.01 |
+Sub-2-um observations remain eligible for cross-slice joining. Tracks may span
+one missing plane by a straight calibrated centroid segment. Volume is summed
+from observed filled masks only; no missing mask area is invented.
 
-The shared `reviewed_base` candidate was retained instead of the numerically
-highest aggregate candidate. Across all four strata it recovered at least
-97.5% of reciprocal overlapping links and had lower nonreciprocal and
-long-distance link fractions. The shared tuning artifacts are under
-`parameter_tuning_results_v5_7_1/mixed_tracking/shared`.
+## Matched segmentation comparison
 
-## Tracking replay
+The same KJ-01 and WT-01 specimens were compared under three configurations.
 
-Relative to the historical morphology-restrictive tracker, the selected
-morphology-neutral tracker reduced premature fragmentation while preserving
-technical integrity:
+| Configuration | KJ valid | KJ >20 um | KJ median slices | WT valid | WT >20 um | WT median slices |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| No overlong split | 5,492 | 1,100 | 2 | 3,194 | 410 | 3 |
+| Historical 18 um split and hidden merge veto | 4,238 | 0 visible | 6 | 2,655 | 0 visible | 6 |
+| Final 20 um split and explicit merge test | 4,359 | 8 | 6 | 2,721 | 2 | 5 |
 
-| Specimen | Selected tracks | Legacy tracks | Selected single-slice | Legacy single-slice | Selected median slices |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| KJ-01 | 4,377 | 7,086 | 29.91% | 50.51% | 6 |
-| WT-01 | 2,734 | 4,564 | 30.61% | 52.96% | 5 |
+The historical row contained 43 KJ and 22 WT components above 20 um, but they
+were hidden as technical failures based on length alone. The final logic does
+not repeat that mistake. Relative to the unsplit diagnostic, it removes the
+large connected-chain failure while preserving supported morphology.
 
-No selected track contains duplicate observations from one Z plane. The
-maximum accepted displacement is approximately 4.29 um. Proposed joins that
-would reconstruct an object above 20 um are rejected without deleting their
-original 2D detections.
+On matched z35, the final 20 um trigger retained every sub-2-um observation and
+every 15-20 um object. Lowering the trigger to 18 um split three additional KJ
+and four additional WT objects in the 15-20 um review band, so 20 um was kept.
 
-## Full-specimen pilot
+Evidence:
 
-Fresh full-stack runs were completed under
-`scratch/v571_final_production_pilot`.
+- `audits/evidence/v571_final_trigger20_smoke`
+- `audits/evidence/v571_overlong_split_trigger18_smoke`
+- `audits/evidence/v571_remediation_tracking`
+
+## Final full-specimen replay
+
+Fresh outputs are under `scratch/v571_remediation_final2_pilot`.
 
 | Measurement | KJ-01 | WT-01 |
 | --- | ---: | ---: |
 | Source slices | 88 | 67 |
-| Estimated unique technical-valid nuclei | 4,238 | 2,655 |
-| Median slices per track | 6 | 6 |
-| Single-slice fraction | 27.61% | 28.55% |
-| Median 3D length | 10.67 um | 9.40 um |
-| Median maximum 2D length | 10.31 um | 9.04 um |
+| Estimated unique technical-valid nuclei | 4,359 | 2,721 |
+| Technical multi-object merge failures | 77 | 32 |
+| Median slices per track | 6 | 5 |
+| Single-slice fraction | 28.54% | 29.55% |
+| Gap-linked tracks | 568 | 328 |
+| Median 3D length | 10.54 um | 9.27 um |
+| Median maximum 2D length | 10.23 um | 8.85 um |
 | Median apparent body-mask width | 1.55 um | 1.69 um |
 | Median body-width P90 | 1.70 um | 1.93 um |
-| Median length/body-width ratio | 7.17 | 5.85 |
-| Technical-valid tracks above 20 um | 0 | 0 |
+| Median length/body-width ratio | 7.21 | 5.85 |
+| Technical-valid tracks below 2 um | 851 | 568 |
+| Technical-valid tracks from 15-20 um | 780 | 420 |
+| Smooth technical-valid tracks above 20 um | 8 | 2 |
 
-These are descriptive pilot values from one specimen per group and are not a
-WT-versus-mutant biological inference.
+These values describe one specimen per group and are not a genotype inference.
+`analysis_summary.csv` matches the technical-valid track table exactly for
+count, median 3D length, and median body width.
 
-The biologist-facing PDF first pages match `analysis_summary.csv` exactly. A
-fresh render confirmed that both reports are complete and unclipped. Middle
-slice overlays show dense U-Net-primary coverage of visible elongated nuclei.
+Reports:
 
-Report paths:
+- `scratch/v571_remediation_final2_pilot/samples/kj_sv_40xx0.75-1/attempt_001/batch_report_v5.7.1-body-width.pdf`
+- `scratch/v571_remediation_final2_pilot/samples/w1118_sv_feb_40xx0.75-1/attempt_001/batch_report_v5.7.1-body-width.pdf`
 
-- `scratch/v571_final_production_pilot/KJ-01/batch_report_v5.7.1-body-width.pdf`
-- `scratch/v571_final_production_pilot/WT-01/batch_report_v5.7.1-body-width.pdf`
+## Width plateau validation
 
-## Remaining sensitivity item
+The primary track width is the subpixel perpendicular contour-chord width from
+the representative observed Z plane, not the quantized distance-transform
+median.
 
-The technical-valid population includes 831 KJ-01 and 560 WT-01 tracks below
-2 um. Many are single-plane, strongly supported U-Net fragments. They remain
-visible because single-plane and unusual morphology are not automatic failures.
-They should be reviewed as a sensitivity stratum in the full study rather than
-silently removed or used to retune toward expected WT morphology.
+| Check | KJ-01 | WT-01 |
+| --- | ---: | ---: |
+| Distinct primary widths at 4 decimals | 2,362 | 1,615 |
+| Primary-width modal fraction | 3.07% | 3.84% |
+| Distinct legacy widths at 4 decimals | 52 | 52 |
+| Legacy-width modal fraction | 41.55% | 31.90% |
+| Spearman correlation with area/length width | 0.815 | 0.816 |
+
+The legacy field retains its pixel-grid plateau for reproducibility. It is not
+the primary biological width. The new field is continuous and agrees strongly
+with an independent filled-area/length estimate.
+
+## Report and study behavior
+
+- Biologist summaries contain completed specimens only.
+- Excluded, missing, or unrun specimens remain in the exclusion ledger and
+  technical run-state table.
+- Below-2-um sensitivity is automatic and stored under `technical_qc`; it does
+  not create a competing biological count or a routine manual-review queue.
+- The normal PDF first page presents one technical-valid biological population.
 
 ## Automated validation
 
 - Python compilation: passed
-- Full test suite: `179 passed in 23.45s`
+- Full test suite: `196 passed in 26.04s`
+- Focused gap-recovery and merge-classification tests: passed
 - Tuner self-check: passed
-- `git diff --check`: passed; only line-ending conversion warnings were emitted
+- `git diff --check`: passed; line-ending conversion warnings only
 
 ## Decision
 
-The v5.7.1 segmentation, calibration, body-width measurement, and shared
-morphology-neutral tracking profile are ready for a controlled full-study run.
-The primary analysis population remains `technical_valid`; morphology warnings
-are annotations, not exclusions. The below-2-um sensitivity stratum must be
-reported separately during study-level interpretation.
+The corrected v5.7.1 segmentation, calibration, body-width measurement,
+morphology-neutral tracking, gap recovery, and report population logic pass the
+two-specimen production replay. A fresh independent seven-role audit is still
+required on the clean commit before release tagging or a full biological rerun.

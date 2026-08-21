@@ -1,0 +1,213 @@
+[
+  {
+    "specimen": "KJ-01",
+    "analysis_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_remediation_final_pilot\\samples\\kj_sv_40xx0.75-1\\attempt_001",
+    "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_remediation_tracking\\KJ-01_stratified_tracking.png",
+    "artifact_sha256": "cc413b47ebbe88317bf3f9d695d84c24a08e4ac94e8f7cbd3d80dc5f17c418b4",
+    "records": [
+      {
+        "specimen": "KJ-01",
+        "category": "faint",
+        "track_id": 999,
+        "z_indices": [
+          20
+        ],
+        "length_um": 0.757,
+        "body_width_um": NaN,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 1.624995671780031,
+        "mean_unet_probability": 0.6043
+      },
+      {
+        "specimen": "KJ-01",
+        "category": "bright",
+        "track_id": 158,
+        "z_indices": [
+          4
+        ],
+        "length_um": 5.455,
+        "body_width_um": 1.5137,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 2.3109340166161534,
+        "mean_unet_probability": 0.9835
+      },
+      {
+        "specimen": "KJ-01",
+        "category": "short",
+        "track_id": 1708,
+        "z_indices": [
+          34,
+          35
+        ],
+        "length_um": 0.3461841379310345,
+        "body_width_um": NaN,
+        "tortuosity": 1.0,
+        "nearest_neighbor_um": 1.2116444827586204,
+        "mean_unet_probability": 0.8216
+      },
+      {
+        "specimen": "KJ-01",
+        "category": "long",
+        "track_id": 3873,
+        "z_indices": [
+          73
+        ],
+        "length_um": 29.429,
+        "body_width_um": 1.6401,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 1.9738561936385723,
+        "mean_unet_probability": 0.9568
+      },
+      {
+        "specimen": "KJ-01",
+        "category": "wide",
+        "track_id": 1781,
+        "z_indices": [
+          36,
+          39,
+          42,
+          44
+        ],
+        "length_um": 16.675584465640878,
+        "body_width_um": 5.6573,
+        "tortuosity": 1.3475764616502168,
+        "nearest_neighbor_um": 2.733830777061659,
+        "mean_unet_probability": 0.944625
+      },
+      {
+        "specimen": "KJ-01",
+        "category": "curved",
+        "track_id": 3030,
+        "z_indices": [
+          57,
+          58,
+          59
+        ],
+        "length_um": 14.228855113093962,
+        "body_width_um": 1.5161,
+        "tortuosity": 7.326745621940251,
+        "nearest_neighbor_um": 3.786803039801797,
+        "mean_unet_probability": 0.9508000000000001
+      },
+      {
+        "specimen": "KJ-01",
+        "category": "touching",
+        "track_id": 1237,
+        "z_indices": [
+          25
+        ],
+        "length_um": 24.888,
+        "body_width_um": 1.565,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 0.3482462619265059,
+        "mean_unet_probability": 0.953
+      }
+    ]
+  },
+  {
+    "specimen": "WT-01",
+    "analysis_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_remediation_final_pilot\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001",
+    "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_remediation_tracking\\WT-01_stratified_tracking.png",
+    "artifact_sha256": "2ab2089a0fe95bc098ec218b0a9317b3b9cbafd95ad079bd8630a09ab9ddc11a",
+    "records": [
+      {
+        "specimen": "WT-01",
+        "category": "faint",
+        "track_id": 396,
+        "z_indices": [
+          4
+        ],
+        "length_um": 0.378,
+        "body_width_um": NaN,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 2.401696707381351,
+        "mean_unet_probability": 0.6381
+      },
+      {
+        "specimen": "WT-01",
+        "category": "bright",
+        "track_id": 1991,
+        "z_indices": [
+          46,
+          47,
+          48
+        ],
+        "length_um": 1.0258765516348518,
+        "body_width_um": NaN,
+        "tortuosity": 1.0,
+        "nearest_neighbor_um": 1.196662688784421,
+        "mean_unet_probability": 0.9823
+      },
+      {
+        "specimen": "WT-01",
+        "category": "short",
+        "track_id": 2746,
+        "z_indices": [
+          64
+        ],
+        "length_um": 0.378,
+        "body_width_um": NaN,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 2.638973970057916,
+        "mean_unet_probability": 0.7318
+      },
+      {
+        "specimen": "WT-01",
+        "category": "long",
+        "track_id": 343,
+        "z_indices": [
+          3
+        ],
+        "length_um": 27.484,
+        "body_width_um": 2.2959,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 1.8193848347914048,
+        "mean_unet_probability": 0.9519
+      },
+      {
+        "specimen": "WT-01",
+        "category": "wide",
+        "track_id": 1687,
+        "z_indices": [
+          38,
+          44,
+          51,
+          57
+        ],
+        "length_um": 19.394419335269564,
+        "body_width_um": 5.4461,
+        "tortuosity": 1.345365873221844,
+        "nearest_neighbor_um": 4.799247358566966,
+        "mean_unet_probability": 0.9329850000000001
+      },
+      {
+        "specimen": "WT-01",
+        "category": "curved",
+        "track_id": 2127,
+        "z_indices": [
+          50,
+          51,
+          52
+        ],
+        "length_um": 18.792758544162545,
+        "body_width_um": 1.7081,
+        "tortuosity": 5.740547407238607,
+        "nearest_neighbor_um": 2.0360434377977503,
+        "mean_unet_probability": 0.9291666666666667
+      },
+      {
+        "specimen": "WT-01",
+        "category": "touching",
+        "track_id": 1150,
+        "z_indices": [
+          23
+        ],
+        "length_um": 21.169,
+        "body_width_um": 2.1924,
+        "tortuosity": NaN,
+        "nearest_neighbor_um": 0.3662832793151243,
+        "mean_unet_probability": 0.9501
+      }
+    ]
+  }
+]

@@ -53,23 +53,24 @@ From PowerShell:
 ```powershell
 Set-Location "C:\Users\dmishra\Desktop\sperm_project"
 .\.venv\Scripts\Activate.ps1
-python .\sperm_segmentation_saturnv5.7.py --gui
+python .\sperm_segmentation_saturnv5.7.1.py --gui
 ```
 
 Launching without arguments also opens the GUI:
 
 ```powershell
-python .\sperm_segmentation_saturnv5.7.py
+python .\sperm_segmentation_saturnv5.7.1.py
 ```
 
 ## Active Components
 
-- `sperm_segmentation_saturnv5.7.py`: GUI, segmentation, tracking, reporting,
+- `sperm_segmentation_saturnv5.7.1.py`: production-candidate GUI, dual-head
+  U-Net-primary segmentation, tracking, reporting,
   ROI normalization, and multi-sample study manager with group assignment and
   canonical dataset organization.
-- `utils/tuner_gui_Saturnv5_7.py`: compact tuning workspace launched from the
-  v5.7 GUI.
-- `utils/tune_parameters_Saturnv5_7.py`: core preprocessing, segmentation,
+- `utils/tuner_gui_Saturnv5_7_1.py`: compact tuning workspace launched from the
+  v5.7.1 GUI.
+- `utils/tune_parameters_Saturnv5_7_1.py`: core preprocessing, segmentation,
   U-Net-primary, and tracking tuner.
 - `scripts/run_v57_mixed_unet_primary_tuning.py`: balanced multi-specimen
   U-Net-primary and global-tracking tuning workflow.
@@ -77,7 +78,8 @@ python .\sperm_segmentation_saturnv5.7.py
   probability inference.
 - `unet25d/`: dataset preparation, model training, inference, and threshold
   review tools.
-- `parameter_tuning_results_v5_7/`: reviewed v5.7 tuning outputs.
+- `production_profiles/saturn_v5_7_1_model_c_epoch003.json`: reviewed default
+  profile; Leica metadata remains mandatory for Leica-named production stacks.
 - `docs/v5_7_illustrated_workflow/`: illustrated workflow source assets.
 - `Saturn_V5.7_Illustrated_Analysis_Workflow_FINAL.docx`: readable workflow
   report.

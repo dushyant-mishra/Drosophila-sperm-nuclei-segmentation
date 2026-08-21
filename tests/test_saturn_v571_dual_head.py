@@ -186,6 +186,31 @@ def test_comparative_assignment_does_not_veto_morphology_change():
     assert tracked["track_id"].nunique() == 1
 
 
+def test_short_terminal_observation_can_bridge_one_missing_plane():
+    saturn = load_saturn_v571()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "ANALYSIS_MODE": "comparative",
+            "SEGMENTATION_ENGINE": "unet_primary",
+            "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": True,
+            "UM_PER_PX_XY": 0.1,
+            "UM_PER_SLICE_Z": 0.5,
+            "TRACK_MAX_DIST_UM": 2.0,
+            "TRACK_MAX_GAP_SLICES": 1,
+            "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 20.0,
+        }
+    )
+    rows = _tracking_rows(target_x=10.0, target_length=9.0, target_width=1.0)
+    rows.loc[1, "z_slice"] = 2
+
+    tracked, summary = saturn.track_across_slices_global_assignment(rows, cfg)
+
+    assert tracked["track_id"].nunique() == 1
+    assert summary.loc[0, "observed_slice_count"] == 2
+    assert summary.loc[0, "missing_slice_count"] == 1
+
+
 def test_bbox_overlap_cannot_bypass_absolute_centroid_distance():
     saturn = load_saturn_v571()
     cfg = saturn.CONFIG.copy()

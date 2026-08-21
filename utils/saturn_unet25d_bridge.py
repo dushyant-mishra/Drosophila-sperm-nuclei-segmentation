@@ -13,11 +13,21 @@ environments that do not have PyTorch installed.
 """
 
 from pathlib import Path
+import hashlib
 
 import numpy as np
 
 _MODEL_CACHE = {}
 _REPORTED_DEVICES = set()
+
+
+def _checkpoint_sha256(checkpoint_path):
+    checkpoint_path = Path(checkpoint_path)
+    digest = hashlib.sha256()
+    with checkpoint_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _device_helpers():
@@ -99,7 +109,13 @@ def _load_model(checkpoint_path, device):
     import torch
 
     checkpoint_path = Path(checkpoint_path)
-    cache_key = (str(checkpoint_path.resolve()), str(device))
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(checkpoint_path)
+    cache_key = (
+        str(checkpoint_path.resolve()),
+        _checkpoint_sha256(checkpoint_path),
+        str(device),
+    )
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
 
@@ -109,9 +125,6 @@ def _load_model(checkpoint_path, device):
         sys.path.insert(0, str(unet_dir))
 
     from train_unet25d import build_model
-
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(checkpoint_path)
 
     payload = torch.load(checkpoint_path, map_location="cpu")
     cfg = payload.get("config", {"architecture": "residual_attention_unet", "base_channels": 24})

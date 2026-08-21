@@ -6,20 +6,6 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-try:
-    log_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "scratch",
-        "runtime_logs",
-    )
-    os.makedirs(log_dir, exist_ok=True)
-    log_file_path = os.path.join(log_dir, "sperm_error_log.txt")
-    f_log = open(log_file_path, 'a', encoding='utf-8')
-except (PermissionError, IOError):
-    # Fallback to User Home if script directory is read-only (common in macOS .app bundles)
-    log_file_path = os.path.join(os.path.expanduser("~"), "sperm_error_log.txt")
-    f_log = open(log_file_path, 'a', encoding='utf-8')
-
 class Tee(object):
     def __init__(self, *files):
         self.files = files
@@ -34,17 +20,40 @@ class Tee(object):
             try: f.flush()
             except: pass
 
-sys.stdout = Tee(sys.stdout, f_log)
-sys.stderr = Tee(sys.stderr, f_log)
-print(f"\n--- NEW SESSION STARTED (v5.7.1-body-width): {os.path.basename(__file__)} ---")
-print(f"Log Path: {log_file_path}\n")
+def initialize_session_logging():
+    """Enable best-effort file logging without making imports require writes."""
+    if getattr(sys.stdout, "_saturn_tee", False):
+        return ""
+    candidates = [
+        os.path.join(PROJECT_ROOT, "scratch", "runtime_logs", "sperm_error_log.txt"),
+        os.path.join(os.path.expanduser("~"), "sperm_error_log.txt"),
+    ]
+    for log_file_path in candidates:
+        try:
+            os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+            f_log = open(log_file_path, "a", encoding="utf-8")
+            stdout_tee = Tee(sys.stdout, f_log)
+            stderr_tee = Tee(sys.stderr, f_log)
+            stdout_tee._saturn_tee = True
+            stderr_tee._saturn_tee = True
+            sys.stdout = stdout_tee
+            sys.stderr = stderr_tee
+            print(
+                "\n--- NEW SESSION STARTED (v5.7.1): "
+                f"{os.path.basename(__file__)} ---\nLog Path: {log_file_path}\n"
+            )
+            return log_file_path
+        except (OSError, IOError):
+            continue
+    print("Saturn file logging unavailable; continuing with console logging only.", file=sys.stderr)
+    return ""
 # ---------------------------------
 
 #!/usr/bin/env python3
 """
 Sperm Nucleus Segmentation & 3D Morphometrics Pipeline  -  Saturn Project
 =========================================================================
-A production-ready image-analysis pipeline for automated detection,
+    A production-candidate image-analysis pipeline for automated detection,
 measurement, and 3D reconstruction of sperm nuclei tailored to
 the *Saturn* experimental dataset acquired on the Leica confocal system.
 
@@ -118,15 +127,15 @@ Usage
 -----
 Launch the interactive GUI (recommended)::
 
-    python sperm_segmentation_saturnv5.7.py
+    python sperm_segmentation_saturnv5.7.1.py
 
 Run a headless batch analysis::
 
-    python sperm_segmentation_saturnv5.7.py --batch
+    python sperm_segmentation_saturnv5.7.1.py --batch
 
 Analyze a single slice::
 
-    python sperm_segmentation_saturnv5.7.py --single --z 4
+    python sperm_segmentation_saturnv5.7.1.py --single --z 4
 
 Dependencies
 ------------
@@ -263,8 +272,10 @@ CONFIG = {
     "UNET_INSTANCE_SEED_THRESHOLD": 0.75,
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": 6,
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": 0.001,
+    # Experimental fallback only. Production dual-head inference separates
+    # touching objects with learned core markers, not a length target.
     "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": True,
-    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 18.0,
+    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 20.0,
     "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": 11.0,
     "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": 2.0,
     "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
@@ -296,7 +307,7 @@ CONFIG = {
     "UM_PER_PX_XY":   0.756836,
     "UM_PER_SLICE_Z": 1.040460,
     "AUTO_LEICA_CALIBRATION": True,
-    "REQUIRE_LEICA_METADATA": False,
+    "REQUIRE_LEICA_METADATA": True,
     "CALIBRATION_SOURCE": "fallback_config",
     "CALIBRATION_METADATA_FILE": "",
 
@@ -1839,6 +1850,8 @@ def _save_v56_debug(debug_dir, z_idx, stages, debug_record):
         ("14_unet_core_probability", stages.get("unet_core_probability")),
         ("15_unet_candidate_mask", stages.get("unet_candidate_mask")),
         ("16_unet_seed_mask", stages.get("unet_seed_mask")),
+        ("17_unet_instance_labels", stages.get("unet_primary_instance_labels")),
+        ("18_unet_centerline_labels", stages.get("unet_primary_centerline_labels")),
     ]
     for name, arr in names:
         path = os.path.join(debug_dir, f"z{int(z_idx or 0):02d}_{name}.png")
@@ -3400,6 +3413,7 @@ def _measure_unet_primary_instances(seg, cfg):
             else np.nan
         )
         metadata = centerline_meta.get(instance_id, {})
+        raw_branch_count = int(metadata.get("raw_branch_count", 0))
         warning_reasons = []
         if geodesic < float(cfg["MIN_SKEL_LEN_PX"]):
             warning_reasons.append("short")
@@ -3414,7 +3428,7 @@ def _measure_unet_primary_instances(seg, cfg):
             and float(topology["tortuosity"]) > float(cfg["MAX_TORTUOSITY"])
         ):
             warning_reasons.append("tortuous")
-        if int(metadata.get("raw_branch_count", 0)) > 0:
+        if raw_branch_count > 0:
             warning_reasons.append("branched_centerline_reduced")
         if int(topology["n_endpoints"]) > int(cfg["MAX_ENDPOINT_COUNT"]):
             warning_reasons.append("excess_endpoints")
@@ -3444,9 +3458,9 @@ def _measure_unet_primary_instances(seg, cfg):
             "length_body_width_ratio": length_body_width_ratio,
             "tortuosity": float(topology["tortuosity"]),
             "n_endpoints": int(topology["n_endpoints"]),
-            "n_branch_nodes": int(metadata.get(
-                "raw_branch_count", topology["n_branch_nodes"]
-            )),
+            "n_branch_nodes": int(
+                raw_branch_count or topology["n_branch_nodes"]
+            ),
             "centroid_x": float(cx),
             "centroid_y": float(cy),
             "area_px": float(geodesic * median_width),
@@ -3459,7 +3473,13 @@ def _measure_unet_primary_instances(seg, cfg):
                 ])
             ),
             "length_review_band": length_review_band,
-            "suspected_multi_object_merge": bool(geodesic_um > 20.0),
+            # Length alone is morphology. A very long branched component is
+            # objective evidence that instance separation left multiple
+            # objects connected.
+            "over_20_um_review": bool(geodesic_um > 20.0),
+            "suspected_multi_object_merge": bool(
+                geodesic_um > 20.0 and raw_branch_count > 0
+            ),
             "bbox_min_y": float(prop.bbox[0]),
             "bbox_min_x": float(prop.bbox[1]),
             "bbox_max_y": float(prop.bbox[2]),
@@ -5251,6 +5271,13 @@ def track_across_slices_legacy(detections_df, cfg):
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
 
+    filled_area = pd.to_numeric(
+        df.get("instance_mask_area_px", pd.Series(np.nan, index=df.index)),
+        errors="coerce",
+    )
+    legacy_area = pd.to_numeric(df["area_px"], errors="coerce")
+    df["volume_area_px"] = filled_area.where(filled_area > 0, legacy_area)
+
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
         n_slices        = ("z_slice",            "count"),
@@ -5261,6 +5288,7 @@ def track_across_slices_legacy(detections_df, cfg):
         median_length_width_ratio_2d = ("length_width_ratio", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
+        sum_volume_area_px = ("volume_area_px", "sum"),
         min_area_px     = ("area_px",            "min"),
         max_area_px     = ("area_px",            "max"),
         area_start      = ("area_px",            "first"),
@@ -5300,13 +5328,12 @@ def track_across_slices_legacy(detections_df, cfg):
     ts["total_3d_length_um"] = l3d
 
     # 3. 3D Volume (sum of per-slice projected area estimates * Z_step)
-    ts["volume_um3"] = ts["sum_area_px"] * (um_xy**2) * um_z
+    ts["observed_slice_mask_volume_um3"] = (
+        ts["sum_volume_area_px"] * (um_xy**2) * um_z
+    )
 
     # 4. 3D Tortuosity (Total 3D Geodesic Length / 3D End-To-End Euclidean Distance)
-    euc_3d = np.sqrt(ts["max_euc_2d"]**2 + dz_euc**2)
-    safe_euc = np.maximum(euc_3d, 0.1)
-    tort_raw = l3d / safe_euc
-    ts["tortuosity_3d"] = np.minimum(tort_raw, 20.0)
+    ts = _attach_explicit_track_geometry(df, ts, cfg)
 
     # 5. Taper Ratio (max/min area across the full track)
     ts["taper_ratio"] = ts["max_area_px"] / np.maximum(ts["min_area_px"], 0.001)
@@ -5334,10 +5361,11 @@ def track_across_slices_legacy(detections_df, cfg):
     ts = _attach_representative_body_width(df, ts)
 
     cols_ordered = [
-        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "tortuosity_3d",
+        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "observed_slice_mask_volume_um3", "tortuosity_3d",
+        "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
         "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
-        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px",
+        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px", "sum_volume_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end"
     ] + [
         column
@@ -5446,6 +5474,59 @@ def _unet_link_cost_terms(det_prob, prev_prob, cfg, repair=False):
     return support_term + continuity_term, support_term, continuity_term
 
 
+def _track_centroid_path_metrics(detections, cfg):
+    """Measure an explicit calibrated path through ordered track centroids."""
+    um_xy = float(cfg["UM_PER_PX_XY"])
+    um_z = float(cfg["UM_PER_SLICE_Z"])
+    rows = []
+    for track_id, group in detections.groupby("track_id", sort=False):
+        ordered = group.sort_values(["z_slice", "sperm_id"], kind="stable")
+        coords = np.column_stack(
+            [
+                pd.to_numeric(ordered["centroid_x"], errors="coerce") * um_xy,
+                pd.to_numeric(ordered["centroid_y"], errors="coerce") * um_xy,
+                pd.to_numeric(ordered["z_slice"], errors="coerce") * um_z,
+            ]
+        )
+        coords = coords[np.all(np.isfinite(coords), axis=1)]
+        if len(coords) < 2:
+            path_length = np.nan
+            end_to_end = np.nan
+            tortuosity = np.nan
+        else:
+            path_length = float(np.linalg.norm(np.diff(coords, axis=0), axis=1).sum())
+            end_to_end = float(np.linalg.norm(coords[-1] - coords[0]))
+            tortuosity = (
+                path_length / end_to_end
+                if end_to_end > 1e-9
+                else np.nan
+            )
+        z_values = pd.to_numeric(ordered["z_slice"], errors="coerce").dropna()
+        observed = int(z_values.nunique())
+        expected = int(z_values.max() - z_values.min() + 1) if observed else 0
+        rows.append(
+            {
+                "track_id": track_id,
+                "centroid_path_length_3d_um": path_length,
+                "centroid_end_to_end_3d_um": end_to_end,
+                "centroid_path_tortuosity_3d": tortuosity,
+                "observed_slice_count": observed,
+                "missing_slice_count": max(expected - observed, 0),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _attach_explicit_track_geometry(detections, track_summary, cfg):
+    metrics = _track_centroid_path_metrics(detections, cfg)
+    output = track_summary.merge(metrics, on="track_id", how="left")
+    output["tortuosity_3d"] = output["centroid_path_tortuosity_3d"]
+    output["tortuosity_3d_method"] = "ordered_calibrated_centroid_path"
+    output["volume_um3"] = output["observed_slice_mask_volume_um3"]
+    output["volume_method"] = "sum_filled_mask_area_observed_slices_no_interpolation"
+    return output
+
+
 def _summarize_tracked_detections(df, rejected_extensions, cfg):
     if df.empty:
         return df, pd.DataFrame()
@@ -5460,6 +5541,12 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         df["length_width_ratio"] = length / width.clip(lower=1e-9)
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
+    filled_area = pd.to_numeric(
+        df.get("instance_mask_area_px", pd.Series(np.nan, index=df.index)),
+        errors="coerce",
+    )
+    legacy_area = pd.to_numeric(df["area_px"], errors="coerce")
+    df["volume_area_px"] = filled_area.where(filled_area > 0, legacy_area)
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -5471,6 +5558,7 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         median_length_width_ratio_2d = ("length_width_ratio", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
+        sum_volume_area_px = ("volume_area_px", "sum"),
         min_area_px     = ("area_px",            "min"),
         max_area_px     = ("area_px",            "max"),
         area_start      = ("area_px",            "first"),
@@ -5500,11 +5588,10 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
     lat_geodesic = np.maximum(ts["max_length_2d"], euc_2d_centroid)
     l3d = np.sqrt(lat_geodesic**2 + z_span**2)
     ts["total_3d_length_um"] = l3d
-    ts["volume_um3"] = ts["sum_area_px"] * (um_xy**2) * um_z
-
-    euc_3d = np.sqrt(ts["max_euc_2d"]**2 + z_span**2)
-    safe_euc = np.maximum(euc_3d, 0.1)
-    ts["tortuosity_3d"] = np.minimum(l3d / safe_euc, 20.0)
+    ts["observed_slice_mask_volume_um3"] = (
+        ts["sum_volume_area_px"] * (um_xy**2) * um_z
+    )
+    ts = _attach_explicit_track_geometry(df, ts, cfg)
     ts["taper_ratio"] = ts["max_area_px"] / np.maximum(ts["min_area_px"], 0.001)
 
     cross_area = ts["volume_um3"] / np.maximum(ts["total_3d_length_um"], 0.1)
@@ -5545,10 +5632,11 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
                 unet_summary_cols.extend([f"track_mean_{prob_col}", f"track_max_{prob_col}"])
 
     cols_ordered = [
-        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "tortuosity_3d",
+        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "observed_slice_mask_volume_um3", "tortuosity_3d",
+        "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
         "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
-        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px",
+        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px", "sum_volume_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end",
         "suspected_multi_object_merge",
     ] + [
@@ -7802,6 +7890,7 @@ def process_one_image(image_path, cfg, output_dir):
         [image_path],
         input_dir=pl.Path(image_path).parent,
     )
+    cfg["_SOURCE_IMAGE_FILES"] = [str(pl.Path(image_path).resolve())]
     save_calibration_provenance(output_dir, cfg)
     save_analysis_settings_bundle(output_dir, cfg)
     print(
@@ -7942,6 +8031,7 @@ def process_batch(cfg):
 
     files, z_indices = load_batch_files(cfg["INPUT_DIR"], cfg["FILE_PATTERN"])
     files_by_z = {int(z): f for f, z in zip(files, z_indices)}
+    cfg["_SOURCE_IMAGE_FILES"] = [str(pl.Path(path).resolve()) for path in files]
     calibration = resolve_stack_microscope_calibration(
         cfg,
         files,
@@ -8439,17 +8529,17 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             if not df_summary.empty:
                 df_summary.to_excel(writer, sheet_name='Slice_Summary', index=False)
 
-            # --- Sheet 4b: v5.7 U-Net Rescue Audit ---
+            # --- Sheet 4b: AI detection provenance ---
             if unet_report and unet_report["enabled"]:
                 ws_unet = workbook.add_worksheet('U-Net_Rescue_Audit')
-                ws_unet.write(0, 0, "Saturn v5.7 U-Net Rescue Audit", bold)
+                ws_unet.write(0, 0, "Saturn v5.7.1 AI Detection Provenance", bold)
                 ws_unet.write(1, 0, "All counts below are measurement-table counts, not overlay-pixel counts.")
                 ws_unet.write(2, 0, "Overlay dilation is display-only and does not affect count, length, width, or 3D tracking.")
                 ws_unet.write(4, 0, "Probability maps saved")
                 ws_unet.write(4, 1, unet_report["probability_map_count"])
-                ws_unet.write(5, 0, "U-Net rescue review overlays saved")
+                ws_unet.write(5, 0, "AI provenance overlays saved")
                 ws_unet.write(5, 1, unet_report["overlay_count"])
-                ws_unet.write(6, 0, "U-Net rescued fraction of 2D detections")
+                ws_unet.write(6, 0, "AI-sourced fraction of 2D detections")
                 ws_unet.write(6, 1, unet_report["unet_rescue_fraction"], num_fmt)
                 table_df = unet_report["table"]
                 for c_idx, col_name in enumerate(table_df.columns):
@@ -8478,19 +8568,19 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 ["Metric", "Formula / Definition", "Biological Interpretation"],
                 ["2D Geodesic Length", "Shortest-path length along a 2D skeleton", "Curved fragment length within a single optical slice."],
                 ["Total 3D Geodesic Length", "sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)", "Projection-length plus Z-span estimate of whole-nucleus 3D length."],
-                ["3D Euclidean Distance", "sqrt(XY displacement^2 + z_span^2)", "Straight-line span used as the tortuosity denominator."],
-                ["3D Tortuosity", "Total 3D length / 3D Euclidean distance", "Curvature or over-merge index. Values near 1 indicate straighter nuclei."],
+                ["3D Centroid End-to-End Distance", "Calibrated straight-line distance between the first and last observed track centroids", "Straight-line span of the reconstructed centroid trajectory."],
+                ["3D Centroid-Path Tortuosity", "Sum of calibrated distances between ordered observed centroids / centroid end-to-end distance", "Trajectory continuity descriptor. A linked missing plane is spanned by a straight segment; this is not within-plane nuclear curvature."],
                 ["Z-Span (Vertical Span)", "(max_z - min_z) * UM_PER_SLICE_Z", "Endpoint-to-endpoint vertical span; single-slice tracks have span 0."],
                 ["Z-Covered", "(max_z - min_z + 1) * UM_PER_SLICE_Z", "Sampled slab thickness covered by the detections."],
-                ["3D Volume (um3) *", "sum(area_est_slice * XY_pixel_area * Z_step)", "PSF- and voxel-sensitive Riemann-sum approximation of nuclear volume. Use mainly for relative comparisons acquired under matched imaging settings."],
+                ["Observed-Slice Mask Volume (um3) *", "sum(filled_mask_area_slice * XY_pixel_area * Z_step) over observed planes", "PSF- and voxel-sensitive mask-volume approximation. Missing planes may be linked for trajectory continuity but their unseen mask area is not invented or interpolated."],
                 ["Effective Diameter Proxy (um) *", "2 * sqrt((V_3D / L_3D) / pi)", "PSF-sensitive cylinder-equivalent diameter. Comparative metric only; do not interpret as literal physical diameter."],
                 ["Pitch Angle (degrees)", "abs(arcsin(z_span / Euclidean_3D)) * 180/pi", "Absolute plunge angle relative to the imaging plane."],
                 ["Taper Ratio *", "max(area_est across track) / min(area_est across track)", "PSF-sensitive area-derived metric. Useful for relative comparison and instability screening, not as a literal anatomical ratio."],
                 ["Nearest Neighbor (um)", "Nearest 3D centroid-to-centroid distance", "Simple local packing-density readout."],
-                ["Quality Audit", "Strict post-tracking flag based on length, tortuosity, thickness, taper, and minimum slice count", "Strict audit labels completed tracks after tracking. It does not change segmentation; it defines the no-warning subset used for conservative summaries."],
+                ["Morphology Warning", "Descriptive annotation for unusual length, width, trajectory, taper, or slice coverage", "The warning does not reject a technically valid nucleus and does not create a second biological count."],
                 ["Estimated Unique Nucleus", "A technical-valid 3D track; morphology warnings remain included", "This is the one nucleus population used for biological analysis."],
-                ["v5.7 U-Net Rescue", "U-Net probability maps add a rescue lane for detections missed by classical Saturn; accepted detections are labeled by detection_source.", "Use source counts to audit how much the AI lane contributed. The U-Net lane does not replace downstream biological QC."],
-                ["U-Net Rescue Overlay", "Green = Saturn classical; cyan = accepted U-Net rescue; magenta/orange/red = U-Net-positive candidates rejected by rescue gates.", "Overlay line thickness is display-only and never used for count, length, width, or tracking calculations."],
+                ["v5.7.1 U-Net-Primary Segmentation", "Dual-head foreground and core probabilities produce filled instances and centerlines inside the ROI.", "Technically valid U-Net-supported nuclei form the primary measurement population; morphology is measured rather than used as a WT-shaped veto."],
+                ["Analysis Overlay", "Colors identify accepted nuclei and morphology annotations using equal display line thickness.", "Overlay thickness is display-only and never used for count, length, width, volume, or tracking calculations."],
                 ["Parameter Tuning Guidance", "Candidate audit first -> Tracking second -> Segmentation last", "Change audit interpretation when summaries are too strict; change tracking when tracks are fragmented or over-merged; change segmentation only when the raw 2D detections themselves are wrong."],
                 ["Standard Deviation", "Std Dev", "Population spread around the mean."]
             ]
@@ -8751,7 +8841,7 @@ def generate_batch_report(
             # not as another competing population in the final PDF.
             if unet_report and unet_report["enabled"]:
                 fig_unet = plt.figure(figsize=(11, 8.5))
-                fig_unet.suptitle("Saturn v5.7 U-Net Rescue Audit", fontsize=15, fontweight='bold')
+                fig_unet.suptitle("Saturn v5.7.1 AI Detection Provenance", fontsize=15, fontweight='bold')
                 gs = fig_unet.add_gridspec(2, 2, height_ratios=[2.0, 1.2])
                 ax_bar = fig_unet.add_subplot(gs[0, 0])
                 table = unet_report["table"].copy()
@@ -8962,18 +9052,18 @@ def generate_batch_report(
                 "   Meaning: Apparent optical mask width. P90 is the stable upper-body width; IQR\n"
                 "   is within-nucleus variability. Area/length is an independent cross-check.\n"
                 "   The historical distance-transform median remains DT legacy QC only.\n\n"
-                "2. 3D Euclidean Distance (um)\n"
-                "   Formula: D_3D = sqrt(XY displacement^2 + z_span^2)\n"
-                "   Meaning: Straight-line span used as the tortuosity denominator.\n\n"
-                "3. 3D Tortuosity\n"
-                "   Formula: T = L_3D / D_3D\n"
-                "   Meaning: Curvature index. Values near 1 are straighter; high values suggest bent or fused tracks.\n\n"
+                "2. 3D Centroid End-to-End Distance (um)\n"
+                "   Formula: calibrated straight-line distance between the first and last observed track centroids\n"
+                "   Meaning: Straight-line span used as the centroid-trajectory tortuosity denominator.\n\n"
+                "3. 3D Centroid-Path Tortuosity\n"
+                "   Formula: sum(calibrated distances between ordered observed centroids) / centroid end-to-end distance\n"
+                "   Meaning: Track-trajectory continuity descriptor, not within-plane nuclear curvature. A linked missing plane is spanned by a straight segment.\n\n"
                 "4. Z-Span and Z-Covered\n"
                 "   Formula: z_span = (max_z - min_z) * UM_PER_SLICE_Z; z_covered = (max_z - min_z + 1) * UM_PER_SLICE_Z\n"
                 "   Meaning: Z-span is endpoint-to-endpoint displacement; Z-covered is sampled slab thickness.\n\n"
-                "5. Approximated 3D Volume (um3)\n"
-                "   Formula: V_3D = sum(area_est_slice * XY_pixel_area * Z_step)\n"
-                "   Meaning: PSF- and voxel-sensitive volume estimate. Best used for relative comparisons between datasets acquired with matched imaging settings, not as a literal absolute volume.\n\n"
+                "5. Observed-Slice Mask Volume (um3)\n"
+                "   Formula: V_mask = sum(filled_mask_area_slice * XY_pixel_area * Z_step) over observed planes\n"
+                "   Meaning: PSF- and voxel-sensitive mask-volume estimate. Missing planes may be linked for trajectory continuity, but unseen mask area is not invented or interpolated.\n\n"
                 "6. Effective Diameter Proxy (Average Diameter, um)\n"
                 "   Formula: D_avg = 2 * sqrt((V_3D / L_3D) / pi)\n"
                 "   Meaning: PSF-sensitive cylinder-equivalent diameter. Useful for relative comparisons under matched imaging settings, not as a literal physical diameter.\n\n"
@@ -8987,12 +9077,12 @@ def generate_batch_report(
                 "   Formula: nearest 3D centroid-to-centroid distance\n"
                 "   Meaning: Simple local packing-density readout.\n\n"
                 "10. Technical Track Audit (post-tracking)\n"
-                "   Technical-invalid examples include non-finite geometry, ROI leakage, duplicate Z observations, and unresolved components above 20 um that remain likely multi-object joins after watershed.\n"
+                "   Technical-invalid examples include non-finite geometry, ROI leakage, duplicate Z observations, and independently evidenced multi-object joins. Length alone is not a technical veto.\n"
                 "   Morphology-only annotations include short, 15-20 um long-review, wide, thin, curved, tortuous, and single-slice observations. These remain in the estimated-nuclei population.\n"
                 "   Interpretation: Technical-valid tracks define the one estimated-nuclei population. Reference morphology and warning-free flags are QC annotations, not separate biological populations.\n"
-                "\n11. v5.7 U-Net Rescue Lane\n"
-                "   U-Net probability maps can add a rescue lane for classical-Saturn misses. Accepted rescues retain detailed detection_source labels for direct, split, short high-confidence, and low-ratio high-confidence recovery.\n"
-                "   The rescue-review overlay uses green for Saturn classical detections, cyan for accepted U-Net rescues, and magenta/orange/red for U-Net-positive candidates rejected by rescue gates.\n"
+                "\n11. v5.7.1 U-Net-Primary Segmentation\n"
+                "   Dual-head foreground and core probabilities produce filled instances and centerlines inside the ROI. Technically valid U-Net-supported nuclei form the primary population.\n"
+                "   Morphology is measured and annotated rather than used as a wild-type-shaped veto.\n"
                 "   Overlay dilation is display-only and is never used for count, length, width, or 3D tracking calculations.\n\n"
                 "12. PSF-sensitive metrics note\n"
                 "   Volume, effective thickness, taper, and other width/area-derived values are broadened by microscope PSF and voxel sampling. Use them mainly for relative comparisons between biological groups acquired with matched settings, not as literal physical dimensions.\n"
@@ -9500,13 +9590,13 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             add_hyperlink(slide3, "3D_Track_Audit")
 
         # ---------------------------------------------------------------------
-        # SLIDE 3b: Saturn v5.7 U-Net Rescue Audit
+        # SLIDE 3b: Saturn v5.7.1 AI detection provenance
         # ---------------------------------------------------------------------
         if unet_report and unet_report["enabled"]:
             slide_unet = prs.slides.add_slide(blank_slide_layout)
             txBox = slide_unet.shapes.add_textbox(Inches(0.5), Inches(0.1), Inches(9), Inches(0.5))
             tf = txBox.text_frame
-            tf.text = "Saturn v5.7 U-Net Rescue Audit"
+            tf.text = "Saturn v5.7.1 AI Detection Provenance"
             tf.paragraphs[0].font.size = Pt(22)
             tf.paragraphs[0].font.bold = True
 
@@ -9633,21 +9723,21 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
                 ("Formula: ", "L_3D = sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)"),
                 ("Meaning: ", "Projection-length plus Z-span estimate of whole-nucleus 3D length.")
             ]),
-            ("2. 3D Euclidean Distance (um)", [
-                ("Formula: ", "D_3D = sqrt(XY displacement^2 + z_span^2)"),
-                ("Meaning: ", "Straight-line span used as the tortuosity denominator.")
+            ("2. 3D Centroid End-to-End Distance (um)", [
+                ("Formula: ", "Calibrated straight-line distance between the first and last observed track centroids"),
+                ("Meaning: ", "Straight-line span used as the centroid-trajectory tortuosity denominator.")
             ]),
-            ("3. 3D Tortuosity", [
-                ("Formula: ", "T = L_3D / D_3D"),
-                ("Meaning: ", "Curvature or over-merge index. Values near 1 are straighter; high values suggest bent or fused tracks.")
+            ("3. 3D Centroid-Path Tortuosity", [
+                ("Formula: ", "Sum of calibrated distances between ordered observed centroids / centroid end-to-end distance"),
+                ("Meaning: ", "Trajectory continuity descriptor, not within-plane curvature. Linked missing planes are spanned by straight segments.")
             ]),
             ("4. Z-Span and Z-Covered", [
                 ("Formula: ", "z_span = (max_z - min_z) * UM_PER_SLICE_Z; z_covered = (max_z - min_z + 1) * UM_PER_SLICE_Z"),
                 ("Meaning: ", "Z-span is endpoint-to-endpoint displacement; Z-covered is sampled slab thickness.")
             ]),
-            ("5. Approximated 3D Volume (um3)", [
-                ("Formula: ", "V_3D = sum(area_est_slice * XY_pixel_area * Z_step)"),
-                ("Meaning: ", "PSF- and voxel-sensitive volume estimate. Use mainly for relative comparisons between matched datasets, not as a literal absolute volume.")
+            ("5. Observed-Slice Mask Volume (um3)", [
+                ("Formula: ", "V_mask = sum(filled_mask_area_slice * XY_pixel_area * Z_step) over observed planes"),
+                ("Meaning: ", "PSF- and voxel-sensitive mask-volume estimate. Linked missing planes do not contribute invented or interpolated mask area.")
             ]),
             ("6. Effective Diameter Proxy (Average Diameter, um)", [
                 ("Formula: ", "D_avg = 2 * sqrt((V_3D / L_3D) / pi)"),
@@ -9667,18 +9757,18 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             ]),
             ("10. Tracking Parameter Provenance", [
                 ("Source: ", "Several overlap and conservative tracking thresholds were originally selected by an evolutionary tuning script."),
-                ("Goal: ", "The optimizer rewarded multi-slice continuity while penalizing fragmentation, implausible merges, and biology-aware outlier categories."),
+                ("Goal: ", "The optimizer rewarded reciprocal multi-slice continuity while penalizing technical fragmentation, impossible joins, leakage, and duplicate-plane errors without rewarding WT-like morphology."),
                 ("Practical use: ", "Treat tuned tracking values as strong starting points. Adjust them only if a new dataset clearly shows fragmentation or over-merging.")
             ]),
             ("11. Technical Track Audit (post-tracking)", [
-                ("Audit rules: ", "Technical failures are limited to integrity problems such as non-finite geometry, ROI leakage, duplicate Z observations, and unresolved above-20 um components likely to contain multiple joined objects. Short, 15-20 um long-review, wide, curved, tortuous, and single-slice observations remain morphology annotations."),
+                ("Audit rules: ", "Technical failures are limited to integrity problems such as non-finite geometry, ROI leakage, duplicate Z observations, and independently evidenced multi-object joins. Length alone is not a technical veto. Short, long, wide, curved, tortuous, and single-slice observations remain morphology annotations."),
                 ("Meaning: ", "Audit does not change raw detection or tracking. Technical-valid tracks form the estimated-nuclei population; technical failures are excluded."),
                 ("Practical use: ", "Use estimated unique nuclei as the one analysis population. Morphology-warning, warning-free, and reference-morphology flags are QC annotations only."),
-                ("Biology note: ", "At this acquisition z-step (~1.04 um), single-slice nuclei can be biologically valid because the true mature Drosophila sperm nucleus is much thinner in z than the optical sampling.")
+                ("Biology note: ", "Single-slice nuclei can be biologically valid because specimen orientation, optical sectioning, and resolved per-specimen Z spacing can limit visibility to one plane.")
             ]),
-            ("12. v5.7 U-Net rescue lane", [
-                ("Source labels: ", "Raw 2D detections are labeled as saturn_classical, unet_rescued, or unet_rescued_split in the measurement table."),
-                ("Overlay colors: ", "Green is Saturn classical; cyan is accepted U-Net rescue; magenta/orange/red are U-Net-positive candidates rejected by rescue gates."),
+            ("12. v5.7.1 U-Net-primary segmentation", [
+                ("Source: ", "Dual-head foreground and core probabilities produce filled instances and centerlines inside the ROI."),
+                ("Population: ", "Technically valid U-Net-supported nuclei form the primary measurement population; morphology warnings remain included."),
                 ("Display note: ", "Overlay dilation is cosmetic only and is never used for count, length, width, or 3D tracking calculations.")
             ]),
             ("13. PSF-sensitive metrics note", [
@@ -10064,7 +10154,7 @@ PARAM_DESCRIPTIONS = {
     "UNET_INSTANCE_PEAK_MIN_DISTANCE_PX": "Minimum distance between fallback U-Net probability peaks used as instance seeds. Lower values can split crowded regions more aggressively.",
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Compactness term for watershed instance splitting. Larger values favor compact regions; near-zero follows probability topology more closely.",
     "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": "Re-watershed a U-Net-primary component only when its mask-derived centerline exceeds the technical overlong trigger.",
-    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": "Technical trigger for a second watershed pass. The default 18 um threshold challenges very improbable fused components; it is not a WT morphology target or an automatic rejection cutoff.",
+    "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": "Technical trigger for a second watershed pass. The default 20 um threshold challenges very improbable fused components; it is not a WT morphology target or an automatic rejection cutoff.",
     "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": "Approximate spacing for probability-supported watershed markers inside a component above the technical trigger. Child measurements are recalculated from their own masks.",
     "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": "Minimum measurable child centerline required before an overlong watershed split is accepted. Failed proposals leave the original component intact for review.",
     "UNET_PRIMARY_MIN_COMPONENT_PX": "Technical pixel-noise floor used before U-Net-primary instance measurement. It is not a biological length or shape gate.",
@@ -10415,7 +10505,7 @@ class ParameterEditor(tk.Toplevel):
         current = str(target_var.get()).strip()
         initial_dir = os.path.dirname(current) if current and os.path.isdir(os.path.dirname(current)) else os.getcwd()
         selected = filedialog.askopenfilename(
-            title="Select v5.7 U-Net Checkpoint",
+            title="Select v5.7.1 U-Net Checkpoint",
             initialdir=initial_dir,
             filetypes=[
                 ("PyTorch checkpoints", "*.pt *.pth"),
@@ -11397,6 +11487,63 @@ def save_analysis_settings_bundle(output_dir, cfg, strict=True):
         calibration_record["role"] = "resolved_calibration"
         files.append(calibration_record)
 
+    metadata_source = str(cfg.get("CALIBRATION_METADATA_FILE", "")).strip()
+    if metadata_source and pl.Path(metadata_source).is_file():
+        metadata_record = _copy_settings_file(
+            metadata_source,
+            settings_dir / "microscope_metadata_used.xml",
+        )
+        metadata_record["role"] = "microscope_metadata_xml"
+        files.append(metadata_record)
+
+    for config_key, role, stem in (
+        ("ROI_MASK_PATH", "roi_mask_source", "roi_mask_source"),
+        ("EXCLUSION_MASK_PATH", "exclusion_mask_source", "exclusion_mask_source"),
+    ):
+        source_path = str(cfg.get(config_key, "")).strip()
+        if source_path and pl.Path(source_path).is_file():
+            suffix = pl.Path(source_path).suffix or ".bin"
+            mask_record = _copy_settings_file(
+                source_path,
+                settings_dir / f"{stem}{suffix}",
+            )
+            mask_record["role"] = role
+            files.append(mask_record)
+
+    source_records = []
+    for position, source_path in enumerate(cfg.get("_SOURCE_IMAGE_FILES", []) or []):
+        source = pl.Path(source_path).expanduser().resolve()
+        if not source.is_file():
+            if strict:
+                raise FileNotFoundError(
+                    f"Source image disappeared before provenance capture: {source}"
+                )
+            continue
+        parsed = _study_parse_source_name(source.name) or {}
+        source_records.append(
+            {
+                "position": position,
+                "path": str(source),
+                "name": source.name,
+                "size_bytes": int(source.stat().st_size),
+                "sha256": _sha256_file(source),
+                "z_index": parsed.get("z"),
+                "channel": parsed.get("channel"),
+                "stack_key": parsed.get("stack_key"),
+            }
+        )
+    source_manifest_path = settings_dir / "source_image_manifest.json"
+    _study_atomic_json(source_manifest_path, {"ordered_source_images": source_records})
+    files.append(
+        {
+            "role": "source_image_manifest",
+            "original_path": "",
+            "copied_path": str(source_manifest_path),
+            "size_bytes": int(source_manifest_path.stat().st_size),
+            "sha256": _sha256_file(source_manifest_path),
+        }
+    )
+
     manifest = {
         "pipeline_version": _VERSION,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -11883,10 +12030,11 @@ def organize_multisample_study_copy(
     return organized_rows, summary
 
 
-def validate_multisample_manifest(rows):
+def validate_multisample_manifest(rows, cfg=None):
     """Validate study rows and return copied rows plus a flat error list."""
     from PIL import Image
 
+    validation_cfg = CONFIG if cfg is None else cfg
     validated = []
     errors = []
     seen_ids = set()
@@ -11908,6 +12056,7 @@ def validate_multisample_manifest(rows):
         pattern = str(row.get("file_pattern", "")).strip()
         source_files = []
         z_values = []
+        source_kinds = set()
         if not folder.is_dir():
             row_errors.append("input directory missing")
         else:
@@ -11916,6 +12065,7 @@ def validate_multisample_manifest(rows):
                 if parsed:
                     source_files.append(path)
                     z_values.append(int(parsed["z"]))
+                    source_kinds.add(parsed.get("kind", ""))
             order = np.argsort(z_values) if z_values else []
             source_files = [source_files[int(i)] for i in order]
             z_values = [z_values[int(i)] for i in order]
@@ -11954,6 +12104,15 @@ def validate_multisample_manifest(rows):
                     row_errors.append("ROI is empty")
             except Exception as exc:
                 row_errors.append(f"ROI could not be read: {exc}")
+
+        metadata_path = pl.Path(str(row.get("calibration_metadata_path", "")))
+        if (
+            "leica" in source_kinds
+            and bool(row.get("include", True))
+            and bool(validation_cfg.get("REQUIRE_LEICA_METADATA", True))
+            and not metadata_path.is_file()
+        ):
+            row_errors.append("Leica calibration metadata XML missing")
 
         try:
             xy = float(row.get("xy_um_per_pixel", 0))
@@ -12320,11 +12479,6 @@ def _study_group_summary(specimen_frame):
         "median_area_length_width_um",
         "median_length_body_width_ratio",
         "body_width_available_fraction",
-        "median_body_width_um",
-        "median_body_width_p90_um",
-        "median_area_length_width_um",
-        "median_length_body_width_ratio",
-        "body_width_available_fraction",
         "median_3d_length_um",
         "median_3d_tortuosity",
         "median_3d_thickness_um",
@@ -12341,6 +12495,7 @@ def _study_group_summary(specimen_frame):
             if metric not in frame.columns:
                 continue
             values = pd.to_numeric(frame[metric], errors="coerce").dropna()
+            record[f"{metric}_specimen_count"] = int(len(values))
             record[f"{metric}_mean"] = float(values.mean()) if not values.empty else np.nan
             record[f"{metric}_median"] = float(values.median()) if not values.empty else np.nan
             record[f"{metric}_std"] = float(values.std(ddof=1)) if len(values) > 1 else np.nan
@@ -12765,17 +12920,18 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
     measurement_cards = [
         (
             "Estimated nuclei per 1,000 um2",
-            "Question: How many nuclei are present per unit of tissue area?",
+            "Question: How many nuclei are present per unit of sampled 2D ROI area?",
             "Meaning: An XY-area density. Higher values mean more reconstructed "
-            "nuclei within the ROI footprint, but deeper stacks can increase this "
+            "nuclei within the sampled ROI footprint, but deeper stacks can increase this "
             "number because stack depth is not included.",
         ),
         (
             "Estimated nuclei per 100,000 um3",
             "Question: How many nuclei are present per unit of sampled 3D volume?",
             "Meaning: A volume-normalized density. Higher values indicate more "
-            "nuclei within the sampled ROI volume. It adjusts for nominal stack "
-            "depth but remains sensitive to stack boundaries and tracking.",
+            "nuclei within a sampling denominator made by repeating the same 2D "
+            "ROI through the nominal stack depth. It is not anatomical tissue, "
+            "seminal-vesicle, or whole-organ volume.",
         ),
         (
             "Specimen median 2D length",
@@ -12808,9 +12964,9 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         (
             "Specimen median 3D tortuosity",
             "Question: Are nuclei straighter or more curved?",
-            "Meaning: Path length divided by end-to-end distance. A value near "
-            "1 indicates a straight nucleus; larger values indicate increasing "
-            "curvature or an irregular reconstructed path.",
+            "Meaning: The calibrated path through ordered slice centroids divided "
+            "by its end-to-end distance. A value near 1 indicates a straight "
+            "cross-slice trajectory; it does not trace the full nuclear surface.",
         ),
         (
             "Specimen median effective thickness",
@@ -12822,7 +12978,8 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         (
             "Specimen median volume",
             "Question: How much calibrated 3D mask volume does a typical nucleus occupy?",
-            "Meaning: Filled-mask area accumulated through Z. Higher values can "
+            "Meaning: Filled-mask area accumulated over observed Z slices only; "
+            "missing slabs are not interpolated. Higher values can "
             "reflect longer or thicker nuclei, but volume also depends on mask "
             "thresholds, Z sampling, and optical resolution.",
         ),
@@ -12977,6 +13134,11 @@ def _write_study_aggregates(output_root, rows, state):
                 track_frames.append(tracks)
 
     specimen_frame = pd.DataFrame(summaries)
+    completed_specimens = specimen_frame[
+        specimen_frame.get("status", pd.Series("", index=specimen_frame.index))
+        .astype(str)
+        .eq("complete")
+    ].copy()
     biological_columns = [
         "sample_id",
         "group",
@@ -12993,8 +13155,11 @@ def _write_study_aggregates(output_root, rows, state):
         "estimated_nuclei_per_1000_um2",
         "estimated_nuclei_per_100000_um3",
         "median_2d_length_um",
-        "median_2d_width_um",
-        "median_2d_length_width_ratio",
+        "median_body_width_um",
+        "median_body_width_p90_um",
+        "median_area_length_width_um",
+        "median_length_body_width_ratio",
+        "body_width_available_fraction",
         "median_3d_length_um",
         "median_3d_tortuosity",
         "median_3d_thickness_um",
@@ -13002,13 +13167,20 @@ def _write_study_aggregates(output_root, rows, state):
         "median_3d_z_span_um",
         "normalization_warning",
     ]
-    specimen_frame[
-        [column for column in biological_columns if column in specimen_frame.columns]
+    completed_specimens[
+        [column for column in biological_columns if column in completed_specimens.columns]
     ].to_csv(output_root / "specimen_summary.csv", index=False)
     specimen_frame.to_csv(output_root / "specimen_technical_qc.csv", index=False)
-    _study_group_summary(specimen_frame).to_csv(output_root / "group_summary.csv", index=False)
-    _study_atomic_json(output_root / "normalization_qc.json", _study_normalization_qc(specimen_frame))
-    comparison_frame, comparison_qc = _study_specimen_group_comparisons(specimen_frame)
+    _study_group_summary(completed_specimens).to_csv(
+        output_root / "group_summary.csv", index=False
+    )
+    _study_atomic_json(
+        output_root / "normalization_qc.json",
+        _study_normalization_qc(completed_specimens),
+    )
+    comparison_frame, comparison_qc = _study_specimen_group_comparisons(
+        completed_specimens
+    )
     comparison_frame.to_csv(
         output_root / "specimen_group_comparisons.csv",
         index=False,
@@ -13018,13 +13190,56 @@ def _write_study_aggregates(output_root, rows, state):
         comparison_qc,
     )
     _write_study_specimen_comparison_plot(
-        specimen_frame,
+        completed_specimens,
         comparison_frame,
         output_root / "specimen_group_comparison.pdf",
     )
     if track_frames:
-        pd.concat(track_frames, ignore_index=True).to_csv(output_root / "study_track_records.csv", index=False)
-    return summaries
+        study_tracks = pd.concat(track_frames, ignore_index=True)
+        study_tracks.to_csv(output_root / "study_track_records.csv", index=False)
+        technical_qc_dir = output_root / "technical_qc"
+        technical_qc_dir.mkdir(parents=True, exist_ok=True)
+        sensitivity_rows = []
+        for sample_id, frame in study_tracks.groupby("sample_id", sort=False):
+            valid = (
+                _study_series_bool(frame["technical_valid"])
+                if "technical_valid" in frame
+                else pd.Series(True, index=frame.index)
+            )
+            length = pd.to_numeric(frame.get("total_3d_length_um"), errors="coerce")
+            primary = frame.loc[valid].copy()
+            without_short = frame.loc[valid & (length >= 2.0)].copy()
+
+            def metric_median(data, column):
+                if column not in data or data.empty:
+                    return np.nan
+                return float(pd.to_numeric(data[column], errors="coerce").median())
+
+            sensitivity_rows.append(
+                {
+                    "sample_id": sample_id,
+                    "group": frame["group"].iloc[0],
+                    "primary_technical_valid_count": int(len(primary)),
+                    "below_2_um_count": int((valid & (length < 2.0)).sum()),
+                    "sensitivity_count_without_below_2_um": int(len(without_short)),
+                    "below_2_um_fraction": float(
+                        (valid & (length < 2.0)).sum() / max(valid.sum(), 1)
+                    ),
+                    "primary_median_length_um": metric_median(primary, "total_3d_length_um"),
+                    "sensitivity_median_length_um": metric_median(without_short, "total_3d_length_um"),
+                    "primary_median_body_width_um": metric_median(primary, "representative_body_width_um"),
+                    "sensitivity_median_body_width_um": metric_median(without_short, "representative_body_width_um"),
+                    "interpretation": (
+                        "Automated sensitivity only; below-2-um technical-valid "
+                        "tracks remain in the primary biological population."
+                    ),
+                }
+            )
+        pd.DataFrame(sensitivity_rows).to_csv(
+            technical_qc_dir / "below_2_um_specimen_sensitivity.csv",
+            index=False,
+        )
+    return completed_specimens.to_dict(orient="records")
 
 
 def run_multisample_study(
@@ -13048,7 +13263,8 @@ def run_multisample_study(
         is_set = getattr(stop_requested, "is_set", None)
         return bool(is_set()) if callable(is_set) else bool(stop_requested)
 
-    validated, errors = validate_multisample_manifest(rows)
+    cfg_template = CONFIG.copy() if base_cfg is None else dict(base_cfg)
+    validated, errors = validate_multisample_manifest(rows, cfg=cfg_template)
     included_errors = []
     for index, row in enumerate(validated, start=1):
         if row["include"] and row["status"] == "invalid":
@@ -13064,7 +13280,6 @@ def run_multisample_study(
         output_root / "study_exclusion_ledger.csv",
         study_root=study_root,
     )
-    cfg_template = CONFIG.copy() if base_cfg is None else dict(base_cfg)
     production_runner = batch_runner is None
     save_analysis_settings_bundle(
         output_root,
@@ -13354,7 +13569,7 @@ class SpermGUI:
             else os.path.dirname(os.path.abspath(__file__))
         )
         filepath = filedialog.askopenfilename(
-            title="Select v5.7 U-Net Checkpoint",
+            title="Select v5.7.1 U-Net Checkpoint",
             filetypes=[
                 ("PyTorch checkpoints", "*.pt *.pth"),
                 ("All Files", "*.*"),
@@ -13477,7 +13692,7 @@ class SpermGUI:
         if not slice_str:
             return
 
-        tuner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "tune_parameters_Saturnv5_7.py")
+        tuner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "tune_parameters_Saturnv5_7_1.py")
         if not os.path.exists(tuner_path):
             messagebox.showerror("Tuner Missing", f"Could not find tuner:\n{tuner_path}")
             return
@@ -13527,7 +13742,7 @@ class SpermGUI:
         workspace = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "utils",
-            "tuner_gui_Saturnv5_7.py",
+            "tuner_gui_Saturnv5_7_1.py",
         )
         if not os.path.isfile(workspace):
             messagebox.showerror(
@@ -15277,7 +15492,7 @@ class SpermGUI:
             crop_roi = roi_mask
 
             t0 = _t.time()
-            log("  v5.7 U-Net-ready single-pass analysis...")
+            log("  v5.7.1 U-Net-ready single-pass analysis...")
             preview_context = build_stack_preprocess_context(
                 self.files,
                 roi_mask,
@@ -15935,6 +16150,7 @@ class SpermGUI:
 def launch_gui():
     if not _TK_AVAILABLE:
         raise RuntimeError("Tkinter GUI components are not available in this Python environment.")
+    activate_default_production_profile(CONFIG)
     root = tk.Tk()
     app = SpermGUI(root)
     root.mainloop()
@@ -15944,9 +16160,31 @@ def launch_gui():
 # ENTRY POINT
 # =============================================================================
 
+DEFAULT_PRODUCTION_PROFILE = os.path.join(
+    PROJECT_ROOT,
+    "production_profiles",
+    "saturn_v5_7_1_model_c_epoch003.json",
+)
+
+
+def activate_default_production_profile(cfg):
+    """Load the reviewed v5.7.1 profile unless a profile is already active."""
+    if str(cfg.get("_ACTIVE_PROFILE_PATH", "")).strip():
+        return cfg
+    if not os.path.isfile(DEFAULT_PRODUCTION_PROFILE):
+        raise FileNotFoundError(
+            f"Required v5.7.1 production profile is missing: {DEFAULT_PRODUCTION_PROFILE}"
+        )
+    loaded, _ = load_analysis_profile(DEFAULT_PRODUCTION_PROFILE, cfg)
+    validate_analysis_runtime_config(loaded)
+    cfg.clear()
+    cfg.update(loaded)
+    return cfg
+
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
+    initialize_session_logging()
     print(f"\n{'='*60}")
     print(f" SPERMATID ANALYSIS PIPELINE - v{_VERSION} - INITIALIZING...")
     print(f" Mode: {'GUI' if '--gui' in sys.argv or len(sys.argv)<=1 else 'CLI'}")
@@ -15962,7 +16200,8 @@ if __name__ == "__main__":
     ap.add_argument("--roi-mask", type=str, default=None, help="Optional .npy/.tif ROI mask for batch processing")
     args = ap.parse_args()
 
-    # Load tuned parameters from JSON if provided
+    # Load tuned parameters from JSON if provided; otherwise use the reviewed
+    # versioned production profile for GUI, single-slice, and batch workflows.
     if args.params:
         params_path = os.path.abspath(args.params)
         if os.path.exists(params_path):
@@ -15976,6 +16215,8 @@ if __name__ == "__main__":
             print(f"  {analysis_profile_summary(CONFIG)}")
         else:
             raise FileNotFoundError(f"Params file not found: {params_path}")
+    else:
+        activate_default_production_profile(CONFIG)
 
     if args.roi_mask:
         CONFIG["ROI_MASK_PATH"] = os.path.abspath(args.roi_mask)

@@ -16,7 +16,7 @@ From PowerShell:
 ```powershell
 Set-Location "C:\Users\dmishra\Desktop\sperm_project"
 .\.venv\Scripts\Activate.ps1
-python .\sperm_segmentation_saturnv5.7.py --gui
+python .\sperm_segmentation_saturnv5.7.1.py --gui
 ```
 
 Launching without `--gui` also opens the application:
@@ -136,7 +136,7 @@ $Roi = Join-Path $Images "analysis_roi_v5_7.npy"
 $Profile = "C:\path\to\reviewed_base_profile.json"
 $Checkpoint = "C:\path\to\epoch_003.pt"
 
-& $Python .\utils\tuner_gui_Saturnv5_7.py `
+& $Python .\utils\tuner_gui_Saturnv5_7_1.py `
   --dir $Images `
   --roi-mask $Roi `
   --base-params $Profile `
@@ -147,16 +147,16 @@ Before a new tuning campaign, verify that the core tuner imports and its
 internal contracts pass:
 
 ```powershell
-& $Python .\utils\tune_parameters_Saturnv5_7.py --self-check
+& $Python .\utils\tune_parameters_Saturnv5_7_1.py --self-check
 ```
 
 Use the files in this order:
 
-1. `sperm_segmentation_saturnv5.7.py`: open the production GUI, load a stack,
+1. `sperm_segmentation_saturnv5.7.1.py`: open the production-candidate GUI, load a stack,
    and draw or load its ROI.
-2. `utils/tuner_gui_Saturnv5_7.py`: graphical tuning launcher. Normally open
+2. `utils/tuner_gui_Saturnv5_7_1.py`: graphical tuning launcher. Normally open
    it with **Open Tuning Workspace**, rather than running it manually.
-3. `utils/tune_parameters_Saturnv5_7.py`: core one-stack tuning engine invoked
+3. `utils/tune_parameters_Saturnv5_7_1.py`: core one-stack tuning engine invoked
    by the workspace.
 4. `scripts/run_v57_mixed_unet_primary_tuning.py`: balanced multi-specimen
    orchestrator invoked by the workspace's **Balanced Multi-Sample** tab.

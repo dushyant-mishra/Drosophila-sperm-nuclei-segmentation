@@ -59,6 +59,11 @@ else:
 
 CONFIG = segmentation.CONFIG.copy()
 DEFAULT_OUTPUT_DIR = Path("parameter_tuning_results_v5_7_1")
+DEFAULT_PRODUCTION_PROFILE = (
+    Path(parent_dir)
+    / "production_profiles"
+    / "saturn_v5_7_1_model_c_epoch003.json"
+)
 ROI_SAVE_PATH = DEFAULT_OUTPUT_DIR / "last_drawn_roi_saturnv5_7_1_tune.tif"
 UNET_CACHE_CONFIG_KEYS = (
     "UNET_OUTPUT_MODE",
@@ -2154,14 +2159,21 @@ def main(argv=None):
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     cfg = CONFIG.copy()
-    cfg.update(merge_base_params(args.base_params))
+    base_params = list(args.base_params)
+    if not base_params:
+        if not DEFAULT_PRODUCTION_PROFILE.is_file():
+            raise FileNotFoundError(
+                f"Required production profile is missing: {DEFAULT_PRODUCTION_PROFILE}"
+            )
+        base_params = [str(DEFAULT_PRODUCTION_PROFILE)]
+    cfg.update(merge_base_params(base_params))
     cfg["ANALYSIS_MODE"] = "comparative"
     cfg["COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL"] = True
     cfg["ASSIGNMENT_LENGTH_WEIGHT"] = 0.0
     cfg["ASSIGNMENT_WIDTH_WEIGHT"] = 0.0
     cfg["ASSIGNMENT_AREA_WEIGHT"] = 0.0
-    if args.base_params:
-        active_profile = Path(args.base_params[-1]).expanduser().resolve()
+    if base_params:
+        active_profile = Path(base_params[-1]).expanduser().resolve()
         cfg["_ACTIVE_PROFILE_PATH"] = str(active_profile)
         cfg["_ACTIVE_PROFILE_NAME"] = active_profile.name
     if args.unet_model:
