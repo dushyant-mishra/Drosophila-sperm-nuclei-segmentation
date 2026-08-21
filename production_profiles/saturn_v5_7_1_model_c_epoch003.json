@@ -2,7 +2,7 @@
   "RUN_MODE": "single",
   "ANALYSIS_MODE": "comparative",
   "SINGLE_IMAGE_SELECTION_MODE": "dialog",
-  "SINGLE_TEST_IMAGE": "C:\\Users\\dmishra\\Desktop\\sperm images\\Project001_Series002_z15_ch00.tif",
+  "SINGLE_TEST_IMAGE": "",
   "SINGLE_Z_INDEX": 15,
   "INPUT_DIR": ".",
   "OUTPUT_DIR": "./sperm_results_saturnv5_7",
@@ -162,6 +162,9 @@
   "TRACK_BBOX_PADDING_PX": 2,
   "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 20.0,
   "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": true,
+  "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM": 2.0,
+  "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG": 35.0,
+  "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM": 2.0,
   "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": 0.7668,
   "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": 0.3134,
   "CONSERVATIVE_MAX_AREA_JUMP_RATIO": 0.5522,
@@ -223,7 +226,7 @@
     "z_um_per_slice": 0.3461840909090909,
     "metadata_validation_policy": "required_per_specimen_before_analysis",
     "metadata_validation_passed": null,
-    "note": "Versioned v5.7.1 profile. Model C epoch 3 is fixed at foreground 0.60 and core 0.50 for conservative morphometry. Epoch 12 remains sensitivity-only. Comparative global assignment is morphology-neutral: length, width, and area remain measurable phenotypes rather than link vetoes. Centroid displacement is capped at TRACK_MAX_DIST_UM and proposed reconstructed joins above 20 um are rejected without deleting the original 2D detections.",
+    "note": "Versioned v5.7.1 profile. Model C epoch 3 is fixed at foreground 0.60 and core 0.50 for conservative morphometry. Epoch 12 remains sensitivity-only. Comparative global assignment is morphology-neutral: length, width, and area remain measurable phenotypes rather than link vetoes. Centroid displacement and objective technical-integrity rules constrain links; long tracks remain measurable with morphology warnings.",
     "candidate_role": "reviewed_base",
     "source_stratum_results": [
       "parameter_tuning_results_v5_7_1\\mixed_tracking\\KJ_01\\tuning_results_saturnv5_7_unet_primary_tracking.json",
@@ -243,28 +246,28 @@
         "result_path": "parameter_tuning_results_v5_7_1\\mixed_tracking\\KJ_01\\tuning_results_saturnv5_7_unet_primary_tracking.json",
         "xy_um_per_pixel": 0.37841796875,
         "z_um_per_slice": 0.3461841379310345,
-        "metadata_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\MetaData\\Project001_Series002.xml",
+        "metadata_path": "KJ_01/MetaData/Project001_Series002.xml",
         "acquisition_class": "microscope=DMI8-CS; objective=HC PL APO CS2    40x/1.30 OIL; magnification=40; NA=1.3; zoom=0.75; gain=99.9981315396114; time_gate=0"
       },
       {
         "result_path": "parameter_tuning_results_v5_7_1\\mixed_tracking\\KJ_13\\tuning_results_saturnv5_7_unet_primary_tracking.json",
         "xy_um_per_pixel": 0.37841796875,
         "z_um_per_slice": 0.3461840476190476,
-        "metadata_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-13\\MetaData\\Project001_Series015.xml",
+        "metadata_path": "KJ_13/MetaData/Project001_Series015.xml",
         "acquisition_class": "microscope=DMI8-CS; objective=HC PL APO CS2    40x/1.30 OIL; magnification=40; NA=1.3; zoom=0.75; gain=99.9981315396114; time_gate=0"
       },
       {
         "result_path": "parameter_tuning_results_v5_7_1\\mixed_tracking\\WT_01\\tuning_results_saturnv5_7_unet_primary_tracking.json",
         "xy_um_per_pixel": 0.37841796875,
         "z_um_per_slice": 0.3461840909090909,
-        "metadata_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\MetaData\\Project001_Series001.xml",
+        "metadata_path": "WT_01/MetaData/Project001_Series001.xml",
         "acquisition_class": "microscope=DMI8-CS; objective=HC PL APO CS2    40x/1.30 OIL; magnification=40; NA=1.3; zoom=0.75; gain=99.9981315396114; time_gate=0"
       },
       {
         "result_path": "parameter_tuning_results_v5_7_1\\mixed_tracking\\WT_13\\tuning_results_saturnv5_7_unet_primary_tracking.json",
         "xy_um_per_pixel": 0.37841796875,
         "z_um_per_slice": 0.3461840909090909,
-        "metadata_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-13\\MetaData\\Project001_Series013.xml",
+        "metadata_path": "WT_13/MetaData/Project001_Series013.xml",
         "acquisition_class": "microscope=DMI8-CS; objective=HC PL APO CS2    40x/1.30 OIL; magnification=40; NA=1.3; zoom=0.75; gain=99.9981315396114; time_gate=0"
       }
     ]

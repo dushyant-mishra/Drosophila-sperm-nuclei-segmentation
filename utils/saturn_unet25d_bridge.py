@@ -66,7 +66,10 @@ def _configure_deterministic_inference(torch, cfg, device):
         if hasattr(torch.backends, "cudnn"):
             torch.backends.cudnn.benchmark = False
             torch.backends.cudnn.deterministic = True
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        # Fail rather than silently labelling a nondeterministic inference as
+        # reproducible. Unsupported device operations must be surfaced to the
+        # user or run on a deterministic fallback device.
+        torch.use_deterministic_algorithms(True, warn_only=False)
     if isinstance(cfg, dict):
         cfg["_UNET_RUNTIME_PROVENANCE"] = {
             "requested_device": str(cfg.get("UNET_DEVICE", "auto")),

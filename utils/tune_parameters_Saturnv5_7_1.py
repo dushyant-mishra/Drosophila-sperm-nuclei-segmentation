@@ -325,10 +325,15 @@ def checkpoint_signature(path):
 def image_signature(path):
     p = Path(path)
     st = p.stat()
+    digest = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
     return {
         "path": str(p.resolve()),
         "size": int(st.st_size),
         "mtime_ns": int(st.st_mtime_ns),
+        "sha256": digest.hexdigest(),
     }
 
 
@@ -371,7 +376,15 @@ def build_unet_probability_cache(cfg, cache_dir, force=False):
     manifest_path = cache_dir / "unet_probability_cache_manifest.json"
     manifest = unet_cache_manifest(cfg)
     previous = load_manifest(manifest_path)
-    compatible = (previous == manifest)
+    previous_base = (
+        {key: value for key, value in previous.items() if key != "cache_files"}
+        if isinstance(previous, dict)
+        else None
+    )
+    compatible = previous_base == manifest
+    previous_cache_files = (
+        previous.get("cache_files", {}) if isinstance(previous, dict) else {}
+    )
 
     cache = {}
     core_cache = {}
@@ -386,6 +399,25 @@ def build_unet_probability_cache(cfg, cache_dir, force=False):
             and out_path.exists()
             and (not dual_head or core_path.exists())
         ):
+            expected_foreground = previous_cache_files.get(
+                out_path.name, {}
+            ).get("sha256", "")
+            expected_core = previous_cache_files.get(
+                core_path.name, {}
+            ).get("sha256", "")
+            if (
+                not expected_foreground
+                or checkpoint_signature(out_path)["sha256"] != expected_foreground
+                or (
+                    dual_head
+                    and (
+                        not expected_core
+                        or checkpoint_signature(core_path)["sha256"] != expected_core
+                    )
+                )
+            ):
+                missing.append(int(z))
+                continue
             arr = tifffile.imread(str(out_path)).astype(np.float32)
             if arr.shape != np.asarray(images_to_eval[0]).shape:
                 missing.append(int(z))
@@ -429,12 +461,23 @@ def build_unet_probability_cache(cfg, cache_dir, force=False):
                     core,
                 )
                 core_cache[int(z)] = core
+        cache_files = {}
+        for z in z_values_eval:
+            foreground_path = cache_dir / f"z{int(z):02d}_unet_probability.tif"
+            cache_files[foreground_path.name] = checkpoint_signature(foreground_path)
+            if dual_head:
+                core_path = cache_dir / f"z{int(z):02d}_unet_core_probability.tif"
+                cache_files[core_path.name] = checkpoint_signature(core_path)
+        manifest["cache_files"] = cache_files
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
     else:
         print(f"Using cached U-Net probability maps: {cache_dir}")
 
     cfg["_UNET_CORE_PROBABILITY_CACHE"] = core_cache if dual_head else None
+    cfg["_UNET_PROBABILITY_CACHE_CHECKPOINT_SHA256"] = str(
+        manifest["checkpoint"]["sha256"]
+    ).lower()
     return cache
 
 

@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260821-v571-remediation-acceptance-rc3",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "5bb5a836e30ed0a8b4f6644e3e5f30d680f6ad4e",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "fail",
+    "calibration_provenance": "fail",
+    "measurement_geometry": "fail",
+    "repository_release": "fail",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "fail",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "measurement_geometry",
+      "title": "Reported 3D geodesic length is not a reconstructed 3D geodesic"
+    },
+    {
+      "role": "biological_validity",
+      "title": "Comparative tracking uses phenotype length as a hard technical veto above 20 um"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Manifest-locked Leica calibration is not bound to XML identity or contents"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Batch fallback can mix channels or unrelated stacks and overwrite duplicate Z planes"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Probability caches bypass mandatory checkpoint identity enforcement"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "Claimed report-to-source agreement is not independently auditable"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "No end-to-end identically framed visual chain includes tracking"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "WT wide-track identity is visually inconsistent"
+    },
+    {
+      "role": "repository_release",
+      "title": "No durable validation receipt is bound to the reviewed commit"
+    },
+    {
+      "role": "repository_release",
+      "title": "Current audit run has no completed gate result or immutable decision"
+    }
+  ],
+  "validation_errors": []
+}

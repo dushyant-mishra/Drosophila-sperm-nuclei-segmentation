@@ -148,6 +148,7 @@ Dushyant Mishra  |  Findlay Lab  |  Saturn Dataset Branch
 """
 
 import os, sys, glob, re, time, warnings, heapq, argparse, math, pathlib as pl
+import fnmatch
 import time as _t
 import json, webbrowser, threading, subprocess, shutil
 import xml.etree.ElementTree as ET
@@ -379,6 +380,9 @@ CONFIG = {
     "TRACK_BBOX_PADDING_PX": 2,
     "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM": 15.0,
     "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": True,
+    "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM": 2.0,
+    "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG": 35.0,
+    "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM": 2.0,
 
     # ------ conservative tracking stop-rules ---------------------------------------------------------------------------------------------------------------------------
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": 0.7668,      # Saturn V5 tuned default
@@ -535,6 +539,9 @@ _REQUIRED = {
     "TRACK_MAX_GAP_SLICES": int,
     "TRACK_BBOX_PADDING_PX": int,
     "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": bool,
+    "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM": (int, float),
+    "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG": (int, float),
+    "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM": (int, float),
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": float,
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": float,
     "CONSERVATIVE_MAX_AREA_JUMP_RATIO": float,
@@ -790,27 +797,36 @@ def validate_analysis_runtime_config(cfg):
             "unet_required": False,
             "checkpoint_path": "",
         }
-    cache = cfg.get("_UNET_PROBABILITY_CACHE")
     checkpoint = str(cfg.get("UNET_MODEL_PATH", "")).strip()
-    if cache is None and not checkpoint:
+    if not checkpoint:
         raise ValueError(
             f"{engine} requires a trained U-Net checkpoint. "
             "Load an analysis profile and select its .pt or .pth checkpoint."
         )
-    if cache is None and not os.path.isfile(checkpoint):
+    if not os.path.isfile(checkpoint):
         raise FileNotFoundError(f"U-Net checkpoint not found: {checkpoint}")
     expected_sha256 = str(cfg.get("UNET_CHECKPOINT_SHA256", "")).strip().lower()
-    checkpoint_sha256 = ""
-    if cache is None and checkpoint and expected_sha256:
-        if len(expected_sha256) != 64 or any(
-            char not in "0123456789abcdef" for char in expected_sha256
-        ):
-            raise ValueError("UNET_CHECKPOINT_SHA256 must be a 64-character SHA-256 digest")
-        checkpoint_sha256 = _sha256_file(checkpoint)
-        if checkpoint_sha256.lower() != expected_sha256:
+    if len(expected_sha256) != 64 or any(
+        char not in "0123456789abcdef" for char in expected_sha256
+    ):
+        raise ValueError(
+            "UNET_CHECKPOINT_SHA256 must be supplied as a 64-character SHA-256 digest"
+        )
+    checkpoint_sha256 = _sha256_file(checkpoint)
+    if checkpoint_sha256.lower() != expected_sha256:
+        raise ValueError(
+            "The selected U-Net checkpoint does not match the analysis profile. "
+            f"Expected SHA-256 {expected_sha256}, got {checkpoint_sha256}."
+        )
+    cache = cfg.get("_UNET_PROBABILITY_CACHE")
+    if cache is not None:
+        cache_checkpoint = str(
+            cfg.get("_UNET_PROBABILITY_CACHE_CHECKPOINT_SHA256", "")
+        ).strip().lower()
+        if cache_checkpoint != checkpoint_sha256.lower():
             raise ValueError(
-                "The selected U-Net checkpoint does not match the analysis profile. "
-                f"Expected SHA-256 {expected_sha256}, got {checkpoint_sha256}."
+                "Cached U-Net probabilities are not authenticated for the selected "
+                "checkpoint. Rebuild the probability cache."
             )
     return {
         "segmentation_engine": engine,
@@ -1040,13 +1056,9 @@ def load_batch_files(input_dir, pattern):
     """
     Discovers and sorts all image files for a batch run.
 
-    Uses a three-tier fallback strategy so the pipeline works even when
-    users supply unusual file extensions or mixed case (.TIF vs .tif):
-
-    1. Exact pattern match (e.g. ``Project001_Series002_z*_ch00.tif``).
-    2. ``.tif`` -> ``.tiff`` substitution.
-    3. Broad glob over all supported extensions (tif, tiff, png, jpg, jpeg)
-       in both lower- and upper-case variants.
+    Pattern matching is case-insensitive and tolerates ``.tif``/``.tiff``.
+    Production discovery then fails closed unless every file has one
+    parseable stack identity, channel 0, and a unique Z index.
 
     After discovery, files are sorted with :func:`natural_sort_key` so that
     ``z2`` comes before ``z10`` (lexicographic sort would reverse this).  A
@@ -1063,25 +1075,36 @@ def load_batch_files(input_dir, pattern):
     Raises:
         FileNotFoundError: If no matching images are found after all fallbacks.
     """
-    files = glob.glob(os.path.join(input_dir, pattern))
-    if not files:
-        # Fallback 1: .tif -> .tiff extension swap
-        files = glob.glob(os.path.join(input_dir, pattern.replace(".tif", ".tiff")))
-    if not files:
-        # Fallback 2: Broad scan of all supported image formats
-        for ext in ['*.tif', '*.tiff', '*.png', '*.jpg', '*.jpeg']:
-            files.extend(glob.glob(os.path.join(input_dir, ext)))
-            files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
-        files = list(set(files))  # remove cross-extension duplicates
+    input_path = pl.Path(input_dir)
+    patterns = {str(pattern).lower()}
+    lowered = str(pattern).lower()
+    if lowered.endswith(".tif"):
+        patterns.add(lowered + "f")
+    elif lowered.endswith(".tiff"):
+        patterns.add(lowered[:-1])
+    files = [
+        str(path)
+        for path in input_path.iterdir()
+        if path.is_file()
+        and any(fnmatch.fnmatch(path.name.lower(), candidate) for candidate in patterns)
+    ]
 
     if not files:
         raise FileNotFoundError(f"No supported image files found in '{input_dir}'")
 
-    # Natural sort preserves correct Z-stack ordering (z2 < z10)
-    files = sorted(files, key=natural_sort_key)
-
-    # Extract z-index from filename pattern; fall back to sequence index
-    z_idx = [extract_z_index(f, sequence_idx=i) for i, f in enumerate(files)]
+    parsed = [(_study_parse_source_name(pl.Path(path).name), path) for path in files]
+    if any(item is None for item, _path in parsed):
+        names = [pl.Path(path).name for item, path in parsed if item is None]
+        raise ValueError(f"Unparseable source-image identity: {names}")
+    stack_keys = {item["stack_key"] for item, _path in parsed}
+    if len(stack_keys) != 1:
+        raise ValueError(f"Batch pattern matched multiple stack identities: {stack_keys}")
+    z_idx = [int(item["z"]) for item, _path in parsed]
+    if len(z_idx) != len(set(z_idx)):
+        raise ValueError(f"Batch pattern matched duplicate Z indices: {z_idx}")
+    ordered = sorted(zip(z_idx, files), key=lambda item: item[0])
+    z_idx = [item[0] for item in ordered]
+    files = [item[1] for item in ordered]
 
     print(f"Found {len(files)} slices: Z = {z_idx}")
     return files, z_idx
@@ -4881,15 +4904,16 @@ def _estimated_tracking_extension_length_um(
 
 
 def _tracking_max_joined_length_um(cfg):
-    """Return the technical join guard for the active analysis workflow."""
-    engine = str(
-        cfg.get("SEGMENTATION_ENGINE", "classical_saturn")
-    ).strip().lower()
+    """Return an optional non-comparative joined-length guard.
+
+    Comparative WT/mutant analysis cannot use morphology length alone to veto
+    an otherwise technically plausible link. Long reconstructed objects remain
+    measurable with warnings and can still be rejected by displacement,
+    duplicate-Z, overlap, or objective multi-object evidence.
+    """
     mode = str(cfg.get("ANALYSIS_MODE", "comparative")).strip().lower()
-    if engine == "unet_primary" and mode == "comparative":
-        return float(
-            cfg.get("UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM", 20.0)
-        )
+    if mode == "comparative":
+        return None
     return float(
         cfg.get("TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", 15.0)
     )
@@ -4936,7 +4960,10 @@ def check_extension_consistency(prev_state, candidate_detection, cfg, overlap_ex
         cand_length,
         cfg,
     )
-    if estimated_joined_length > max_joined_length:
+    if (
+        max_joined_length is not None
+        and estimated_joined_length > max_joined_length
+    ):
         return False, (
             f"technical_joined_length={estimated_joined_length:.2f}um"
             f">{max_joined_length:.2f}um"
@@ -5413,27 +5440,35 @@ def track_across_slices_legacy(detections_df, cfg):
     # Geodesic vertical displacement for Euclidean distance is purely centroid-to-centroid
     dz_euc = z_span
 
-    # 2. Total 3D Length (Lateral-Corrected Hypotenuse)
-    # The physical 3D shape arc relies on the maximum length of its 2D projection
+    # 2. Projection-plus-Z extent. This is not an integrated 3D centerline.
     euc_2d_centroid = np.sqrt((ts["x_end"] - ts["x_start"])**2 + (ts["y_end"] - ts["y_start"])**2) * um_xy
     lat_geodesic = np.maximum(ts["max_length_2d"], euc_2d_centroid)
     l3d = np.sqrt(lat_geodesic**2 + z_span**2)
+    ts["projection_z_extent_um"] = l3d
+    ts["projection_z_extent_method"] = (
+        "hypotenuse_of_max_2d_projection_or_centroid_span_and_z_span"
+    )
+    # Compatibility alias retained for older consumers. Reports and new
+    # analyses use the explicitly named projection_z_extent_um field.
     ts["total_3d_length_um"] = l3d
 
-    # 3. 3D Volume (sum of per-slice projected area estimates * Z_step)
+    # 3. Observed-slice mask slab sum; no missing-plane interpolation.
     ts["observed_slice_mask_volume_um3"] = (
         ts["sum_volume_area_px"] * (um_xy**2) * um_z
     )
 
-    # 4. 3D Tortuosity (Total 3D Geodesic Length / 3D End-To-End Euclidean Distance)
+    # 4. Ordered centroid-path tortuosity.
     ts = _attach_explicit_track_geometry(df, ts, cfg)
 
     # 5. Taper Ratio (max/min area across the full track)
     ts["taper_ratio"] = ts["max_area_px"] / np.maximum(ts["min_area_px"], 0.001)
 
     # 6. Effective Thickness / Diameter
-    cross_area = ts["volume_um3"] / np.maximum(ts["total_3d_length_um"], 0.1)
-    ts["thickness_um"] = 2 * np.sqrt(cross_area / np.pi)
+    cross_area = ts["observed_slice_mask_volume_um3"] / np.maximum(
+        ts["projection_z_extent_um"], 0.1
+    )
+    ts["observed_slab_effective_thickness_um"] = 2 * np.sqrt(cross_area / np.pi)
+    ts["thickness_um"] = ts["observed_slab_effective_thickness_um"]
 
     # 7. Orientation Angles (Pitch and Yaw)
     dx = (ts["x_end"] - ts["x_start"]) * um_xy
@@ -5454,9 +5489,9 @@ def track_across_slices_legacy(detections_df, cfg):
     ts = _attach_representative_body_width(df, ts)
 
     cols_ordered = [
-        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "observed_slice_mask_volume_um3", "tortuosity_3d",
+        "track_id", "projection_z_extent_um", "projection_z_extent_method", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "observed_slice_mask_volume_um3", "volume_um3", "tortuosity_3d",
         "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
-        "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
+        "observed_slab_effective_thickness_um", "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
         "median_width_2d", "median_length_width_ratio_2d", "sum_area_px", "sum_volume_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end"
@@ -5482,8 +5517,10 @@ def track_across_slices_legacy(detections_df, cfg):
 def _angle_diff_deg(a, b):
     if a is None or b is None or not np.isfinite(a) or not np.isfinite(b):
         return 0.0
-    d = abs(float(a) - float(b)) % 180.0
-    return min(d, 180.0 - d)
+    # skimage regionprops orientation is in radians and is axial: theta and
+    # theta + pi describe the same long-axis direction.
+    d = abs(float(a) - float(b)) % math.pi
+    return math.degrees(min(d, math.pi - d))
 
 
 def _relative_change(a, b):
@@ -5616,6 +5653,7 @@ def _attach_explicit_track_geometry(detections, track_summary, cfg):
     output["tortuosity_3d"] = output["centroid_path_tortuosity_3d"]
     output["tortuosity_3d_method"] = "ordered_calibrated_centroid_path"
     output["volume_um3"] = output["observed_slice_mask_volume_um3"]
+    output["volume_um3_legacy_alias"] = output["observed_slice_mask_volume_um3"]
     output["volume_method"] = "sum_filled_mask_area_observed_slices_no_interpolation"
     return output
 
@@ -5680,6 +5718,10 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
     euc_2d_centroid = np.sqrt((ts["x_end"] - ts["x_start"])**2 + (ts["y_end"] - ts["y_start"])**2) * um_xy
     lat_geodesic = np.maximum(ts["max_length_2d"], euc_2d_centroid)
     l3d = np.sqrt(lat_geodesic**2 + z_span**2)
+    ts["projection_z_extent_um"] = l3d
+    ts["projection_z_extent_method"] = (
+        "hypotenuse_of_max_2d_projection_or_centroid_span_and_z_span"
+    )
     ts["total_3d_length_um"] = l3d
     ts["observed_slice_mask_volume_um3"] = (
         ts["sum_volume_area_px"] * (um_xy**2) * um_z
@@ -5687,8 +5729,11 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
     ts = _attach_explicit_track_geometry(df, ts, cfg)
     ts["taper_ratio"] = ts["max_area_px"] / np.maximum(ts["min_area_px"], 0.001)
 
-    cross_area = ts["volume_um3"] / np.maximum(ts["total_3d_length_um"], 0.1)
-    ts["thickness_um"] = 2 * np.sqrt(cross_area / np.pi)
+    cross_area = ts["observed_slice_mask_volume_um3"] / np.maximum(
+        ts["projection_z_extent_um"], 0.1
+    )
+    ts["observed_slab_effective_thickness_um"] = 2 * np.sqrt(cross_area / np.pi)
+    ts["thickness_um"] = ts["observed_slab_effective_thickness_um"]
 
     dx = (ts["x_end"] - ts["x_start"]) * um_xy
     dy = (ts["y_end"] - ts["y_start"]) * um_xy
@@ -5725,9 +5770,9 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
                 unet_summary_cols.extend([f"track_mean_{prob_col}", f"track_max_{prob_col}"])
 
     cols_ordered = [
-        "track_id", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "volume_um3", "observed_slice_mask_volume_um3", "tortuosity_3d",
+        "track_id", "projection_z_extent_um", "projection_z_extent_method", "total_3d_length_um", "z_extent_um", "z_span_um", "z_covered_um", "observed_slice_mask_volume_um3", "volume_um3", "tortuosity_3d",
         "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
-        "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
+        "observed_slab_effective_thickness_um", "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
         "median_width_2d", "median_length_width_ratio_2d", "sum_area_px", "sum_volume_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end",
@@ -5841,9 +5886,10 @@ def track_across_slices_global_assignment(detections_df, cfg):
                         det["length"],
                         cfg,
                     )
+                    max_joined_length = _tracking_max_joined_length_um(cfg)
                     if (
-                        estimated_joined_length
-                        > _tracking_max_joined_length_um(cfg)
+                        max_joined_length is not None
+                        and estimated_joined_length > max_joined_length
                     ):
                         continue
                     dx = det["x"] - st["last_x"]
@@ -5854,13 +5900,44 @@ def track_across_slices_global_assignment(detections_df, cfg):
                     # guard. A large or fused bounding box must not bypass it.
                     if dist_um > max_dist_um:
                         continue
+                    gap_slices = int(z - st["last_z"])
+                    adjacent_limit = float(
+                        cfg.get(
+                            "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM",
+                            max_dist_um,
+                        )
+                    )
+                    if gap_slices == 1 and dist_um > adjacent_limit:
+                        continue
+
+                    angle_change = _angle_diff_deg(
+                        det["orientation"], st.get("last_orientation")
+                    )
+                    orientation_min_length = float(
+                        cfg.get("TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM", 2.0)
+                    )
+                    previous_length = st.get("last_length")
+                    if (
+                        det["length"] is not None
+                        and previous_length is not None
+                        and det["length"] >= orientation_min_length
+                        and previous_length >= orientation_min_length
+                        and angle_change
+                        > float(
+                            cfg.get(
+                                "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG",
+                                35.0,
+                            )
+                        )
+                    ):
+                        continue
 
                     dist_term = dist_um / max(max_dist_um, 1e-9)
                     overlap_term = 1.0 - overlap
                     length_term = _relative_change(det["length"], st.get("last_length"))
                     width_term = _relative_change(det["width"], st.get("last_width"))
                     area_term = _relative_change(det["area"], st.get("last_area"))
-                    angle_term = _angle_diff_deg(det["orientation"], st.get("last_orientation")) / 90.0
+                    angle_term = angle_change / 90.0
                     unet_term, _, _ = _unet_link_cost_terms(
                         det["unet_probability"],
                         st.get("last_unet_probability"),
@@ -6234,8 +6311,8 @@ def _orientation_difference_degrees(first, second):
     if not np.isfinite(first_value) or not np.isfinite(second_value):
         return 0.0
 
-    raw_difference = abs(first_value - second_value) % 180.0
-    return min(raw_difference, 180.0 - raw_difference)
+    raw_difference = abs(first_value - second_value) % math.pi
+    return math.degrees(min(raw_difference, math.pi - raw_difference))
 
 
 def _first_available_value(row, names, default=np.nan):
@@ -6930,8 +7007,8 @@ def _comparative_audit_masks(df_tracks, cfg):
             bad = ~np.isfinite(pd.to_numeric(df_tracks[col], errors="coerce"))
             technical_masks.append((f"invalid_{col}", bad))
 
-    if "total_3d_length_um" in df_tracks.columns:
-        length = pd.to_numeric(df_tracks["total_3d_length_um"], errors="coerce")
+    if "projection_z_extent_um" in df_tracks.columns:
+        length = pd.to_numeric(df_tracks["projection_z_extent_um"], errors="coerce")
         invalid_length = (~np.isfinite(length)) | (length <= 0)
         technical_masks.append(("invalid_length", invalid_length))
         morphology_masks.extend([
@@ -6974,8 +7051,10 @@ def _comparative_audit_masks(df_tracks, cfg):
         pitch = pd.to_numeric(df_tracks["pitch_deg"], errors="coerce")
         morphology_masks.append(("unusual_pitch", (pitch < 5.0) | (pitch > 175.0)))
 
-    if "volume_um3" in df_tracks.columns:
-        volume = pd.to_numeric(df_tracks["volume_um3"], errors="coerce")
+    if "observed_slice_mask_volume_um3" in df_tracks.columns:
+        volume = pd.to_numeric(
+            df_tracks["observed_slice_mask_volume_um3"], errors="coerce"
+        )
         morphology_masks.append(("unusual_volume", volume <= 0))
 
     z_col = next((c for c in ("z_span_um", "z_covered_um") if c in df_tracks.columns), None)
@@ -7098,8 +7177,8 @@ def flag_quality_tracks(df_tracks, cfg):
     warning_masks = []
 
     # Length
-    if "total_3d_length_um" in df_tracks.columns:
-        long_mask = df_tracks["total_3d_length_um"] > cfg.get("AUDIT_MAX_LENGTH_UM", 15.0)
+    if "projection_z_extent_um" in df_tracks.columns:
+        long_mask = df_tracks["projection_z_extent_um"] > cfg.get("AUDIT_MAX_LENGTH_UM", 15.0)
         strict_masks.append(("long", long_mask))
         hard_masks.append(("long", long_mask))
 
@@ -7216,7 +7295,8 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
 
     column_map = {
         "track_id": "estimated_nucleus_id",
-        "total_3d_length_um": "length_3d_um",
+        "projection_z_extent_um": "projection_z_extent_um",
+        "total_3d_length_um": "projection_z_extent_um_legacy_alias",
         "max_length_2d": "maximum_2d_length_um",
         "representative_body_width_um": "body_width_um",
         "representative_body_width_p90_um": "body_width_p90_um",
@@ -7247,7 +7327,8 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
     summary = pd.DataFrame([{
         "analysis_population": "included estimated nuclei",
         "estimated_unique_nuclei": int(len(primary)),
-        "median_3d_length_um": median("total_3d_length_um"),
+        "median_projection_z_extent_um": median("projection_z_extent_um"),
+        "median_3d_length_um": median("projection_z_extent_um"),
         "median_maximum_2d_length_um": median("max_length_2d"),
         "median_body_width_um": median("representative_body_width_um"),
         "median_body_width_p90_um": median(
@@ -7405,7 +7486,8 @@ def build_analysis_summary(
         ),
         "biological_count_available": bool(tracking_completed),
         "estimated_unique_nuclei": int(len(primary)) if tracking_completed else np.nan,
-        "median_3d_length_um": median(primary, "total_3d_length_um"),
+        "median_projection_z_extent_um": median(primary, "projection_z_extent_um"),
+        "median_3d_length_um": median(primary, "projection_z_extent_um"),
         "median_maximum_2d_length_um": median(primary, "max_length_2d"),
         "median_body_width_um": median(
             primary,
@@ -7491,6 +7573,7 @@ def export_analysis_summary(
     else:
         primary_keys.extend(
             [
+                "median_projection_z_extent_um",
                 "median_3d_length_um",
                 "median_maximum_2d_length_um",
                 "median_body_width_um",
@@ -7557,11 +7640,11 @@ def summarize_comparative_population(df):
         "morphology_warning_fraction": float(morphology_warning.sum() / denom),
     }
     metric_cols = {
-        "total_3d_length_um": "length",
-        "thickness_um": "width",
+        "projection_z_extent_um": "projection_z_extent",
+        "observed_slab_effective_thickness_um": "observed_slab_effective_thickness",
         "taper_ratio": "taper",
         "tortuosity_3d": "tortuosity",
-        "volume_um3": "volume",
+        "observed_slice_mask_volume_um3": "observed_slice_mask_volume",
         "z_span_um": "z_span",
         "pitch_deg": "pitch",
         "nearest_neighbor_um": "nearest_neighbor_distance",
@@ -7712,7 +7795,7 @@ def export_outlier_audit(out_dir, df_tracks, cfg):
     ensure_dir(audit_dir)
 
     # Robust column matching
-    length_col = next((c for c in ["total_3d_length_um", "length_3d_um_est", "max_length_um"] if c in df_tracks.columns), None)
+    length_col = next((c for c in ["projection_z_extent_um", "max_length_2d", "total_3d_length_um"] if c in df_tracks.columns), None)
     tort_col = next((c for c in ["tortuosity_3d", "tortuosity"] if c in df_tracks.columns), None)
     thick_col = next((c for c in ["thickness_um", "effective_thickness_um", "median_width_um"] if c in df_tracks.columns), None)
     taper_col = next((c for c in ["taper_ratio", "morphological_taper_ratio"] if c in df_tracks.columns), None)
@@ -7852,8 +7935,11 @@ def export_post_detection_qc(out_dir, df_detections, df_tracks):
                 single_frac = float((primary["n_slices"] <= 1).mean() * 100)
                 lines.append(f"\nSingle-slice tracks: {single_frac:.1f}%")
                 lines.append(f"Median n_slices: {float(primary['n_slices'].median()):.2f}")
-            if "total_3d_length_um" in primary.columns and not primary.empty:
-                lines.append(f"Median 3D length um: {float(primary['total_3d_length_um'].median()):.3f}")
+            if "projection_z_extent_um" in primary.columns and not primary.empty:
+                lines.append(
+                    "Median projection + Z extent um: "
+                    f"{float(primary['projection_z_extent_um'].median()):.3f}"
+                )
             if "z_span_um" in primary.columns and not primary.empty:
                 lines.append(f"Median Z-span um: {float(primary['z_span_um'].median()):.3f}")
             if "technical_valid" in df_tracks.columns:
@@ -7911,8 +7997,8 @@ def get_audit_flag_counts(df_tracks, cfg=None):
                 ).sum()
             )
     elif cfg is not None:
-        if "total_3d_length_um" in df_tracks.columns:
-            counts["long"] = int((df_tracks["total_3d_length_um"] > cfg.get("AUDIT_MAX_LENGTH_UM", 15.0)).sum())
+        if "projection_z_extent_um" in df_tracks.columns:
+            counts["long"] = int((df_tracks["projection_z_extent_um"] > cfg.get("AUDIT_MAX_LENGTH_UM", 15.0)).sum())
         if "tortuosity_3d" in df_tracks.columns:
             counts["tortuous"] = int((df_tracks["tortuosity_3d"] > cfg.get("AUDIT_MAX_TORTUOSITY", 1.5)).sum())
         if "thickness_um" in df_tracks.columns:
@@ -8329,8 +8415,8 @@ def process_batch(cfg):
         print(
             "Primary result | estimated unique nuclei: "
             f"{analysis_summary['estimated_unique_nuclei']} | "
-            "median 3D length: "
-            f"{analysis_summary['median_3d_length_um']:.3f} um"
+            "median projection + Z extent: "
+            f"{analysis_summary['median_projection_z_extent_um']:.3f} um"
         )
     else:
         print("No biological nucleus count was produced because 3D tracking was unavailable.")
@@ -8516,12 +8602,12 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 biologist_metrics = [
                     ("Analysis population", "Included estimated nuclei"),
                     ("Estimated unique nuclei", int(len(primary))),
-                    ("Median 3D length (um)", primary_median("total_3d_length_um")),
+                    ("Median projection + Z extent (um)", primary_median("projection_z_extent_um")),
                     ("Median maximum 2D length (um)", primary_median("max_length_2d")),
                     ("Median apparent body-mask width (um)", primary_median("representative_body_width_um")),
                     ("Median body-width P90 (um)", primary_median("representative_body_width_p90_um")),
                     ("Median length / body width", primary_median("length_body_width_ratio")),
-                    ("Median effective thickness (um; PSF-sensitive)", primary_median("thickness_um")),
+                    ("Median observed-slab effective thickness (um; PSF-sensitive)", primary_median("observed_slab_effective_thickness_um")),
                     ("Median 3D tortuosity", primary_median("tortuosity_3d")),
                     ("Median Z-span (um)", primary_median("z_span_um")),
                     ("Median slices detected", primary_median("n_slices")),
@@ -8571,10 +8657,10 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             if df_tracks is not None and not df_tracks.empty:
                 n_3d = len(df_tracks) + 1 if not df_tracks.empty else 2  # Default to 2 to avoid #DIV/0! bounds
                 metrics_3d = [
-                    ("3D Geodesic Length (um)", "total_3d_length_um"),
+                    ("Projection + Z extent (um)", "projection_z_extent_um"),
                     ("3D Z-Span (um)", "z_span_um"),
                     ("3D Z-Covered (um)", "z_covered_um"),
-                    ("3D Volume (um3)", "volume_um3"),
+                    ("Observed-slice mask slab sum (um3)", "observed_slice_mask_volume_um3"),
                     ("3D Tortuosity", "tortuosity_3d")
                 ]
                 for m_name, col_name in metrics_3d:
@@ -8660,7 +8746,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             dictionary_data = [
                 ["Metric", "Formula / Definition", "Biological Interpretation"],
                 ["2D Geodesic Length", "Shortest-path length along a 2D skeleton", "Curved fragment length within a single optical slice."],
-                ["Total 3D Geodesic Length", "sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)", "Projection-length plus Z-span estimate of whole-nucleus 3D length."],
+                ["Projection + Z extent", "sqrt(max(2D centerline, XY centroid span)^2 + z_span^2)", "Orientation-sensitive extent estimate; not an integrated 3D centerline."],
                 ["3D Centroid End-to-End Distance", "Calibrated straight-line distance between the first and last observed track centroids", "Straight-line span of the reconstructed centroid trajectory."],
                 ["3D Centroid-Path Tortuosity", "Sum of calibrated distances between ordered observed centroids / centroid end-to-end distance", "Trajectory continuity descriptor. A linked missing plane is spanned by a straight segment; this is not within-plane nuclear curvature."],
                 ["Z-Span (Vertical Span)", "(max_z - min_z) * UM_PER_SLICE_Z", "Endpoint-to-endpoint vertical span; single-slice tracks have span 0."],
@@ -8806,8 +8892,8 @@ def generate_batch_report(
 
             # Plot 2: primary estimated-nuclei length distribution.
             ax2 = fig_sum.add_subplot(2, 2, 4)
-            if has_candidate_data and "total_3d_length_um" in df_candidate_tracks.columns:
-                vals = df_candidate_tracks['total_3d_length_um'].dropna()
+            if has_candidate_data and "projection_z_extent_um" in df_candidate_tracks.columns:
+                vals = df_candidate_tracks['projection_z_extent_um'].dropna()
                 ax2.hist(vals, bins=25, color='darkorange', edgecolor='black', alpha=0.75, label='Estimated nuclei')
                 m_med = vals.median()
                 m_avg = vals.mean()
@@ -8867,7 +8953,7 @@ def generate_batch_report(
                 ax_metrics.axis("off")
                 metric_lines = [
                     ("Estimated unique nuclei", f"{len(primary):,}"),
-                    ("Median 3D length", f"{report_median('total_3d_length_um'):.2f} um"),
+                    ("Median projection + Z extent", f"{report_median('projection_z_extent_um'):.2f} um"),
                     ("Median maximum 2D length", f"{report_median('max_length_2d'):.2f} um"),
                     ("Median apparent body-mask width", f"{report_median('representative_body_width_um'):.2f} um"),
                     ("Median body-width P90", f"{report_median('representative_body_width_p90_um'):.2f} um"),
@@ -8890,18 +8976,18 @@ def generate_batch_report(
 
                 ax_length = fig_dyn.add_subplot(1, 2, 2)
                 ax_length.hist(
-                    primary["total_3d_length_um"].dropna(),
+                    primary["projection_z_extent_um"].dropna(),
                     bins=25,
                     color="#2ca02c",
                     edgecolor="black",
                     alpha=0.8,
                 )
                 ax_length.axvline(
-                    primary["total_3d_length_um"].median(),
+                    primary["projection_z_extent_um"].median(),
                     color="black",
                     linestyle="--",
                     linewidth=1.5,
-                    label=f"Median {primary['total_3d_length_um'].median():.2f} um",
+                    label=f"Median {primary['projection_z_extent_um'].median():.2f} um",
                 )
                 ax_length.set_title("Primary Population: 3D Length")
                 ax_length.set_xlabel("3D length (um)")
@@ -9009,14 +9095,14 @@ def generate_batch_report(
 
                 # 3D Length
                 ax3d_1 = fig_3d.add_subplot(2, 2, 1)
-                vals_q = df_q['total_3d_length_um']
+                vals_q = df_q['projection_z_extent_um']
                 ax3d_1.hist(vals_q, bins=20, color='darkorange', edgecolor='black', alpha=0.7, label='Estimated nuclei')
                 stats_len = vals_q
                 m_med = stats_len.median()
                 m_avg = stats_len.mean()
                 ax3d_1.axvline(m_med, color='red', linestyle='-', label=f"Median: {m_med:.1f}")
                 ax3d_1.axvline(m_avg, color='black', linestyle='--', label=f"Mean: {m_avg:.1f}")
-                ax3d_1.set_title("Total 3D Geodesic Length")
+                ax3d_1.set_title("Projection + Z Extent")
                 ax3d_1.set_xlabel("Length (um)")
                 ax3d_1.set_ylabel("Frequency")
                 ax3d_1.legend(fontsize=7)
@@ -9058,12 +9144,12 @@ def generate_batch_report(
 
                 # Volume
                 ax3d_4 = fig_3d.add_subplot(2, 2, 4)
-                vv_q = df_q['volume_um3']
+                vv_q = df_q['observed_slice_mask_volume_um3']
                 ax3d_4.hist(vv_q, bins=20, color='gray', edgecolor='black', alpha=0.7, label='Estimated nuclei')
                 stats_vol = vv_q
                 ax3d_4.axvline(stats_vol.median(), color='red', linestyle='-', label=f"Median: {stats_vol.median():.0f}")
                 ax3d_4.axvline(stats_vol.mean(), color='black', linestyle='--', label=f"Mean: {stats_vol.mean():.0f}")
-                ax3d_4.set_title("Approximated 3D Volume")
+                ax3d_4.set_title("Observed-Slice Mask Slab Sum")
                 ax3d_4.set_xlabel("Volume (um\u00b3)")
                 ax3d_4.set_ylabel("Frequency")
                 ax3d_4.legend(fontsize=7)
@@ -9135,9 +9221,9 @@ def generate_batch_report(
             guide_full = (
                 "METHODS, FORMULAE, AND AUDIT GUIDE\n"
                 f"{'='*80}\n\n"
-                "1. Total 3D Geodesic Length (um)\n"
-                "   Formula: L_3D = sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)\n"
-                "   Meaning: Projection-length plus Z-span estimate of whole-nucleus 3D length.\n\n"
+                "1. Projection + Z extent (um)\n"
+                "   Formula: sqrt(max(2D centerline, XY centroid span)^2 + z_span^2)\n"
+                "   Meaning: Orientation-sensitive extent; not an integrated 3D centerline.\n\n"
                 "Apparent Central-body Mask Width (um; v5.7.1 primary width)\n"
                 "   Formula: median boundary-to-boundary chord normal to the smoothed centerline,\n"
                 "   after trimming 12.5% from each tapered end. The representative track plane is\n"
@@ -9199,13 +9285,13 @@ def generate_batch_report(
                     else df_tracks.copy()
                 )
                 stats_rows.append(["--- ESTIMATED UNIQUE NUCLEI ---", f"N={len(primary)}", "", ""])
-                l3d = primary['total_3d_length_um']
+                l3d = primary['projection_z_extent_um']
                 z_col = "z_span_um" if "z_span_um" in primary.columns else "z_extent_um"
                 ze = primary[z_col]
-                vo = primary['volume_um3']
+                vo = primary['observed_slice_mask_volume_um3']
                 to = primary['tortuosity_3d']
-                th = primary['thickness_um']
-                stats_rows.append(["3D Length (um)", f"{l3d.mean():.2f}", f"{l3d.median():.2f}", f"{l3d.std():.2f}"])
+                th = primary['observed_slab_effective_thickness_um']
+                stats_rows.append(["Projection + Z extent (um)", f"{l3d.mean():.2f}", f"{l3d.median():.2f}", f"{l3d.std():.2f}"])
                 if "representative_body_width_um" in primary.columns:
                     width_2d = pd.to_numeric(primary["representative_body_width_um"], errors="coerce")
                     stats_rows.append(["Apparent Body-mask Width (um)", f"{width_2d.mean():.2f}", f"{width_2d.median():.2f}", f"{width_2d.std():.2f}"])
@@ -9216,7 +9302,7 @@ def generate_batch_report(
                     ratio_2d = pd.to_numeric(primary["length_body_width_ratio"], errors="coerce")
                     stats_rows.append(["Length / Body Width", f"{ratio_2d.mean():.2f}", f"{ratio_2d.median():.2f}", f"{ratio_2d.std():.2f}"])
                 stats_rows.append(["3D Z-Span (um)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
-                stats_rows.append(["3D Volume (um3)*", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
+                stats_rows.append(["Observed-slice mask slab sum (um3)*", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append(["3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
                 stats_rows.append(["3D Thickness (um)*", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
                 pitch = primary['pitch_deg']
@@ -9574,15 +9660,15 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             metrics_frame = metrics_box.text_frame
             metrics_frame.text = (
                 f"Estimated unique nuclei\n{len(primary):,}\n\n"
-                f"Median 3D length\n{primary['total_3d_length_um'].median():.2f} um\n\n"
+                f"Median projection + Z extent\n{primary['projection_z_extent_um'].median():.2f} um\n\n"
                 f"Median maximum 2D length\n{primary['max_length_2d'].median():.2f} um\n\n"
-                f"Median effective thickness*\n{primary['thickness_um'].median():.2f} um\n\n"
+                f"Median observed-slab thickness*\n{primary['observed_slab_effective_thickness_um'].median():.2f} um\n\n"
                 f"Median 3D tortuosity\n{primary['tortuosity_3d'].median():.3f}"
             )
             metrics_frame.paragraphs[0].font.size = Pt(16)
             add_histogram(
                 slide1,
-                primary['total_3d_length_um'],
+                primary['projection_z_extent_um'],
                 Inches(4.8),
                 Inches(1.0),
                 Inches(4.8),
@@ -9754,15 +9840,15 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             stats_rows.append(["--- ESTIMATED UNIQUE NUCLEI ---", f"N={len(df_q)}", "", ""])
 
             def add_pop_rows(pop_df, prefix=""):
-                l3 = pop_df['total_3d_length_um']
+                l3 = pop_df['projection_z_extent_um']
                 z_col = "z_span_um" if "z_span_um" in pop_df.columns else "z_extent_um"
                 ze = pop_df[z_col]
-                vo = pop_df['volume_um3']
+                vo = pop_df['observed_slice_mask_volume_um3']
                 to = pop_df['tortuosity_3d']
-                th = pop_df['thickness_um']
+                th = pop_df['observed_slab_effective_thickness_um']
                 stats_rows.append([f"{prefix}3D Length (\u00b5m)", f"{l3.mean():.2f}", f"{l3.median():.2f}", f"{l3.std():.2f}"])
                 stats_rows.append([f"{prefix}3D Z-Span (\u00b5m)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
-                stats_rows.append([f"{prefix}3D Volume (\u00b5m\u00b3)", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
+                stats_rows.append([f"{prefix}Observed-slice mask slab sum (\u00b5m\u00b3)", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append([f"{prefix}3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
                 stats_rows.append([f"{prefix}3D Thickness (\u00b5m)", f"{th.mean():.2f}", f"{th.median():.2f}", f"{th.std():.2f}"])
 
@@ -9812,9 +9898,9 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
 
         # Synchronized text from the PDF report version
         methods_items = [
-            ("1. Total 3D Geodesic Length (um)", [
-                ("Formula: ", "L_3D = sqrt(max(2D geodesic, XY displacement)^2 + z_span^2)"),
-                ("Meaning: ", "Projection-length plus Z-span estimate of whole-nucleus 3D length.")
+            ("1. Projection + Z extent (um)", [
+                ("Formula: ", "sqrt(max(2D centerline, XY centroid span)^2 + z_span^2)"),
+                ("Meaning: ", "Orientation-sensitive extent; not an integrated 3D centerline.")
             ]),
             ("2. 3D Centroid End-to-End Distance (um)", [
                 ("Formula: ", "Calibrated straight-line distance between the first and last observed track centroids"),
@@ -10004,6 +10090,8 @@ PARAM_SECTIONS = {
     ],
     "3D Tracking": [
         "DO_TRACKING", "TRACKING_BACKEND", "TRACK_MAX_DIST_UM", "TRACK_MAX_GAP_SLICES", "TRACK_BBOX_PADDING_PX",
+        "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM", "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG",
+        "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM",
         "TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM", "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL",
         "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO", "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO",
         "CONSERVATIVE_MAX_AREA_JUMP_RATIO", "CONSERVATIVE_MAX_TORTUOSITY_JUMP",
@@ -10064,6 +10152,9 @@ PARAM_TITLES = {
     "TRACK_MAX_GAP_SLICES": "Maximum missing slices in one track",
     "TRACK_BBOX_PADDING_PX": "Bounding-box overlap padding (px)",
     "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": "Do not use morphology to veto comparative tracking",
+    "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM": "Maximum adjacent-plane centroid displacement (um)",
+    "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG": "Maximum robust-object orientation change between linked planes (deg)",
+    "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM": "Minimum 2D length for the orientation continuity guard (um)",
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": "Maximum width change ratio",
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": "Maximum length change ratio",
     "CONSERVATIVE_MAX_AREA_JUMP_RATIO": "Maximum area change ratio",
@@ -10198,6 +10289,9 @@ PARAM_DESCRIPTIONS = {
     "TRACKING_BACKEND": "Which tracking engine to use. v5.5 default is hybrid_repair: legacy tracking first, followed by a conservative fragment-repair pass. Other options are legacy and global_assignment.",
     "TRACK_MAX_DIST_UM": "What it affects: fragmentation versus false merging across z. Tuned by the evolutionary optimizer. Increase if the same nucleus is failing to link between slices; decrease if neighboring nuclei are being fused into one track. This is one of the most important tracking parameters.",
     "TRACK_MAX_GAP_SLICES": "What it affects: tolerance for missed slices. Increase to allow tracks to bridge one or more blank slices; too high can stitch unrelated objects.",
+    "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM": "Technical identity guard for immediately adjacent planes. It prevents a track from hopping to a nearby nucleus and does not depend on WT-like length, width, area, or count.",
+    "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG": "Technical identity guard applied only when both observations have a measurable centerline. It rejects abrupt axis changes that indicate a different nearby object, without excluding unusual specimen morphology.",
+    "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM": "Centerlines shorter than this are too unstable for the orientation guard; they remain linkable using displacement, overlap, and assignment evidence.",
     "TRACK_BBOX_PADDING_PX": "What it affects: overlap matching sensitivity. Tuned by the evolutionary optimizer. Increase to count near-touching detections as overlapping; too high can make crowded nuclei look like one track.",
     "CONSERVATIVE_MAX_WIDTH_JUMP_RATIO": "What it affects: whether sudden width changes are allowed inside a track. Tuned by the evolutionary optimizer. Increase if real tracks are breaking on modest width changes; decrease if fused tracks are slipping through.",
     "CONSERVATIVE_MAX_LENGTH_JUMP_RATIO": "What it affects: whether sudden length changes are allowed inside a track. Tuned by the evolutionary optimizer. Lower values reduce false merges; higher values reduce fragmentation.",
@@ -10863,6 +10957,7 @@ STUDY_MANIFEST_COLUMNS = [
     "xy_um_per_pixel",
     "z_um_per_slice",
     "calibration_metadata_path",
+    "calibration_metadata_sha256",
     "acquisition_class",
     "status",
     "message",
@@ -11349,6 +11444,26 @@ def resolve_stack_microscope_calibration(
             )
         if fallback_xy <= 0 or fallback_z <= 0:
             raise ValueError("Study-manifest calibration values must be positive")
+        expected_metadata_sha = str(
+            cfg.get("_CALIBRATION_METADATA_SHA256", "")
+        ).strip().lower()
+        if len(expected_metadata_sha) != 64:
+            raise ValueError(
+                "Study-manifest Leica calibration requires a metadata SHA-256"
+            )
+        actual_metadata_sha = _sha256_file(metadata_path)
+        if actual_metadata_sha != expected_metadata_sha:
+            raise ValueError(
+                "Study-manifest Leica XML SHA-256 mismatch; rediscover or "
+                "revalidate the specimen manifest"
+            )
+        parsed_calibration = load_leica_calibration_xml(metadata_path)
+        parsed_xy = float(parsed_calibration["UM_PER_PX_XY"])
+        parsed_z = float(parsed_calibration["UM_PER_SLICE_Z"])
+        if not math.isclose(fallback_xy, parsed_xy, rel_tol=1e-6, abs_tol=1e-9):
+            raise ValueError("Study-manifest XY calibration disagrees with Leica XML")
+        if not math.isclose(fallback_z, parsed_z, rel_tol=1e-6, abs_tol=1e-9):
+            raise ValueError("Study-manifest Z calibration disagrees with Leica XML")
         provenance.update(
             {
                 "status": "leica_xml_manifest_locked",
@@ -11362,6 +11477,7 @@ def resolve_stack_microscope_calibration(
                     )
                 ),
                 "calibration_method": "study_manifest_resolved_leica_xml",
+                "metadata_sha256": actual_metadata_sha,
             }
         )
         cfg["CALIBRATION_SOURCE"] = "leica_metadata_xml"
@@ -11840,6 +11956,12 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                         "metadata_path",
                         "",
                     ),
+                    "calibration_metadata_sha256": (
+                        _sha256_file(metadata["metadata_path"])
+                        if str(metadata.get("metadata_path", "")).strip()
+                        and pl.Path(metadata["metadata_path"]).is_file()
+                        else ""
+                    ),
                     "acquisition_class": metadata["acquisition_class"],
                     "status": "pending",
                     "message": "",
@@ -12177,6 +12299,23 @@ def organize_multisample_study_copy(
                     and str(row.get("calibration_metadata_path", "")).strip()
                     else str(row.get("calibration_metadata_path", ""))
                 ),
+                "calibration_metadata_sha256": (
+                    _sha256_file(
+                        metadata_destination
+                        / pl.Path(
+                            str(row.get("calibration_metadata_path", ""))
+                        ).name
+                    )
+                    if copy_metadata
+                    and str(row.get("calibration_metadata_path", "")).strip()
+                    and (
+                        metadata_destination
+                        / pl.Path(
+                            str(row.get("calibration_metadata_path", ""))
+                        ).name
+                    ).is_file()
+                    else str(row.get("calibration_metadata_sha256", "")).strip()
+                ),
                 "acquisition_class": row.get("acquisition_class", ""),
                 "status": "pending",
                 "message": "" if destination_roi.is_file() else "ROI file missing",
@@ -12317,6 +12456,40 @@ def validate_multisample_manifest(rows, cfg=None):
             row["z_um_per_slice"] = z_step
         except Exception:
             row_errors.append("Z calibration is invalid")
+
+        if metadata_path.is_file():
+            expected_metadata_sha = str(
+                row.get("calibration_metadata_sha256", "")
+            ).strip().lower()
+            actual_metadata_sha = _sha256_file(metadata_path)
+            if not expected_metadata_sha:
+                row_errors.append("Leica calibration metadata SHA-256 missing")
+            elif expected_metadata_sha != actual_metadata_sha:
+                row_errors.append("Leica calibration metadata SHA-256 mismatch")
+            else:
+                row["calibration_metadata_sha256"] = actual_metadata_sha
+            try:
+                parsed_calibration = load_leica_calibration_xml(metadata_path)
+                if not math.isclose(
+                    float(row.get("xy_um_per_pixel", 0)),
+                    float(parsed_calibration["UM_PER_PX_XY"]),
+                    rel_tol=1e-6,
+                    abs_tol=1e-9,
+                ):
+                    row_errors.append(
+                        "manifest XY calibration disagrees with Leica XML"
+                    )
+                if not math.isclose(
+                    float(row.get("z_um_per_slice", 0)),
+                    float(parsed_calibration["UM_PER_SLICE_Z"]),
+                    rel_tol=1e-6,
+                    abs_tol=1e-9,
+                ):
+                    row_errors.append(
+                        "manifest Z calibration disagrees with Leica XML"
+                    )
+            except Exception as exc:
+                row_errors.append(f"Leica calibration XML is invalid: {exc}")
 
         row["slice_count"] = len(source_files)
         row["z_min"] = min(z_values) if z_values else 0
@@ -12639,10 +12812,25 @@ def summarize_study_sample(row, output_dir):
                 errors="coerce",
             ).notna().mean()
         ) if not analysis_tracks.empty else np.nan,
-        "median_3d_length_um": median(analysis_tracks, "total_3d_length_um"),
+        "median_projection_z_extent_um": median(
+            analysis_tracks, "projection_z_extent_um"
+        ),
+        "median_3d_length_um": median(
+            analysis_tracks, "projection_z_extent_um"
+        ),
         "median_3d_tortuosity": median(analysis_tracks, "tortuosity_3d"),
-        "median_3d_thickness_um": median(analysis_tracks, "thickness_um"),
-        "median_3d_volume_um3": median(analysis_tracks, "volume_um3"),
+        "median_observed_slab_effective_thickness_um": median(
+            analysis_tracks, "observed_slab_effective_thickness_um"
+        ),
+        "median_3d_thickness_um": median(
+            analysis_tracks, "observed_slab_effective_thickness_um"
+        ),
+        "median_observed_slice_mask_volume_um3": median(
+            analysis_tracks, "observed_slice_mask_volume_um3"
+        ),
+        "median_3d_volume_um3": median(
+            analysis_tracks, "observed_slice_mask_volume_um3"
+        ),
         "median_3d_z_span_um": median(analysis_tracks, "z_span_um"),
         "acquisition_class": row.get("acquisition_class", ""),
     }
@@ -12666,9 +12854,12 @@ def _study_group_summary(specimen_frame):
         "median_area_length_width_um",
         "median_length_body_width_ratio",
         "body_width_available_fraction",
+        "median_projection_z_extent_um",
         "median_3d_length_um",
         "median_3d_tortuosity",
+        "median_observed_slab_effective_thickness_um",
         "median_3d_thickness_um",
+        "median_observed_slice_mask_volume_um3",
         "median_3d_volume_um3",
         "median_3d_z_span_um",
         "roi_area_um2",
@@ -12697,10 +12888,13 @@ _STUDY_COMPARISON_METRICS = {
     "median_body_width_um": "Specimen median apparent central-body mask width (um)",
     "median_body_width_p90_um": "Specimen median P90 body width (um)",
     "median_length_body_width_ratio": "Specimen median length / body width",
-    "median_3d_length_um": "Specimen median 3D length (um)",
+    "median_projection_z_extent_um": "Specimen median projection + Z extent (um)",
+    "median_3d_length_um": "Legacy alias: specimen median projection + Z extent (um)",
     "median_3d_tortuosity": "Specimen median 3D tortuosity",
-    "median_3d_thickness_um": "Specimen median effective thickness (um)",
-    "median_3d_volume_um3": "Specimen median volume (um3)",
+    "median_observed_slab_effective_thickness_um": "Specimen median observed-slab effective thickness (um)",
+    "median_3d_thickness_um": "Legacy alias: specimen median observed-slab effective thickness (um)",
+    "median_observed_slice_mask_volume_um3": "Specimen median observed-slice mask slab sum (um3)",
+    "median_3d_volume_um3": "Legacy alias: specimen median observed-slice mask slab sum (um3)",
     "median_3d_z_span_um": "Specimen median Z span (um)",
 }
 
@@ -13347,9 +13541,12 @@ def _write_study_aggregates(output_root, rows, state):
         "median_area_length_width_um",
         "median_length_body_width_ratio",
         "body_width_available_fraction",
+        "median_projection_z_extent_um",
         "median_3d_length_um",
         "median_3d_tortuosity",
+        "median_observed_slab_effective_thickness_um",
         "median_3d_thickness_um",
+        "median_observed_slice_mask_volume_um3",
         "median_3d_volume_um3",
         "median_3d_z_span_um",
         "normalization_warning",
@@ -13393,7 +13590,7 @@ def _write_study_aggregates(output_root, rows, state):
                 if "technical_valid" in frame
                 else pd.Series(True, index=frame.index)
             )
-            length = pd.to_numeric(frame.get("total_3d_length_um"), errors="coerce")
+            length = pd.to_numeric(frame.get("projection_z_extent_um"), errors="coerce")
             primary = frame.loc[valid].copy()
             without_short = frame.loc[valid & (length >= 2.0)].copy()
 
@@ -13412,8 +13609,8 @@ def _write_study_aggregates(output_root, rows, state):
                     "below_2_um_fraction": float(
                         (valid & (length < 2.0)).sum() / max(valid.sum(), 1)
                     ),
-                    "primary_median_length_um": metric_median(primary, "total_3d_length_um"),
-                    "sensitivity_median_length_um": metric_median(without_short, "total_3d_length_um"),
+                    "primary_median_length_um": metric_median(primary, "projection_z_extent_um"),
+                    "sensitivity_median_length_um": metric_median(without_short, "projection_z_extent_um"),
                     "primary_median_body_width_um": metric_median(primary, "representative_body_width_um"),
                     "sensitivity_median_body_width_um": metric_median(without_short, "representative_body_width_um"),
                     "interpretation": (
@@ -13556,6 +13753,9 @@ def run_multisample_study(
             sample_cfg["CALIBRATION_METADATA_FILE"] = metadata_path
             sample_cfg["CALIBRATION_SOURCE"] = "leica_metadata_xml"
             sample_cfg["_CALIBRATION_LOCKED_FROM_MANIFEST"] = True
+            sample_cfg["_CALIBRATION_METADATA_SHA256"] = str(
+                row.get("calibration_metadata_sha256", "")
+            ).strip().lower()
         sample_cfg["_CALIBRATION_PROVENANCE"] = {
             "status": (
                 "leica_xml"
@@ -15336,7 +15536,7 @@ class SpermGUI:
                     return
 
                 stats_summary = {
-                    "Median_Length_um": f"{ts['total_3d_length_um'].median():.2f}",
+                    "Median_Projection_Z_Extent_um": f"{ts['projection_z_extent_um'].median():.2f}",
                     "Median_Z_Span_um": f"{ts['z_span_um'].median():.2f}" if "z_span_um" in ts.columns else "NA",
                     "Median_Effective_Thickness_um_PSF_sensitive": f"{ts['thickness_um'].median():.2f}" if "thickness_um" in ts.columns else "NA",
                     "Median_Taper_Ratio_PSF_sensitive": f"{ts['taper_ratio'].median():.2f}" if "taper_ratio" in ts.columns else "NA",
@@ -16222,8 +16422,8 @@ class SpermGUI:
                 n_candidates = int(ts["technical_valid"].sum()) if "technical_valid" in ts.columns else len(ts)
                 primary_tracks = _technical_valid_track_population(ts)
                 median_3d_length = (
-                    float(primary_tracks["total_3d_length_um"].median())
-                    if not primary_tracks.empty and "total_3d_length_um" in primary_tracks.columns
+                    float(primary_tracks["projection_z_extent_um"].median())
+                    if not primary_tracks.empty and "projection_z_extent_um" in primary_tracks.columns
                     else np.nan
                 )
                 self.lbl_batch_op.config(
@@ -16260,7 +16460,8 @@ class SpermGUI:
                 msg = (
                     f"Batch complete in {elapsed:.1f}s.\n\n"
                     f"Estimated unique nuclei: {analysis_summary['estimated_unique_nuclei']}\n"
-                    f"Median 3D length: {analysis_summary['median_3d_length_um']:.2f} um\n\n"
+                    "Median projection + Z extent: "
+                    f"{analysis_summary['median_projection_z_extent_um']:.2f} um\n\n"
                     f"Primary sample summary:\n"
                     f"{os.path.join(out_dir, 'biologist_results', 'sample_summary.csv')}\n\n"
                     f"Saved to:\n{out_dir}"

@@ -1,10 +1,12 @@
 """Generate a specimen-level biological comparison package from a v5.7 study."""
 
 import argparse
+import hashlib
 import json
 import math
 import shutil
 import textwrap
+import zipfile
 from pathlib import Path
 
 import matplotlib
@@ -68,13 +70,14 @@ METRICS = {
         ),
         "role": "morphology",
     },
-    "median_3d_length_um": {
-        "label": "Specimen median 3D length (um)",
-        "short": "3D length",
-        "question": "Are nuclei longer after accounting for Z orientation?",
+    "median_projection_z_extent_um": {
+        "label": "Specimen median projection + Z extent (um)",
+        "short": "Projection + Z extent",
+        "question": "Do nuclei have a larger combined image-plane and Z extent?",
         "meaning": (
-            "A calibrated projection-plus-Z estimate combining maximum lateral "
-            "length with Z span. It is not a surface-mesh trace."
+            "A calibrated hypotenuse combining maximum lateral centerline extent "
+            "with Z span. It is orientation-sensitive and is not an integrated "
+            "3D centerline."
         ),
         "role": "morphology",
     },
@@ -88,23 +91,23 @@ METRICS = {
         ),
         "role": "morphology",
     },
-    "median_3d_thickness_um": {
-        "label": "Specimen median effective thickness (um)",
-        "short": "Effective thickness",
-        "question": "Is the reconstructed nucleus effectively thicker?",
+    "median_observed_slab_effective_thickness_um": {
+        "label": "Specimen median observed-slab effective thickness (um)",
+        "short": "Observed-slab thickness",
+        "question": "Is the observed mask slab effectively thicker?",
         "meaning": (
             "A diameter proxy derived from volume divided by length. It is not a "
             "direct width and is PSF- and segmentation-sensitive."
         ),
         "role": "morphology_psf_sensitive",
     },
-    "median_3d_volume_um3": {
-        "label": "Specimen median volume (um3)",
-        "short": "Volume",
-        "question": "How much calibrated 3D mask volume does a typical nucleus occupy?",
+    "median_observed_slice_mask_volume_um3": {
+        "label": "Specimen median observed-slice mask slab sum (um3)",
+        "short": "Observed slab sum",
+        "question": "How much calibrated observed-slice mask slab does a typical nucleus occupy?",
         "meaning": (
-            "Filled-mask area accumulated through Z. It can reflect length and "
-            "thickness but also depends on thresholds, Z sampling, and PSF."
+            "Filled-mask area on observed planes multiplied by Z spacing, with no "
+            "missing-plane interpolation. It depends on thresholds, sampling, and PSF."
         ),
         "role": "morphology_psf_sensitive",
     },
@@ -322,7 +325,12 @@ def morphology_proportions(tracks):
     )
     rows = []
     for (sample_id, group), frame in valid.groupby(["sample_id", "group"]):
-        length = pd.to_numeric(frame["total_3d_length_um"], errors="coerce")
+        length_column = (
+            "projection_z_extent_um"
+            if "projection_z_extent_um" in frame.columns
+            else "total_3d_length_um"
+        )
+        length = pd.to_numeric(frame[length_column], errors="coerce")
         warnings = warning_text.loc[frame.index]
         denominator = max(len(frame), 1)
         rows.append(
@@ -754,6 +762,117 @@ def text_page(title, paragraphs):
     return figure
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def build_numeric_contract(statistics, reference, comparison):
+    """Create exact, display-ready values shared by PDF, Excel, and JSON."""
+    rows = []
+    for row in statistics.itertuples(index=False):
+        reference_median = float(row.reference_median)
+        comparison_median = float(row.comparison_median)
+        rows.append(
+            {
+                "metric": row.metric,
+                "display_name": METRICS[row.metric]["label"],
+                "reference_group": reference,
+                "comparison_group": comparison,
+                "reference_median": reference_median,
+                "comparison_median": comparison_median,
+                "reference_display": f"{reference_median:.6g}",
+                "comparison_display": f"{comparison_median:.6g}",
+                "pdf_token": (
+                    f"SOURCE_VALUE {row.metric} REF={reference_median:.6g} "
+                    f"COMP={comparison_median:.6g}"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def numeric_contract_page(contract):
+    lines = contract["pdf_token"].tolist()
+    figure = plt.figure(figsize=(13.5, 10.5))
+    figure.patch.set_facecolor("white")
+    figure.suptitle(
+        "Numerical source contract",
+        fontsize=19,
+        fontweight="bold",
+        y=0.965,
+    )
+    figure.text(
+        0.06,
+        0.90,
+        "These exact values are derived from specimen-level rows and are also "
+        "stored in the Excel workbook and report_numeric_contract.json.",
+        fontsize=11,
+        va="top",
+    )
+    figure.text(
+        0.06,
+        0.84,
+        "\n".join(lines),
+        fontsize=9.5,
+        family="monospace",
+        va="top",
+        linespacing=1.55,
+    )
+    return figure
+
+
+def validate_report_contract(contract, source_csv, excel_path, pdf_path):
+    source = pd.read_csv(source_csv)
+    columns = [
+        "metric",
+        "reference_median",
+        "comparison_median",
+        "pdf_token",
+    ]
+    source_rows = contract[columns].reset_index(drop=True)
+    with zipfile.ZipFile(excel_path) as workbook_zip:
+        workbook_xml = "\n".join(
+            workbook_zip.read(name).decode("utf-8", errors="replace")
+            for name in workbook_zip.namelist()
+            if name.endswith(".xml")
+        )
+    excel_matches = bool(
+        all(metric in workbook_xml for metric in contract["metric"])
+        and all(token in workbook_xml for token in contract["pdf_token"])
+    )
+    source_matches = bool(
+        source[columns].reset_index(drop=True).equals(source_rows)
+    )
+    try:
+        from pypdf import PdfReader
+
+        pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
+        pdf_matches = all(token in pdf_text for token in contract["pdf_token"])
+        pdf_validation = "pypdf_text_tokens"
+    except Exception as exc:
+        pdf_matches = False
+        pdf_validation = f"failed: {type(exc).__name__}: {exc}"
+    result = {
+        "status": "pass" if source_matches and excel_matches and pdf_matches else "fail",
+        "source_csv_matches_contract": source_matches,
+        "excel_matches_contract": excel_matches,
+        "pdf_contains_contract_tokens": pdf_matches,
+        "pdf_validation_method": pdf_validation,
+        "artifact_sha256": {
+            "source_csv": sha256_file(source_csv),
+            "excel": sha256_file(excel_path),
+            "pdf": sha256_file(pdf_path),
+        },
+    }
+    if result["status"] != "pass":
+        raise RuntimeError(f"Report numerical contract failed: {result}")
+    return result
+
+
 def write_biological_excel(
     path,
     specimens,
@@ -761,6 +880,7 @@ def write_biological_excel(
     statistics,
     reference,
     comparison,
+    numeric_contract,
 ):
     definitions = pd.DataFrame(
         [
@@ -854,6 +974,7 @@ def write_biological_excel(
             "Specimen_Data": specimens,
             "Group_Descriptives": group_summary,
             "Statistical_Tests": statistics,
+            "Numerical_Contract": numeric_contract,
             "Metric_Definitions": definitions,
             "Statistical_Methods": methods,
         }
@@ -1023,6 +1144,14 @@ def main():
 
     specimens = pd.read_csv(study_root / "specimen_summary.csv")
     specimens = specimens[specimens["status"] == "complete"].copy()
+    legacy_metric_aliases = {
+        "median_3d_length_um": "median_projection_z_extent_um",
+        "median_3d_thickness_um": "median_observed_slab_effective_thickness_um",
+        "median_3d_volume_um3": "median_observed_slice_mask_volume_um3",
+    }
+    for legacy_name, explicit_name in legacy_metric_aliases.items():
+        if explicit_name not in specimens and legacy_name in specimens:
+            specimens[explicit_name] = specimens[legacy_name]
     tracks = pd.read_csv(study_root / "study_track_records.csv")
     technical_qc_path = study_root / "specimen_technical_qc.csv"
     specimen_qc = (
@@ -1083,6 +1212,11 @@ def main():
         if column in specimens.columns
     ]
     biological_specimens = specimens[biological_columns].copy()
+    numeric_contract = build_numeric_contract(
+        biological_statistics,
+        reference,
+        comparison,
+    )
 
     biological_statistics.to_csv(
         biological_data_dir / "biological_statistical_tests.csv",
@@ -1094,6 +1228,12 @@ def main():
     )
     biological_group_summary.to_csv(
         biological_data_dir / "biological_group_descriptives.csv",
+        index=False,
+    )
+    contract_csv = biological_data_dir / "report_numeric_contract.csv"
+    numeric_contract.to_csv(contract_csv, index=False)
+    biological_specimens.to_csv(
+        biological_data_dir / "figure_source_data.csv",
         index=False,
     )
     qc_statistics.to_csv(
@@ -1306,6 +1446,7 @@ def main():
             if metric in BIOLOGICAL_METRICS
         ],
     )
+    contract_page = numeric_contract_page(numeric_contract)
 
     biological_pdf = biological_dir / "Biological_Comparison_Report.pdf"
     with PdfPages(biological_pdf) as pdf:
@@ -1342,8 +1483,10 @@ def main():
             plt.close(figure)
         pdf.savefig(methods_page, bbox_inches="tight")
         pdf.savefig(meaning_page, bbox_inches="tight")
+        pdf.savefig(contract_page, bbox_inches="tight")
     plt.close(methods_page)
     plt.close(meaning_page)
+    plt.close(contract_page)
 
     biological_excel = biological_dir / "Biological_Comparison_Data.xlsx"
     write_biological_excel(
@@ -1353,6 +1496,31 @@ def main():
         biological_statistics,
         reference,
         comparison,
+        numeric_contract,
+    )
+    consistency = validate_report_contract(
+        numeric_contract,
+        contract_csv,
+        biological_excel,
+        biological_pdf,
+    )
+    contract_json = biological_data_dir / "report_numeric_contract.json"
+    contract_json.write_text(
+        json.dumps(
+            {
+                "reference_group": reference,
+                "comparison_group": comparison,
+                "analysis_unit": "biological specimen",
+                "rows": numeric_contract.to_dict(orient="records"),
+                "validation": consistency,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (biological_data_dir / "report_consistency_validation.json").write_text(
+        json.dumps(consistency, indent=2),
+        encoding="utf-8",
     )
     biological_ppt = biological_dir / "Biological_Comparison_Presentation.pptx"
     write_powerpoint(
@@ -1492,6 +1660,8 @@ def main():
             "pdf": str(biological_pdf),
             "powerpoint": str(biological_ppt),
             "excel": str(biological_excel),
+            "numeric_contract": str(contract_json),
+            "numeric_contract_validation": consistency,
         },
         "quality_control": {
             "pdf": str(qc_pdf),

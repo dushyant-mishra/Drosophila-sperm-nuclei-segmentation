@@ -72,7 +72,7 @@ probability valley. The filled foreground mask is partitioned without erosion.
 | Clear multi-object connected-component failures | 183 | 75 |
 | Single-slice fraction | 33.35% | 31.57% |
 | Gap-linked tracks | 617 | 356 |
-| Median 3D length | 10.92 um | 9.29 um |
+| Median projection + Z extent | 10.92 um | 9.29 um |
 | Median maximum 2D length | 10.52 um | 8.95 um |
 | Median apparent body-mask width | 1.56 um | 1.69 um |
 | Median length/body-width ratio | 7.40 | 5.93 |
@@ -82,7 +82,9 @@ probability valley. The filled foreground mask is partitioned without erosion.
 
 These values describe one specimen per group and are not a genotype inference.
 `analysis_summary.csv` matches the technical-valid track table exactly for
-count, median 3D length, and median body width. Objects above 20 um remain
+count, median projection + Z extent, and median body width. The projection + Z
+extent is an orientation-sensitive hypotenuse, not an integrated 3D
+centerline. Objects above 20 um remain
 visible as technical-review morphology when the learned core does not provide
 independent split evidence; they are not silently deleted or forced toward a
 WT reference length.

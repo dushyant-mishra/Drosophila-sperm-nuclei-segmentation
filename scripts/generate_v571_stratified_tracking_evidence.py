@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
+from scipy.ndimage import binary_dilation
 
 
 CATEGORIES = (
@@ -78,8 +79,8 @@ def choose_tracks(tracks, detections):
     rankings = {
         "faint": numeric("_probability").sort_values(ascending=True),
         "bright": numeric("_probability").sort_values(ascending=False),
-        "short": numeric("total_3d_length_um").sort_values(ascending=True),
-        "long": numeric("total_3d_length_um").sort_values(ascending=False),
+        "short": numeric("projection_z_extent_um").sort_values(ascending=True),
+        "long": numeric("projection_z_extent_um").sort_values(ascending=False),
         "wide": numeric("representative_body_width_um").sort_values(ascending=False),
         "curved": numeric("tortuosity_3d").sort_values(ascending=False),
         "touching": numeric("nearest_neighbor_um").sort_values(ascending=True),
@@ -118,7 +119,9 @@ def overlay_centerline(raw, labels, sperm_id, color):
     mask = labels == int(sperm_id)
     context = (labels > 0) & ~mask
     rgb[context] = 0.55 * rgb[context] + 0.45 * np.asarray([0.65, 0.65, 0.65])
-    rgb[mask] = color
+    # Two-pixel display stroke only. Measurements use the original one-pixel
+    # centerline labels, so visualization cannot alter count or morphometry.
+    rgb[binary_dilation(mask, iterations=1)] = color
     return rgb
 
 
@@ -138,9 +141,18 @@ def consecutive_window(rows, available_z, width=4):
     return min(windows)[2] if windows else observed[:width]
 
 
-def render_specimen(specimen, output_dir, input_dir, destination):
-    tracks = pd.read_csv(find_csv(output_dir, "track_summary"))
-    detections = pd.read_csv(find_csv(output_dir, "measurements_with_tracks"))
+def render_specimen(
+    specimen,
+    output_dir,
+    input_dir,
+    destination,
+    tracks_path=None,
+    detections_path=None,
+):
+    tracks = pd.read_csv(tracks_path or find_csv(output_dir, "track_summary"))
+    detections = pd.read_csv(
+        detections_path or find_csv(output_dir, "measurements_with_tracks")
+    )
     sources = source_files(input_dir)
     selected = choose_tracks(tracks, detections)
     if not selected:
@@ -167,7 +179,7 @@ def render_specimen(specimen, output_dir, input_dir, destination):
         axes[row_index, 0].imshow(raw_cache[rep_z][crop], cmap="gray")
         axes[row_index, 0].set_title(f"{category}: raw z{rep_z:03d}", fontsize=9)
         axes[row_index, 0].set_ylabel(
-            f"Track {track_id}\nL={track.get('total_3d_length_um', np.nan):.2f} um\n"
+            f"Track {track_id}\nProjection+Z={track.get('projection_z_extent_um', np.nan):.2f} um\n"
             f"W={track.get('representative_body_width_um', np.nan):.2f} um",
             fontsize=8,
         )
@@ -207,7 +219,9 @@ def render_specimen(specimen, output_dir, input_dir, destination):
                 "track_id": int(track_id),
                 "displayed_consecutive_z_indices": shown_z,
                 "observed_z_indices": [int(value) for value in rows["z_slice"]],
-                "length_um": float(track.get("total_3d_length_um", np.nan)),
+                "projection_z_extent_um": float(
+                    track.get("projection_z_extent_um", np.nan)
+                ),
                 "body_width_um": float(track.get("representative_body_width_um", np.nan)),
                 "tortuosity": float(track.get("tortuosity_3d", np.nan)),
                 "nearest_neighbor_um": float(track.get("nearest_neighbor_um", np.nan)),
@@ -216,7 +230,7 @@ def render_specimen(specimen, output_dir, input_dir, destination):
         )
     fig.suptitle(
         f"{specimen}: stratified v5.7.1 tracking evidence\n"
-        "First panel is unobscured raw data; colored one-pixel centerlines retain track identity.",
+        "First panel is unobscured raw data; colored two-pixel display strokes retain track identity.",
         fontsize=13,
         fontweight="bold",
     )
@@ -230,6 +244,11 @@ def main():
     parser.add_argument("--pilot-manifest", required=True)
     parser.add_argument("--study-output", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--tracking-replay",
+        default="",
+        help="Optional folder containing current *_tracked.csv and *_tracks.csv.",
+    )
     args = parser.parse_args()
     pilot = json.loads(Path(args.pilot_manifest).read_text(encoding="utf-8"))
     inputs = {record["specimen"]: record["input_dir"] for record in pilot}
@@ -244,12 +263,24 @@ def main():
             continue
         output_dir = completed[-1]
         specimen = "KJ-01" if sample_dir.name.startswith("kj_") else "WT-01"
+        tracks_path = None
+        detections_path = None
+        if args.tracking_replay:
+            replay = Path(args.tracking_replay)
+            tracks_path = replay / (
+                f"{sample_dir.name}_production_morphology_neutral_tracks.csv"
+            )
+            detections_path = replay / (
+                f"{sample_dir.name}_production_morphology_neutral_tracked.csv"
+            )
         destination = destination_root / f"{specimen}_stratified_tracking.png"
         records = render_specimen(
             specimen,
             output_dir,
             inputs[specimen],
             destination,
+            tracks_path=tracks_path,
+            detections_path=detections_path,
         )
         if not records:
             manifest.append(

@@ -102,3 +102,29 @@ def test_biological_and_qc_metric_sets_are_complete_and_disjoint():
     assert "estimated_nuclei_per_1000_um2" in MODULE.QC_METRICS
     assert "median_3d_z_span_um" in MODULE.QC_METRICS
     assert "median_2d_length_um" in MODULE.BIOLOGICAL_METRICS
+
+
+def test_numeric_contract_uses_exact_shared_display_tokens():
+    statistics = MODULE.compute_statistics(
+        _specimens(),
+        reference="Reference line",
+        comparison="Experimental line",
+        seed=123,
+    )
+    statistics = statistics[
+        statistics["metric"].isin(MODULE.BIOLOGICAL_METRICS)
+    ]
+    contract = MODULE.build_numeric_contract(
+        statistics,
+        "Reference line",
+        "Experimental line",
+    )
+
+    assert len(contract) == len(MODULE.BIOLOGICAL_METRICS)
+    assert contract["pdf_token"].str.startswith("SOURCE_VALUE ").all()
+    assert contract["pdf_token"].str.contains(" REF=").all()
+    assert contract["pdf_token"].str.contains(" COMP=").all()
+    assert np.allclose(
+        contract["reference_median"],
+        statistics["reference_median"],
+    )

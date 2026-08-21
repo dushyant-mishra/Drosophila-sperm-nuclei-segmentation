@@ -54,6 +54,7 @@ def test_length_alone_above_20_um_is_review_not_technical_veto():
             "track_id": [1],
             "centroid_x": [20.0],
             "centroid_y": [10.0],
+            "projection_z_extent_um": [25.0],
             "total_3d_length_um": [25.0],
             "suspected_multi_object_merge": [False],
         }
@@ -239,6 +240,7 @@ def test_track_summary_uses_filled_area_and_explicit_path_geometry():
     }
     _, summary = saturn._summarize_tracked_detections(detections, {}, cfg)
     track = summary.iloc[0]
+    assert track["projection_z_extent_um"] == pytest.approx(np.hypot(10.0, 1.0))
     assert track["total_3d_length_um"] == pytest.approx(np.hypot(10.0, 1.0))
     assert track["observed_slice_mask_volume_um3"] == pytest.approx(
         (30.0 + 40.0) * 2.0**2 * 0.5
@@ -299,7 +301,14 @@ def test_manifest_locked_calibration_supports_organized_filenames(tmp_path):
     source = tmp_path / "KJ-01_z0000_ch00.tif"
     tifffile.imwrite(source, np.zeros((8, 8), dtype=np.uint16))
     metadata = tmp_path / "Project001_Series013.xml"
-    metadata.write_text("<xml/>", encoding="utf-8")
+    metadata.write_text(
+        """<Root><DimensionDescription DimID="1" NumberOfElements="8"
+        Length="0.00000304" Unit="m"/><DimensionDescription DimID="2"
+        NumberOfElements="8" Length="0.00000304" Unit="m"/>
+        <DimensionDescription DimID="3" NumberOfElements="3"
+        Length="0.00000104" Unit="m"/></Root>""",
+        encoding="utf-8",
+    )
     cfg = {
         **saturn.CONFIG,
         "AUTO_LEICA_CALIBRATION": True,
@@ -307,6 +316,7 @@ def test_manifest_locked_calibration_supports_organized_filenames(tmp_path):
         "UM_PER_PX_XY": 0.38,
         "UM_PER_SLICE_Z": 0.52,
         "CALIBRATION_METADATA_FILE": str(metadata),
+        "_CALIBRATION_METADATA_SHA256": saturn._sha256_file(metadata),
         "_CALIBRATION_LOCKED_FROM_MANIFEST": True,
         "_CALIBRATION_PROVENANCE": {
             "acquisition_class": "Leica 40x test",
@@ -321,6 +331,134 @@ def test_manifest_locked_calibration_supports_organized_filenames(tmp_path):
     assert cfg["CALIBRATION_SOURCE"] == "leica_metadata_xml"
     assert cfg["UM_PER_PX_XY"] == pytest.approx(0.38)
     assert cfg["UM_PER_SLICE_Z"] == pytest.approx(0.52)
+
+
+def test_manifest_locked_calibration_rejects_replaced_or_invalid_xml(tmp_path):
+    saturn = load_saturn()
+    source = tmp_path / "KJ-01_z0000_ch00.tif"
+    metadata = tmp_path / "Project001_Series013.xml"
+    tifffile.imwrite(source, np.zeros((8, 8), dtype=np.uint16))
+    metadata.write_text("<xml/>", encoding="utf-8")
+    cfg = {
+        **saturn.CONFIG,
+        "UM_PER_PX_XY": 0.38,
+        "UM_PER_SLICE_Z": 0.52,
+        "CALIBRATION_METADATA_FILE": str(metadata),
+        "_CALIBRATION_METADATA_SHA256": saturn._sha256_file(metadata),
+        "_CALIBRATION_LOCKED_FROM_MANIFEST": True,
+    }
+    with pytest.raises(ValueError, match="complete X/Y/Z calibration"):
+        saturn.resolve_stack_microscope_calibration(cfg, [source], tmp_path, True)
+
+    metadata.write_text("<changed/>", encoding="utf-8")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        saturn.resolve_stack_microscope_calibration(cfg, [source], tmp_path, True)
+
+
+def test_batch_discovery_fails_closed_on_mixed_stack_or_channel(tmp_path):
+    saturn = load_saturn()
+    for name in (
+        "sampleA_z0000_ch00.tif",
+        "sampleB_z0001_ch00.tif",
+    ):
+        tifffile.imwrite(tmp_path / name, np.zeros((4, 4), dtype=np.uint16))
+    with pytest.raises(ValueError, match="multiple stack identities"):
+        saturn.load_batch_files(tmp_path, "*.tif")
+
+    for path in tmp_path.glob("*.tif"):
+        path.unlink()
+    tifffile.imwrite(
+        tmp_path / "sampleA_z0000_ch01.tif", np.zeros((4, 4), dtype=np.uint16)
+    )
+    with pytest.raises(ValueError, match="Unparseable source-image identity"):
+        saturn.load_batch_files(tmp_path, "*.tif")
+
+
+def test_comparative_tracking_does_not_veto_length_alone():
+    saturn = load_saturn()
+    comparative = {**saturn.CONFIG, "ANALYSIS_MODE": "comparative"}
+    noncomparative = {**saturn.CONFIG, "ANALYSIS_MODE": "descriptive"}
+
+    assert saturn._tracking_max_joined_length_um(comparative) is None
+    assert saturn._tracking_max_joined_length_um(noncomparative) == pytest.approx(
+        saturn.CONFIG["TRACK_TECHNICAL_MAX_JOINED_LENGTH_UM"]
+    )
+
+
+def test_tracking_orientation_difference_converts_regionprops_radians():
+    saturn = load_saturn()
+    assert saturn._angle_diff_deg(0.0, np.pi / 2) == pytest.approx(90.0)
+    assert saturn._angle_diff_deg(-np.pi / 2, np.pi / 2) == pytest.approx(0.0)
+    assert saturn._orientation_difference_degrees(
+        0.0, np.pi / 4
+    ) == pytest.approx(45.0)
+
+
+def test_comparative_tracking_rejects_identity_hop_without_morphology_gate():
+    saturn = load_saturn()
+    rows = []
+    for z, sperm_id, x, y, orientation in (
+        (0, 1, 0.0, 0.0, 0.0),
+        (1, 1, 0.0, 0.5, np.pi / 2),
+        (1, 2, 1.0, 0.0, 0.0),
+    ):
+        rows.append(
+            {
+                "z_slice": z,
+                "sperm_id": sperm_id,
+                "centroid_x": x,
+                "centroid_y": y,
+                "length_um_geodesic": 10.0,
+                "length_px_geodesic": 10.0,
+                "width_um": 1.0,
+                "length_width_ratio": 10.0,
+                "orientation": orientation,
+                "area_px": 20.0,
+                "bbox_min_y": y - 1.0,
+                "bbox_min_x": x - 1.0,
+                "bbox_max_y": y + 1.0,
+                "bbox_max_x": x + 1.0,
+            }
+        )
+    cfg = {
+        **saturn.CONFIG,
+        "ANALYSIS_MODE": "comparative",
+        "UM_PER_PX_XY": 1.0,
+        "UM_PER_SLICE_Z": 1.0,
+        "TRACK_MAX_DIST_UM": 3.0,
+        "TRACK_TECHNICAL_MAX_ADJACENT_DISPLACEMENT_UM": 2.0,
+        "TRACK_TECHNICAL_MAX_ORIENTATION_CHANGE_DEG": 35.0,
+        "TRACK_TECHNICAL_ORIENTATION_MIN_LENGTH_UM": 2.0,
+        "ASSIGNMENT_MAX_COST": 10.0,
+    }
+    tracked, _tracks = saturn.track_across_slices_global_assignment(
+        pd.DataFrame(rows), cfg
+    )
+    first_track = tracked.loc[tracked["z_slice"] == 0, "track_id"].iloc[0]
+    linked = tracked[tracked["track_id"] == first_track]
+    assert set(linked["sperm_id"]) == {1, 2}
+    assert len(linked) == 2
+
+
+def test_probability_cache_requires_matching_checkpoint_identity(tmp_path):
+    saturn = load_saturn()
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    checkpoint_sha = saturn._sha256_file(checkpoint)
+    cfg = {
+        **saturn.CONFIG,
+        "SEGMENTATION_ENGINE": "unet_primary",
+        "UNET_MODEL_PATH": str(checkpoint),
+        "UNET_CHECKPOINT_SHA256": checkpoint_sha,
+        "_UNET_PROBABILITY_CACHE": {0: np.zeros((4, 4), dtype=np.float32)},
+        "_UNET_PROBABILITY_CACHE_CHECKPOINT_SHA256": "0" * 64,
+    }
+    with pytest.raises(ValueError, match="not authenticated"):
+        saturn.validate_analysis_runtime_config(cfg)
+
+    cfg["_UNET_PROBABILITY_CACHE_CHECKPOINT_SHA256"] = checkpoint_sha
+    status = saturn.validate_analysis_runtime_config(cfg)
+    assert status["checkpoint_sha256"] == checkpoint_sha
 
 
 def test_same_path_checkpoint_replacement_changes_cache_identity(tmp_path):
