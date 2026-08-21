@@ -39,7 +39,12 @@ foreach ($role in $Roles) {
 }
 
 $commit = (& git -C $RepoRoot rev-parse HEAD).Trim()
-$branch = (& git -C $RepoRoot branch --show-current).Trim()
+$branchOutput = & git -C $RepoRoot branch --show-current
+$branch = if ([string]::IsNullOrWhiteSpace([string]$branchOutput)) {
+    'DETACHED'
+} else {
+    ([string]$branchOutput).Trim()
+}
 $statusLines = @(& git -C $RepoRoot status --porcelain=v1)
 $dirty = $statusLines.Count -gt 0
 if ($dirty -and -not $AllowDirty) {
