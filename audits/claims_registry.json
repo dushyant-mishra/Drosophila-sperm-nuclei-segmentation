@@ -22,7 +22,8 @@
       "implementation_evidence": [
         "tests/test_saturn_v571_dual_head.py",
         "tests/test_saturn_v571_body_width.py",
-        "V5_7_1_VALIDATION_REPORT.md"
+        "V5_7_1_VALIDATION_REPORT.md",
+        "audits/V5_7_1_DESIGN_DECISIONS.md"
       ],
       "acceptance_criteria": [
         "Calibration is resolved before physical thresholds and measurements",

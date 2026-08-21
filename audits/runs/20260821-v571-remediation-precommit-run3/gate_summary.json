@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260821-v571-remediation-precommit-run3",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "8c1f9f53e4a1ab72e66a82ef31b8c675ab9e4bf9",
+  "mode": "pre_commit",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [],
+  "verdicts": {},
+  "required_roles_not_passed": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [],
+  "validation_errors": [
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\measurement_geometry.json",
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\biological_validity.json",
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\calibration_provenance.json",
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\software_reproducibility.json",
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\statistics_reporting.json",
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\visual_evidence.json",
+    "missing review: C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\runs\\20260821-v571-remediation-precommit-run3\\reviews\\repository_release.json",
+    "pre-commit audits are diagnostic and cannot pass the acceptance gate"
+  ]
+}

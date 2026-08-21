@@ -44,11 +44,43 @@ def _device_helpers():
 
 def _resolve_device(device=None):
     select_torch_device, describe_torch_device = _device_helpers()
-    resolved = select_torch_device(preferred=device)
+    preferred = None if str(device or "auto").lower() == "auto" else device
+    resolved = select_torch_device(preferred=preferred)
     if resolved not in _REPORTED_DEVICES:
         print(f"    U-Net inference device: {describe_torch_device(resolved)}")
         _REPORTED_DEVICES.add(resolved)
     return resolved
+
+
+def _configure_deterministic_inference(torch, cfg, device):
+    deterministic = bool(_cfg_get(
+        cfg,
+        "UNET_DETERMINISTIC_INFERENCE",
+        "unet_deterministic_inference",
+        True,
+    ))
+    if deterministic:
+        torch.manual_seed(0)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(0)
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    if isinstance(cfg, dict):
+        cfg["_UNET_RUNTIME_PROVENANCE"] = {
+            "requested_device": str(cfg.get("UNET_DEVICE", "auto")),
+            "resolved_device": str(device),
+            "deterministic_inference": deterministic,
+            "torch_version": str(torch.__version__),
+            "cuda_version": str(getattr(torch.version, "cuda", None) or ""),
+            "cudnn_version": (
+                int(torch.backends.cudnn.version())
+                if hasattr(torch.backends, "cudnn")
+                and torch.backends.cudnn.is_available()
+                else None
+            ),
+        }
 
 
 def robust_normalize_stack(stack):
@@ -178,7 +210,11 @@ def predict_probability_heads_tiled(
     """
     import torch
 
-    device = _resolve_device(device)
+    requested_device = device
+    if requested_device is None:
+        requested_device = _cfg_get(cfg, "UNET_DEVICE", "unet_device", "auto")
+    device = _resolve_device(requested_device)
+    _configure_deterministic_inference(torch, cfg, device)
     model, _ = _load_model(checkpoint_path, device)
 
     context = robust_normalize_stack(np.asarray(context_stack, dtype=np.float32))

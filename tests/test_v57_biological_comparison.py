@@ -57,6 +57,34 @@ def test_statistics_use_specimens_and_preserve_effect_direction():
     assert statistics["welch_t_p"].between(0, 1).all()
 
 
+def test_small_groups_are_descriptive_only():
+    specimens = _specimens().groupby("group", sort=False).head(2)
+    statistics = MODULE.compute_statistics(
+        specimens,
+        reference="Reference line",
+        comparison="Experimental line",
+        seed=123,
+    )
+
+    assert set(statistics["inference_status"]) == {"insufficient_specimens"}
+    assert set(statistics["reference_n"]) == {2}
+    assert set(statistics["comparison_n"]) == {2}
+    assert statistics["median_difference_comparison_minus_reference"].notna().all()
+    unavailable = [
+        "bootstrap_median_difference_95ci_low",
+        "bootstrap_median_difference_95ci_high",
+        "cliffs_delta_comparison_minus_reference",
+        "permutation_median_test_p",
+        "permutation_bh_fdr_q",
+        "mann_whitney_p",
+        "mann_whitney_bh_fdr_q",
+        "welch_t_p",
+        "welch_t_bh_fdr_q",
+        "hedges_g_comparison_minus_reference",
+    ]
+    assert statistics[unavailable].isna().all().all()
+
+
 def test_bh_qvalues_are_bounded_and_not_smaller_than_input_p_values():
     p_values = np.array([0.001, 0.02, 0.03, 0.5, np.nan])
     q_values = MODULE.bh_qvalues(p_values)

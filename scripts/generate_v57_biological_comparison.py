@@ -7,6 +7,8 @@ import shutil
 import textwrap
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -45,18 +47,19 @@ METRICS = {
         ),
         "role": "morphology",
     },
-    "median_2d_width_um": {
-        "label": "Specimen median 2D width (um)",
-        "short": "2D width",
+    "median_body_width_um": {
+        "label": "Specimen median apparent body width (um)",
+        "short": "Body width",
         "question": "Are nuclei typically broader or thinner?",
         "meaning": (
-            "The typical calibrated filled-mask width. Higher values indicate broader "
-            "nuclei; width remains sensitive to PSF, focus, and mask boundaries."
+            "The specimen median of representative-plane subpixel perpendicular "
+            "body chords. Higher values indicate broader apparent masks; width "
+            "remains sensitive to PSF, focus, and mask boundaries."
         ),
         "role": "morphology",
     },
-    "median_2d_length_width_ratio": {
-        "label": "Specimen median 2D length / width",
+    "median_length_body_width_ratio": {
+        "label": "Specimen median length / apparent body width",
         "short": "Length / width",
         "question": "Are nuclei more elongated or more rounded?",
         "meaning": (
@@ -189,6 +192,9 @@ def boolean_series(series):
     )
 
 
+MIN_INFERENCE_SPECIMENS_PER_GROUP = 3
+
+
 def compute_statistics(specimens, reference, comparison, seed=57057):
     records = []
     for index, (metric, definition) in enumerate(METRICS.items()):
@@ -207,61 +213,74 @@ def compute_statistics(specimens, reference, comparison, seed=57057):
         reference_median = float(np.median(reference_values))
         comparison_median = float(np.median(comparison_values))
         median_difference = comparison_median - reference_median
-        rng = np.random.default_rng(seed + index)
-        bootstrap = np.asarray(
-            [
-                np.median(
-                    rng.choice(
-                        comparison_values,
-                        len(comparison_values),
-                        replace=True,
-                    )
-                )
-                - np.median(
-                    rng.choice(
-                        reference_values,
-                        len(reference_values),
-                        replace=True,
-                    )
-                )
-                for _ in range(5_000)
-            ]
+        inference_available = (
+            len(reference_values) >= MIN_INFERENCE_SPECIMENS_PER_GROUP
+            and len(comparison_values) >= MIN_INFERENCE_SPECIMENS_PER_GROUP
         )
-        permutation = permutation_test(
-            (reference_values, comparison_values),
-            lambda ref, comp: np.median(comp) - np.median(ref),
-            permutation_type="independent",
-            vectorized=False,
-            n_resamples=9_999,
-            alternative="two-sided",
-            rng=np.random.default_rng(seed + 1_000 + index),
-        )
-        mann_whitney = mannwhitneyu(
-            reference_values,
-            comparison_values,
-            alternative="two-sided",
-            method="auto",
-        )
-        welch = ttest_ind(
-            comparison_values,
-            reference_values,
-            equal_var=False,
-            nan_policy="omit",
-        )
+        if inference_available:
+            rng = np.random.default_rng(seed + index)
+            bootstrap = np.asarray(
+                [
+                    np.median(rng.choice(comparison_values, len(comparison_values), replace=True))
+                    - np.median(rng.choice(reference_values, len(reference_values), replace=True))
+                    for _ in range(5_000)
+                ]
+            )
+            ci_low = float(np.quantile(bootstrap, 0.025))
+            ci_high = float(np.quantile(bootstrap, 0.975))
+            permutation_p = float(permutation_test(
+                (reference_values, comparison_values),
+                lambda ref, comp: np.median(comp) - np.median(ref),
+                permutation_type="independent",
+                vectorized=False,
+                n_resamples=9_999,
+                alternative="two-sided",
+                rng=np.random.default_rng(seed + 1_000 + index),
+            ).pvalue)
+            mann_whitney = mannwhitneyu(
+                reference_values, comparison_values,
+                alternative="two-sided", method="auto",
+            )
+            welch = ttest_ind(
+                comparison_values, reference_values,
+                equal_var=False, nan_policy="omit",
+            )
+            mann_whitney_u = float(mann_whitney.statistic)
+            mann_whitney_p = float(mann_whitney.pvalue)
+            welch_t = float(welch.statistic)
+            welch_p = float(welch.pvalue)
+            delta = cliffs_delta(reference_values, comparison_values)
+            hedges = hedges_g(reference_values, comparison_values)
+            inference_status = "exploratory_specimen_level_inference"
+        else:
+            ci_low = ci_high = permutation_p = np.nan
+            mann_whitney_u = mann_whitney_p = np.nan
+            welch_t = welch_p = delta = hedges = np.nan
+            inference_status = "insufficient_specimens"
         records.append(
             {
                 "metric": metric,
                 "metric_label": definition["label"],
                 "analysis_role": definition["role"],
                 "analysis_unit": "biological specimen",
+                "inference_status": inference_status,
+                "minimum_specimens_per_group_for_inference": (
+                    MIN_INFERENCE_SPECIMENS_PER_GROUP
+                ),
                 "reference_group": reference,
                 "comparison_group": comparison,
                 "reference_n": len(reference_values),
                 "comparison_n": len(comparison_values),
                 "reference_mean": np.mean(reference_values),
                 "comparison_mean": np.mean(comparison_values),
-                "reference_sd": np.std(reference_values, ddof=1),
-                "comparison_sd": np.std(comparison_values, ddof=1),
+                "reference_sd": (
+                    np.std(reference_values, ddof=1)
+                    if len(reference_values) > 1 else np.nan
+                ),
+                "comparison_sd": (
+                    np.std(comparison_values, ddof=1)
+                    if len(comparison_values) > 1 else np.nan
+                ),
                 "reference_q1": np.quantile(reference_values, 0.25),
                 "reference_median": reference_median,
                 "reference_q3": np.quantile(reference_values, 0.75),
@@ -274,25 +293,15 @@ def compute_statistics(specimens, reference, comparison, seed=57057):
                     if reference_median != 0
                     else np.nan
                 ),
-                "bootstrap_median_difference_95ci_low": np.quantile(
-                    bootstrap, 0.025
-                ),
-                "bootstrap_median_difference_95ci_high": np.quantile(
-                    bootstrap, 0.975
-                ),
-                "cliffs_delta_comparison_minus_reference": cliffs_delta(
-                    reference_values,
-                    comparison_values,
-                ),
-                "permutation_median_test_p": permutation.pvalue,
-                "mann_whitney_u": mann_whitney.statistic,
-                "mann_whitney_p": mann_whitney.pvalue,
-                "welch_t": welch.statistic,
-                "welch_t_p": welch.pvalue,
-                "hedges_g_comparison_minus_reference": hedges_g(
-                    reference_values,
-                    comparison_values,
-                ),
+                "bootstrap_median_difference_95ci_low": ci_low,
+                "bootstrap_median_difference_95ci_high": ci_high,
+                "cliffs_delta_comparison_minus_reference": delta,
+                "permutation_median_test_p": permutation_p,
+                "mann_whitney_u": mann_whitney_u,
+                "mann_whitney_p": mann_whitney_p,
+                "welch_t": welch_t,
+                "welch_t_p": welch_p,
+                "hedges_g_comparison_minus_reference": hedges,
             }
         )
     result = pd.DataFrame(records)
@@ -497,7 +506,7 @@ def length_width_figure(specimens, groups):
         frame = specimens[specimens["group"] == group]
         axis.scatter(
             frame["median_2d_length_um"],
-            frame["median_2d_width_um"],
+            frame["median_body_width_um"],
             s=68,
             color=colors[index],
             edgecolor="white",
@@ -506,7 +515,7 @@ def length_width_figure(specimens, groups):
         )
         axis.scatter(
             frame["median_2d_length_um"].median(),
-            frame["median_2d_width_um"].median(),
+            frame["median_body_width_um"].median(),
             marker="X",
             s=180,
             color=colors[index],
@@ -514,7 +523,7 @@ def length_width_figure(specimens, groups):
             linewidth=0.8,
         )
     axis.set_xlabel("Specimen median 2D length (um)")
-    axis.set_ylabel("Specimen median 2D width (um)")
+    axis.set_ylabel("Specimen median apparent body width (um)")
     axis.set_title(
         "Length-width relationship\nLarge X symbols show group medians",
         fontweight="bold",
@@ -1033,6 +1042,20 @@ def main():
     groups = [reference, comparison]
 
     all_statistics = compute_statistics(specimens, reference, comparison)
+    inference_available = bool(
+        len(all_statistics)
+        and (all_statistics["inference_status"] != "insufficient_specimens").all()
+    )
+    inference_guidance = (
+        "Use specimen-level medians, effect sizes, confidence intervals, and "
+        "permutation-test FDR q-values as exploratory comparisons."
+        if inference_available
+        else (
+            "Descriptive comparison only. Inferential statistics are unavailable "
+            f"until each group has at least {MIN_INFERENCE_SPECIMENS_PER_GROUP} "
+            "biological specimens."
+        )
+    )
     biological_statistics = all_statistics[
         all_statistics["metric"].isin(BIOLOGICAL_METRICS)
     ].copy()
@@ -1229,6 +1252,10 @@ def main():
         "Statistical methods and interpretation",
         [
             (
+                "Inference availability",
+                inference_guidance,
+            ),
+            (
                 "Analysis unit",
                 "Each point and test uses one biological specimen. Individual "
                 "nuclei are nested measurements and are not counted as independent replicates.",
@@ -1293,8 +1320,7 @@ def main():
                 ),
                 (
                     "What to use",
-                    "Use specimen-level medians, effect sizes, bootstrap intervals, "
-                    "and the permutation-test FDR q-values as the primary comparison.",
+                    inference_guidance,
                 ),
                 (
                     "Scope",
@@ -1338,11 +1364,9 @@ def main():
                 "Statistical methods",
                 [
                     "Biological specimen is the replicate; nuclei are nested measurements.",
-                    "Primary test: permutation test of specimen median differences.",
-                    "Mann-Whitney U: secondary rank-based sensitivity test.",
-                    "Welch's t-test: secondary mean-based sensitivity test.",
-                    "Two-group ordinary ANOVA is equivalent to an equal-variance t-test.",
-                    "FDR q-values are reported separately for each test family.",
+                    inference_guidance,
+                    "When available, the permutation median test is primary; Mann-Whitney and Welch tests are sensitivity analyses.",
+                    "Nuclei are never treated as independent biological replicates.",
                 ],
             ),
             (
@@ -1450,8 +1474,19 @@ def main():
         "comparison_group": comparison,
         "specimen_counts": specimens.groupby("group").size().to_dict(),
         "analysis_unit": "biological specimen",
-        "primary_test": "two-sided permutation test of specimen median difference",
-        "secondary_tests": ["Mann-Whitney U", "Welch t-test"],
+        "inference_status": (
+            "exploratory_specimen_level_inference"
+            if inference_available else "insufficient_specimens"
+        ),
+        "minimum_specimens_per_group_for_inference": MIN_INFERENCE_SPECIMENS_PER_GROUP,
+        "primary_test": (
+            "two-sided permutation test of specimen median difference"
+            if inference_available else "unavailable"
+        ),
+        "secondary_tests": (
+            ["Mann-Whitney U", "Welch t-test"]
+            if inference_available else []
+        ),
         "random_seed": 57057,
         "biological_results": {
             "pdf": str(biological_pdf),

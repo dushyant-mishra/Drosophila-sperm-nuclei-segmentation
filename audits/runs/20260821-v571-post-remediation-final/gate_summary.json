@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260821-v571-post-remediation-final",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "8c1f9f53e4a1ab72e66a82ef31b8c675ab9e4bf9",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "fail",
+    "calibration_provenance": "fail",
+    "measurement_geometry": "pass",
+    "repository_release": "fail",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "fail",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "biological_validity",
+      "title": "Enabled 20-um splitter can fragment genuine long nuclei solely because of length"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "GUI provenance omits source-image and interactive-ROI identity"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Organized study filenames break required Leica metadata resolution"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Documented environment omits dependencies required for production and validation"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "Primary biological report generator permits pseudoinference from one specimen per group"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Visual artifacts do not correspond to the reviewed commit"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Technical-valid evidence contains visually unresolved multi-object merges"
+    },
+    {
+      "role": "repository_release",
+      "title": "Reviewed commit is not synchronized to a recoverable remote ref"
+    },
+    {
+      "role": "repository_release",
+      "title": "No completed, immutable audit decision exists for this run"
+    },
+    {
+      "role": "repository_release",
+      "title": "Tests are asserted but not durably bound to the reviewed commit"
+    },
+    {
+      "role": "repository_release",
+      "title": "No v5.7.1 annotated release tag or immutable release evidence"
+    }
+  ],
+  "validation_errors": []
+}

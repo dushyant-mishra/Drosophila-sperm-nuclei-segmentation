@@ -86,18 +86,22 @@ section appears directly below calibration and provides dropdowns for modes,
 checkboxes for enable/disable settings, and **Browse** for the checkpoint.
 Existing batches are not overwritten.
 
-For the current reviewed WT/KJ workflow, load:
+For the current v5.7.1 production-candidate workflow, load:
 
 ```text
-parameter_tuning_results_v5_7\mixed_unet_primary\20260730_full\
-05_production_selected\production_selected_unet_primary_tracking_params_v5_7.json
+production_profiles\saturn_v5_7_1_model_c_epoch003.json
 ```
 
 and verify that its checkpoint resolves to:
 
 ```text
-Kaggle notebook outputs\v57_kj_wt_training_export\
-checkpoints\epoch_003.pt
+model_checkpoints\v571_model_c_dual_head_epoch003.pt
+```
+
+Expected checkpoint SHA-256:
+
+```text
+7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25
 ```
 
 The Study Manager displays the active profile and model before a run and

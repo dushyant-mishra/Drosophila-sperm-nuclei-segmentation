@@ -46,6 +46,41 @@ def dual_head_cfg(module, **updates):
     return cfg
 
 
+def test_comparative_unet_primary_score_does_not_penalize_length_morphology():
+    tuner = load_tuner_v571()
+    tuner.roi_mask_global = np.ones((8, 8), dtype=bool)
+    tuner.exclusion_mask_global = None
+    cfg = tuner.CONFIG.copy()
+    cfg.update({"TUNING_OBJECTIVE": "unet_primary", "UM_PER_PX_XY": 1.0})
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:4, 2:4] = True
+
+    def summarize(length):
+        rows = [{
+            "length_px_geodesic": length,
+            "width_px": 2.0,
+            "length_width_ratio": length / 2.0,
+            "detection_source": "unet_primary",
+        }]
+        segs = [({
+            "mask_hyst": mask,
+            "mask_clean": mask,
+            "skel_pruned": mask,
+            "bridge_stats": {
+                "skeleton_pixels_before": 4,
+                "skeleton_pixels_after": 4,
+            },
+        }, {"results": rows, "skel_label": mask.astype(np.int32)})]
+        return tuner.summarize_candidate(rows, segs, cfg)
+
+    short = summarize(3.0)
+    reference = summarize(9.0)
+    long_review = summarize(21.0)
+    assert short["score"] == pytest.approx(reference["score"])
+    assert long_review["score"] == pytest.approx(reference["score"])
+    assert long_review["very_long_object_fraction"] == 1.0
+
+
 def test_dual_head_core_markers_split_connected_foreground():
     saturn = load_saturn_v571()
     foreground = np.zeros((48, 64), dtype=np.float32)

@@ -1,0 +1,52 @@
+{
+  "generated_at_utc": "2026-08-21T19:58:34.145249+00:00",
+  "git_commit_at_generation": "8c1f9f53e4a1ab72e66a82ef31b8c675ab9e4bf9",
+  "pipeline_sha256": "5a5057a4483d6aa0a937ea07d9c66f7a77298739690268cd5abe6788ebd9fe55",
+  "generator_sha256": "92a77d70fb2d646fd16fe53d1e7146c0f77f98d5135bb3e388087adb2aad4149",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "z_index": 35,
+      "source_image": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+      "source_sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0",
+      "roi_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\analysis_roi_v5_7.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "profile_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+      "profile_sha256": "96bda6133f1d1b1f6932fad41c2099cf36ff283e22106257e668ee73b7779d46",
+      "overlong_split_trigger_um": 20.0,
+      "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+      "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_core_peak_smoke_z35\\KJ-01_z035_stages.png",
+      "artifact_sha256": "0c6a3a0e7607e654b3febaccdb8c5ff32c9a953a5a2998b3f17c0d2b68ed6a55",
+      "detection_count": 292,
+      "median_2d_length_um": 8.854789337402345,
+      "below_2_um_count": 38,
+      "from_15_to_20_um_count": 23,
+      "above_20_um_count": 2,
+      "clear_multi_object_merge_count": 1,
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345
+    },
+    {
+      "specimen": "WT-01",
+      "z_index": 35,
+      "source_image": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+      "source_sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e",
+      "roi_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\analysis_roi_v5_7.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "profile_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+      "profile_sha256": "96bda6133f1d1b1f6932fad41c2099cf36ff283e22106257e668ee73b7779d46",
+      "overlong_split_trigger_um": 20.0,
+      "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+      "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_core_peak_smoke_z35\\WT-01_z035_stages.png",
+      "artifact_sha256": "5d01de68c1328f8476132cc8463be08c02c3f482476cdcf4178297b3cf3f4c04",
+      "detection_count": 267,
+      "median_2d_length_um": 7.02205595654297,
+      "below_2_um_count": 25,
+      "from_15_to_20_um_count": 12,
+      "above_20_um_count": 1,
+      "clear_multi_object_merge_count": 0,
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909
+    }
+  ]
+}

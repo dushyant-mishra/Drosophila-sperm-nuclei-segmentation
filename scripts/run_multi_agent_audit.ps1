@@ -15,6 +15,7 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $RegistryPath = Join-Path $RepoRoot 'audits\claims_registry.json'
 $SchemaPath = Join-Path $RepoRoot 'audits\review_schema.json'
+$DecisionContextPath = Join-Path $RepoRoot 'audits\V5_7_1_DESIGN_DECISIONS.md'
 $RunRoot = Join-Path $RepoRoot ("audits\runs\{0}" -f $RunId)
 $ReviewRoot = Join-Path $RunRoot 'reviews'
 $PromptRoot = Join-Path $RunRoot 'prompts'
@@ -67,6 +68,11 @@ $manifestPath = Join-Path $RunRoot 'manifest.json'
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
 $codexCommand = (Get-Command codex -ErrorAction Stop).Source
+$decisionContext = if (Test-Path -LiteralPath $DecisionContextPath) {
+    Get-Content -LiteralPath $DecisionContextPath -Raw
+} else {
+    'No project decision ledger was supplied.'
+}
 $tasks = @()
 foreach ($role in $Roles) {
     $charterPath = Join-Path $RepoRoot ("audits\agent_charters\{0}.md" -f $role)
@@ -91,6 +97,12 @@ $charterText
 
 CLAIM SNAPSHOT:
 $claimText
+
+PROJECT DECISION CONTEXT:
+$decisionContext
+
+Treat the decision context as intended behavior to verify, not as proof that
+the implementation is correct. Report any mismatch between intent and code.
 
 Your final response must be JSON matching audits/review_schema.json. Use the
 exact audit_run_id, claim_id, role, and reviewed_commit above. Every pass/fail

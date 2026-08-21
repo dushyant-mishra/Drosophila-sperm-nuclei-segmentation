@@ -3,6 +3,8 @@
 import argparse
 import hashlib
 import json
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib
@@ -21,6 +23,7 @@ CATEGORIES = (
     "wide",
     "curved",
     "touching",
+    "irregular",
 )
 COLORS = plt.get_cmap("tab10").colors
 
@@ -80,6 +83,10 @@ def choose_tracks(tracks, detections):
         "wide": numeric("representative_body_width_um").sort_values(ascending=False),
         "curved": numeric("tortuosity_3d").sort_values(ascending=False),
         "touching": numeric("nearest_neighbor_um").sort_values(ascending=True),
+        "irregular": (
+            numeric("representative_body_width_iqr_um").fillna(0)
+            + numeric("tortuosity_3d").fillna(1).sub(1).clip(lower=0)
+        ).sort_values(ascending=False),
     }
     selected = []
     used = set()
@@ -109,8 +116,26 @@ def overlay_centerline(raw, labels, sperm_id, color):
     normalized = np.clip((finite - lo) / max(hi - lo, 1e-9), 0, 1)
     rgb = np.repeat(normalized[..., None], 3, axis=2)
     mask = labels == int(sperm_id)
+    context = (labels > 0) & ~mask
+    rgb[context] = 0.55 * rgb[context] + 0.45 * np.asarray([0.65, 0.65, 0.65])
     rgb[mask] = color
     return rgb
+
+
+def consecutive_window(rows, available_z, width=4):
+    observed = sorted({int(value) for value in rows["z_slice"]})
+    if not observed:
+        return []
+    center = observed[len(observed) // 2]
+    candidates = sorted(int(value) for value in available_z)
+    windows = []
+    for start_index in range(max(len(candidates) - width + 1, 1)):
+        window = candidates[start_index : start_index + width]
+        if window:
+            overlap = len(set(window) & set(observed))
+            distance = abs(np.mean(window) - center)
+            windows.append((-overlap, distance, window))
+    return min(windows)[2] if windows else observed[:width]
 
 
 def render_specimen(specimen, output_dir, input_dir, destination):
@@ -133,9 +158,8 @@ def render_specimen(specimen, output_dir, input_dir, destination):
     for row_index, (category, track) in enumerate(selected):
         track_id = track["track_id"]
         rows = detections[detections["track_id"] == track_id].sort_values("z_slice")
-        positions = np.linspace(0, max(len(rows) - 1, 0), min(len(rows), 4)).round().astype(int)
-        shown = rows.iloc[np.unique(positions)].copy()
-        representative = shown.iloc[len(shown) // 2]
+        shown_z = consecutive_window(rows, sources, width=4)
+        representative = rows.iloc[len(rows) // 2]
         rep_z = int(representative["z_slice"])
         if rep_z not in raw_cache:
             raw_cache[rep_z] = tifffile.imread(sources[rep_z])
@@ -151,13 +175,19 @@ def render_specimen(specimen, output_dir, input_dir, destination):
         color = COLORS[row_index % len(COLORS)]
         for column in range(1, 5):
             axis = axes[row_index, column]
-            if column - 1 >= len(shown):
+            if column - 1 >= len(shown_z):
                 axis.axis("off")
                 continue
-            detection = shown.iloc[column - 1]
-            z_index = int(detection["z_slice"])
+            z_index = int(shown_z[column - 1])
             if z_index not in raw_cache:
                 raw_cache[z_index] = tifffile.imread(sources[z_index])
+            observations = rows[pd.to_numeric(rows["z_slice"], errors="coerce") == z_index]
+            if observations.empty:
+                axis.imshow(raw_cache[z_index][crop], cmap="gray")
+                axis.set_title(f"z{z_index:03d}: no target observation", fontsize=9)
+                axis.axis("off")
+                continue
+            detection = observations.iloc[0]
             label_path = Path(output_dir) / f"z{z_index:02d}_skel_labels.tif"
             if z_index not in label_cache:
                 label_cache[z_index] = tifffile.imread(label_path)
@@ -175,7 +205,8 @@ def render_specimen(specimen, output_dir, input_dir, destination):
                 "specimen": specimen,
                 "category": category,
                 "track_id": int(track_id),
-                "z_indices": [int(value) for value in shown["z_slice"]],
+                "displayed_consecutive_z_indices": shown_z,
+                "observed_z_indices": [int(value) for value in rows["z_slice"]],
                 "length_um": float(track.get("total_3d_length_um", np.nan)),
                 "body_width_um": float(track.get("representative_body_width_um", np.nan)),
                 "tortuosity": float(track.get("tortuosity_3d", np.nan)),
@@ -240,8 +271,23 @@ def main():
                 "records": records,
             }
         )
+    try:
+        git_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+        ).strip()
+    except Exception:
+        git_commit = ""
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "git_commit_at_generation": git_commit,
+        "generator_sha256": sha256(Path(__file__)),
+        "study_output": str(study_root.resolve()),
+        "records": manifest,
+    }
     (destination_root / "tracking_evidence_manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
+        json.dumps(payload, indent=2), encoding="utf-8"
     )
 
 

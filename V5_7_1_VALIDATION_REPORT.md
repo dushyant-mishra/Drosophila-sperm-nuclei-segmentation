@@ -10,7 +10,8 @@ Date: 2026-08-21
 - Checkpoint: `model_checkpoints/v571_model_c_dual_head_epoch003.pt`
 - Checkpoint SHA-256: `7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25`
 - Segmentation: dual-head U-Net primary; foreground 0.60; core 0.50
-- Instance repair: foreground-preserving overlong split; 20 um trigger
+- Instance repair: foreground-preserving learned-core watershed; 20 um review
+  trigger, 0.05 core-peak prominence, and 4.0 um minimum peak spacing
 - Tracking: morphology-neutral global assignment; 4.295 um displacement cap
 - Gap recovery: one missing Z plane may be bridged
 - Calibration: resolved independently from each specimen's Leica XML
@@ -55,35 +56,47 @@ Evidence:
 - `audits/evidence/v571_overlong_split_trigger18_smoke`
 - `audits/evidence/v571_remediation_tracking`
 
-## Final full-specimen replay
+## Final post-audit full-specimen replay
 
-Fresh outputs are under `scratch/v571_remediation_final2_pilot`.
+Fresh outputs are under `scratch/v571_post_audit_remediation_pilot_run3`.
+This replay replaces length-only marker placement with objective learned-core
+evidence. A component above 20 um is split only when the core head supplies
+multiple disconnected regions or multiple longitudinal peaks separated by a
+probability valley. The filled foreground mask is partitioned without erosion.
 
 | Measurement | KJ-01 | WT-01 |
 | --- | ---: | ---: |
 | Source slices | 88 | 67 |
-| Estimated unique technical-valid nuclei | 4,359 | 2,721 |
-| Technical multi-object merge failures | 77 | 32 |
-| Median slices per track | 6 | 5 |
-| Single-slice fraction | 28.54% | 29.55% |
-| Gap-linked tracks | 568 | 328 |
-| Median 3D length | 10.54 um | 9.27 um |
-| Median maximum 2D length | 10.23 um | 8.85 um |
-| Median apparent body-mask width | 1.55 um | 1.69 um |
-| Median body-width P90 | 1.70 um | 1.93 um |
-| Median length/body-width ratio | 7.21 | 5.85 |
-| Technical-valid tracks below 2 um | 851 | 568 |
-| Technical-valid tracks from 15-20 um | 780 | 420 |
-| Smooth technical-valid tracks above 20 um | 8 | 2 |
+| Estimated unique technical-valid nuclei | 4,624 | 2,816 |
+| Technical failures | 282 | 132 |
+| Clear multi-object connected-component failures | 183 | 75 |
+| Single-slice fraction | 33.35% | 31.57% |
+| Gap-linked tracks | 617 | 356 |
+| Median 3D length | 10.92 um | 9.29 um |
+| Median maximum 2D length | 10.52 um | 8.95 um |
+| Median apparent body-mask width | 1.56 um | 1.69 um |
+| Median length/body-width ratio | 7.40 | 5.93 |
+| Technical-valid tracks below 2 um | 886 | 571 |
+| Technical-valid tracks from 15-20 um | 805 | 428 |
+| Smooth technical-valid tracks above 20 um | 229 | 65 |
 
 These values describe one specimen per group and are not a genotype inference.
 `analysis_summary.csv` matches the technical-valid track table exactly for
-count, median 3D length, and median body width.
+count, median 3D length, and median body width. Objects above 20 um remain
+visible as technical-review morphology when the learned core does not provide
+independent split evidence; they are not silently deleted or forced toward a
+WT reference length.
 
 Reports:
 
-- `scratch/v571_remediation_final2_pilot/samples/kj_sv_40xx0.75-1/attempt_001/batch_report_v5.7.1-body-width.pdf`
-- `scratch/v571_remediation_final2_pilot/samples/w1118_sv_feb_40xx0.75-1/attempt_001/batch_report_v5.7.1-body-width.pdf`
+- `scratch/v571_post_audit_remediation_pilot_run3/samples/kj_sv_40xx0.75-1/attempt_001/batch_report_v5.7.1-body-width.pdf`
+- `scratch/v571_post_audit_remediation_pilot_run3/samples/w1118_sv_feb_40xx0.75-1/attempt_001/batch_report_v5.7.1-body-width.pdf`
+- `scratch/v571_post_audit_remediation_pilot_run3/between_sample_analysis/01_biological_results/Biological_Comparison_Report.pdf`
+- `scratch/v571_post_audit_remediation_pilot_run3/between_sample_analysis/02_quality_control/Quality_Control_Report.pdf`
+
+The biological comparison is descriptive only because this pilot has one
+specimen per group. Inferential statistics are unavailable until each group
+contains at least three independent specimens.
 
 ## Width plateau validation
 
@@ -115,14 +128,15 @@ with an independent filled-area/length estimate.
 ## Automated validation
 
 - Python compilation: passed
-- Full test suite: `196 passed in 26.04s`
+- Full test suite: `205 passed in 25.33s`
 - Focused gap-recovery and merge-classification tests: passed
 - Tuner self-check: passed
 - `git diff --check`: passed; line-ending conversion warnings only
 
 ## Decision
 
-The corrected v5.7.1 segmentation, calibration, body-width measurement,
-morphology-neutral tracking, gap recovery, and report population logic pass the
-two-specimen production replay. A fresh independent seven-role audit is still
-required on the clean commit before release tagging or a full biological rerun.
+The corrected v5.7.1 segmentation, learned-core instance separation,
+calibration, body-width measurement, morphology-neutral tracking, gap recovery,
+and report population logic pass the two-specimen production replay. A fresh
+independent seven-role audit is still required on a clean pushed commit before
+release tagging or a full biological rerun.

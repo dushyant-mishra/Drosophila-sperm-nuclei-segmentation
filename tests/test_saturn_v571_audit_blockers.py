@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from skimage.morphology import skeletonize
+import tifffile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,84 @@ def test_over_20_um_branched_component_is_a_technical_merge_failure():
     assert result["suspected_multi_object_merge"] is True
 
 
+@pytest.mark.parametrize("shape_kind", ["straight", "wide", "curved", "thin"])
+def test_long_single_core_morphologies_remain_one_instance(shape_kind):
+    saturn = load_saturn()
+    mask = np.zeros((80, 100), dtype=bool)
+    if shape_kind == "straight":
+        mask[37:43, 10:90] = True
+    elif shape_kind == "wide":
+        mask[33:47, 10:90] = True
+    elif shape_kind == "thin":
+        mask[39:42, 10:90] = True
+    else:
+        for x in range(10, 90):
+            y = int(round(40 + 12 * np.sin((x - 10) / 80 * np.pi)))
+            mask[max(0, y - 3):min(mask.shape[0], y + 4), x] = True
+    probability = np.where(mask, 0.9, 0.0).astype(np.float32)
+    core_probability = np.zeros_like(probability)
+    core_probability[mask] = 0.8
+    labels = saturn.measure.label(mask).astype(np.int32)
+    cfg = saturn.cfg_with_resolved_pixels({
+        **saturn.CONFIG,
+        "UM_PER_PX_XY": 0.5,
+        "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": True,
+        "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 20.0,
+    })
+
+    refined, _, audit = saturn._refine_overlong_unet_instances(
+        probability,
+        labels,
+        {1: 1},
+        cfg,
+        core_probability=core_probability,
+    )
+
+    assert int(refined.max()) == 1
+    assert np.array_equal(refined > 0, mask)
+    assert audit
+    assert audit[0]["objective_core_marker_count"] == 1
+
+
+def test_connected_core_peaks_split_overlong_component_without_length_only_rule():
+    saturn = load_saturn()
+    mask = np.zeros((48, 100), dtype=bool)
+    mask[20:27, 10:90] = True
+    probability = np.where(mask, 0.9, 0.0).astype(np.float32)
+    x = np.arange(mask.shape[1], dtype=np.float32)
+    core_profile = (
+        0.55
+        + 0.40 * np.exp(-0.5 * ((x - 30.0) / 4.0) ** 2)
+        + 0.40 * np.exp(-0.5 * ((x - 70.0) / 4.0) ** 2)
+    )
+    core_probability = np.zeros_like(probability)
+    core_probability[mask] = np.broadcast_to(
+        core_profile, mask.shape
+    )[mask]
+    labels = saturn.measure.label(mask).astype(np.int32)
+    cfg = saturn.cfg_with_resolved_pixels({
+        **saturn.CONFIG,
+        "UM_PER_PX_XY": 0.5,
+        "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": True,
+        "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 20.0,
+        "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE": 0.12,
+        "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM": 4.0,
+    })
+
+    refined, _, audit = saturn._refine_overlong_unet_instances(
+        probability,
+        labels,
+        {1: 1},
+        cfg,
+        core_probability=core_probability,
+    )
+
+    assert int(refined.max()) == 2
+    assert np.array_equal(refined > 0, mask)
+    assert audit[0]["disposition"] == "overlong_watershed_split"
+    assert audit[0]["split_evidence"] == "separated_learned_core_peaks"
+
+
 def test_centroid_path_tortuosity_uses_one_anisotropic_3d_path():
     saturn = load_saturn()
     detections = pd.DataFrame(
@@ -174,7 +253,7 @@ def test_settings_bundle_hashes_sources_roi_and_metadata(tmp_path):
     source = tmp_path / "Project001_Series001_z00_ch00.tif"
     roi = tmp_path / "roi.npy"
     metadata = tmp_path / "Project001_Series001.xml"
-    source.write_bytes(b"source pixels")
+    tifffile.imwrite(source, np.arange(4, dtype=np.uint16).reshape(2, 2))
     np.save(roi, np.ones((2, 2), dtype=bool))
     metadata.write_text("<xml/>", encoding="utf-8")
     cfg = {
@@ -187,13 +266,61 @@ def test_settings_bundle_hashes_sources_roi_and_metadata(tmp_path):
     bundle = saturn.save_analysis_settings_bundle(tmp_path / "out", cfg)
     manifest = json.loads(Path(bundle["manifest"]).read_text(encoding="utf-8"))
     roles = {record["role"] for record in manifest["files"]}
-    assert {"source_image_manifest", "roi_mask_source", "microscope_metadata_xml"} <= roles
+    assert {
+        "source_image_manifest",
+        "roi_mask_source",
+        "microscope_metadata_xml",
+        "runtime_environment",
+    } <= roles
     source_manifest = json.loads(
         (Path(bundle["settings_dir"]) / "source_image_manifest.json").read_text(
             encoding="utf-8"
         )
     )
-    assert len(source_manifest["ordered_source_images"][0]["sha256"]) == 64
+    source_record = source_manifest["ordered_source_images"][0]
+    assert len(source_record["sha256"]) == 64
+    assert source_record["shape"] == [2, 2]
+    runtime_environment = json.loads(
+        (Path(bundle["settings_dir"]) / "runtime_environment.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert runtime_environment["requested_unet_device"] == "auto"
+    assert runtime_environment["resolved_unet_device"] in {
+        "cpu",
+        "cuda",
+        "mps",
+    }
+    assert runtime_environment["deterministic_unet_inference"] is True
+
+
+def test_manifest_locked_calibration_supports_organized_filenames(tmp_path):
+    saturn = load_saturn()
+    source = tmp_path / "KJ-01_z0000_ch00.tif"
+    tifffile.imwrite(source, np.zeros((8, 8), dtype=np.uint16))
+    metadata = tmp_path / "Project001_Series013.xml"
+    metadata.write_text("<xml/>", encoding="utf-8")
+    cfg = {
+        **saturn.CONFIG,
+        "AUTO_LEICA_CALIBRATION": True,
+        "REQUIRE_LEICA_METADATA": True,
+        "UM_PER_PX_XY": 0.38,
+        "UM_PER_SLICE_Z": 0.52,
+        "CALIBRATION_METADATA_FILE": str(metadata),
+        "_CALIBRATION_LOCKED_FROM_MANIFEST": True,
+        "_CALIBRATION_PROVENANCE": {
+            "acquisition_class": "Leica 40x test",
+        },
+    }
+
+    provenance = saturn.resolve_stack_microscope_calibration(
+        cfg, [source], input_dir=tmp_path, require_metadata=True
+    )
+
+    assert provenance["status"] == "leica_xml_manifest_locked"
+    assert cfg["CALIBRATION_SOURCE"] == "leica_metadata_xml"
+    assert cfg["UM_PER_PX_XY"] == pytest.approx(0.38)
+    assert cfg["UM_PER_SLICE_Z"] == pytest.approx(0.52)
 
 
 def test_same_path_checkpoint_replacement_changes_cache_identity(tmp_path):
@@ -205,6 +332,36 @@ def test_same_path_checkpoint_replacement_changes_cache_identity(tmp_path):
     checkpoint.write_bytes(b"second")
     second = bridge._checkpoint_sha256(checkpoint)
     assert first != second
+
+
+def test_production_checkpoint_cpu_inference_is_repeatable():
+    from utils import saturn_unet25d_bridge as bridge
+
+    checkpoint = ROOT / "model_checkpoints" / "v571_model_c_dual_head_epoch003.pt"
+    context = np.linspace(0, 1, 3 * 32 * 32, dtype=np.float32).reshape(3, 32, 32)
+    roi = np.ones((32, 32), dtype=bool)
+    cfg = {
+        "UNET_DEVICE": "cpu",
+        "UNET_DETERMINISTIC_INFERENCE": True,
+        "UNET_TILE_SIZE": 32,
+        "UNET_TILE_OVERLAP": 0,
+        "UNET_TILE_BATCH_SIZE": 1,
+        "UNET_ROI_PADDING_PX": 0,
+        "UNET_OUTSIDE_ROI_ZERO": True,
+    }
+
+    first = bridge.predict_probability_heads_tiled(
+        context, checkpoint, roi_mask=roi, cfg=cfg
+    )
+    second = bridge.predict_probability_heads_tiled(
+        context, checkpoint, roi_mask=roi, cfg=cfg
+    )
+
+    assert set(first) == {"foreground", "core"}
+    assert np.array_equal(first["foreground"], second["foreground"])
+    assert np.array_equal(first["core"], second["core"])
+    assert cfg["_UNET_RUNTIME_PROVENANCE"]["resolved_device"] == "cpu"
+    assert cfg["_UNET_RUNTIME_PROVENANCE"]["deterministic_inference"] is True
 
 
 def test_default_production_profile_is_fail_closed_and_versioned():

@@ -72,6 +72,10 @@ UNET_CACHE_CONFIG_KEYS = (
     "UNET_TILE_SIZE",
     "UNET_TILE_OVERLAP",
     "UNET_TILE_BATCH_SIZE",
+    "UNET_DEVICE",
+    "UNET_DETERMINISTIC_INFERENCE",
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE",
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM",
     "UNET_ROI_PADDING_PX",
     "UNET_OUTSIDE_ROI_ZERO",
     "UNET_INFERENCE_MODE",
@@ -663,7 +667,6 @@ def summarize_candidate(rows, segs, cfg):
     segmentation_score = (
         technical_score
         + (1e6 if not rows else 0.0)
-        + very_long_frac * 1000.0
     )
     unet_rescue_score = (
         technical_score
@@ -676,7 +679,6 @@ def summarize_candidate(rows, segs, cfg):
         technical_score
         + (1e6 if not rows else 0.0)
         + empty_slice_fraction * 1e5
-        + very_long_frac * 1000.0
         + max(0.0, mask_occ - 0.30) * 150.0
         + max(0.0, hyst_occ - 0.45) * 100.0
     )

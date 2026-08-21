@@ -177,6 +177,7 @@ from skimage.morphology import skeletonize
 from scipy.ndimage import distance_transform_edt, gaussian_filter1d, grey_dilation
 from scipy.spatial import cKDTree
 from scipy.optimize import linear_sum_assignment
+from scipy.signal import find_peaks
 from matplotlib.backends.backend_pdf import PdfPages
 
 try:
@@ -243,6 +244,8 @@ CONFIG = {
     "UNET_TILE_SIZE": 256,
     "UNET_TILE_OVERLAP": 64,
     "UNET_TILE_BATCH_SIZE": 8,
+    "UNET_DEVICE": "auto",
+    "UNET_DETERMINISTIC_INFERENCE": True,
     "UNET_ROI_PADDING_PX": 32,
     "UNET_STITCH_MODE": "weighted_average",
     "UNET_OUTSIDE_ROI_ZERO": True,
@@ -278,6 +281,8 @@ CONFIG = {
     "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 20.0,
     "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": 11.0,
     "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": 2.0,
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE": 0.05,
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM": 4.0,
     "UNET_PRIMARY_MIN_COMPONENT_PX": 3,
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": False,
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": 2,
@@ -463,6 +468,7 @@ _REQUIRED = {
     "UNET_CANDIDATE_THRESHOLD": (int, float), "UNET_SEED_THRESHOLD": (int, float),
     "UNET_CONTEXT_MODE": str, "UNET_INFERENCE_MODE": str,
     "UNET_TILE_SIZE": int, "UNET_TILE_OVERLAP": int, "UNET_TILE_BATCH_SIZE": int,
+    "UNET_DEVICE": str, "UNET_DETERMINISTIC_INFERENCE": bool,
     "UNET_ROI_PADDING_PX": int,
     "UNET_STITCH_MODE": str, "UNET_OUTSIDE_ROI_ZERO": bool, "UNET_FAIL_HARD": bool,
     "UNET_SAVE_PROBABILITY_MAPS": bool, "UNET_CANDIDATE_ACCOUNTING": bool,
@@ -484,6 +490,8 @@ _REQUIRED = {
     "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": (int, float),
     "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": (int, float),
     "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": (int, float),
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE": (int, float),
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM": (int, float),
     "UNET_PRIMARY_MIN_COMPONENT_PX": int,
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": bool,
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": int,
@@ -653,6 +661,14 @@ def validate_config(cfg):
     if cfg.get("UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX", -1) < 0:
         errors.append(
             "  UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX must be nonnegative"
+        )
+    if not 0 < cfg.get("UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE", 0) <= 1:
+        errors.append(
+            "  UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE must be within (0, 1]"
+        )
+    if cfg.get("UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM", 0) <= 0:
+        errors.append(
+            "  UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM must be positive"
         )
     output_mode = str(cfg.get("UNET_OUTPUT_MODE", "single_head")).strip().lower()
     if output_mode not in {"single_head", "dual_head"}:
@@ -2751,21 +2767,81 @@ def _overlong_watershed_markers(
     return markers
 
 
+def _learned_core_watershed_markers(core_probability, component, path, cfg):
+    """Return watershed markers supported by independent learned-core peaks."""
+    core_probability = np.asarray(core_probability, dtype=np.float32)
+    component = np.asarray(component, dtype=bool)
+    path = np.asarray(path, dtype=np.int32)
+    markers = np.zeros(component.shape, dtype=np.int32)
+    threshold = float(cfg.get("UNET_CORE_THRESHOLD", 0.5))
+
+    core_labels = measure.label((core_probability >= threshold) & component)
+    marker_id = 0
+    for core_prop in measure.regionprops(core_labels, intensity_image=core_probability):
+        coordinates = core_prop.coords
+        values = core_probability[coordinates[:, 0], coordinates[:, 1]]
+        selected = coordinates[int(np.argmax(values))]
+        marker_id += 1
+        markers[int(selected[0]), int(selected[1])] = marker_id
+    if marker_id >= 2 or path.shape[0] < 3:
+        return markers, marker_id, "multiple_disconnected_learned_cores"
+
+    # Adjacent nuclei can have separate core maxima joined by a narrow
+    # above-threshold saddle. Detect those maxima along the ordered centerline
+    # rather than treating a connected thresholded core as one object.
+    values = core_probability[path[:, 0], path[:, 1]]
+    smoothed = gaussian_filter1d(values.astype(np.float64), sigma=1.0)
+    um_per_px = max(float(cfg.get("UM_PER_PX_XY", 1.0)), 1e-9)
+    minimum_distance_px = max(
+        2,
+        int(round(
+            float(cfg.get(
+                "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM", 4.0
+            )) / um_per_px
+        )),
+    )
+    peaks, properties = find_peaks(
+        smoothed,
+        height=threshold,
+        prominence=float(cfg.get(
+                "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE", 0.05
+        )),
+        distance=minimum_distance_px,
+    )
+    if peaks.size < 2:
+        return markers, marker_id, "single_connected_learned_core"
+    markers.fill(0)
+    for marker_id, peak_index in enumerate(peaks, start=1):
+        row, col = (int(value) for value in path[int(peak_index)])
+        markers[row, col] = marker_id
+    return markers, int(peaks.size), "separated_learned_core_peaks"
+
+
 def _refine_overlong_unet_instances(
     probability,
     instance_labels,
     parent_by_instance,
     cfg,
+    core_probability=None,
 ):
     """
-    Re-watershed unresolved physically impossible U-Net components.
+    Re-watershed long U-Net components only with independent fusion evidence.
 
     Components at or below the trigger are preserved exactly. Longer
-    components are partitioned along their measured mask centerline, and a
-    proposed split is accepted only when every child retains a measurable
-    centerline above the technical minimum. No pixels are added or removed.
+    components remain intact unless the learned core head contains at least two
+    disconnected cores or well-separated peaks with a probability valley. A proposed split is
+    accepted only when every child retains a measurable centerline above the
+    technical minimum. Length alone never causes a split, and no pixels are
+    added or removed.
     """
     instance_labels = np.asarray(instance_labels, dtype=np.int32)
+    core_probability = (
+        None
+        if core_probability is None
+        else np.asarray(core_probability, dtype=np.float32)
+    )
+    if core_probability is not None and core_probability.shape != instance_labels.shape:
+        raise ValueError("Core probability and instance-label shapes must match")
     if not bool(cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_ENABLE", True)):
         return instance_labels.copy(), dict(parent_by_instance), []
 
@@ -2809,12 +2885,22 @@ def _refine_overlong_unet_instances(
         length_um = float(length_px * um_per_px)
         children = [component]
         disposition = "unchanged"
-
-        if length_um > trigger_um and path.shape[0] >= 2:
-            segment_count = max(2, int(math.ceil(length_um / target_um)))
-            markers = _overlong_watershed_markers(
-                probability, component, path, segment_count
+        core_marker_count = 0
+        split_evidence = "none"
+        learned_markers = np.zeros(component.shape, dtype=np.int32)
+        if core_probability is not None and path.shape[0] >= 2:
+            learned_markers, core_marker_count, split_evidence = (
+                _learned_core_watershed_markers(
+                    core_probability, component, path, cfg
+                )
             )
+
+        if (
+            length_um > trigger_um
+            and path.shape[0] >= 2
+            and core_marker_count >= 2
+        ):
+            markers = learned_markers
             if int(markers.max()) >= 2:
                 proposed = skseg.watershed(
                     -np.asarray(probability, dtype=np.float32),
@@ -2856,6 +2942,12 @@ def _refine_overlong_unet_instances(
                 "output_instance_ids": child_labels,
                 "output_instance_count": len(child_labels),
                 "disposition": disposition,
+                "objective_core_marker_count": core_marker_count,
+                "split_evidence": (
+                    split_evidence
+                    if core_marker_count >= 2
+                    else "none_length_only_not_split"
+                ),
                 "split_trigger_um": trigger_um,
                 "split_target_um": target_um,
             })
@@ -2995,6 +3087,7 @@ def _build_unet_primary_segmentation(
             instances,
             parent_map,
             cfg,
+            core_probability=core_probability,
         )
         for row in pass_audit:
             row["split_pass"] = split_pass + 1
@@ -9861,7 +9954,8 @@ PARAM_SECTIONS = {
         "UNET_FOREGROUND_THRESHOLD", "UNET_CORE_THRESHOLD", "UNET_THRESHOLD_MODE",
         "UNET_CANDIDATE_THRESHOLD", "UNET_SEED_THRESHOLD", "UNET_CONTEXT_MODE",
         "UNET_INFERENCE_MODE", "UNET_TILE_SIZE", "UNET_TILE_OVERLAP",
-        "UNET_TILE_BATCH_SIZE", "UNET_ROI_PADDING_PX", "UNET_FAIL_HARD",
+        "UNET_TILE_BATCH_SIZE", "UNET_DEVICE", "UNET_DETERMINISTIC_INFERENCE",
+        "UNET_ROI_PADDING_PX", "UNET_FAIL_HARD",
         "UNET_RESCUE_ENABLE", "UNET_RESCUE_THRESHOLD",
         "UNET_RESCUE_HYSTERESIS_ENABLE",
         "UNET_RESCUE_RETAIN_MORPHOLOGY_WARNINGS",
@@ -9878,6 +9972,8 @@ PARAM_SECTIONS = {
         "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM",
         "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM",
         "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM",
+        "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE",
+        "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM",
         "UNET_PRIMARY_MIN_COMPONENT_PX",
         "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE",
         "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX",
@@ -10006,6 +10102,8 @@ PARAM_TITLES = {
     "UNET_TILE_SIZE": "U-Net tile size (px)",
     "UNET_TILE_OVERLAP": "U-Net tile overlap (px)",
     "UNET_TILE_BATCH_SIZE": "U-Net tile batch size",
+    "UNET_DEVICE": "U-Net inference device (auto/cpu/cuda/mps)",
+    "UNET_DETERMINISTIC_INFERENCE": "Use deterministic U-Net inference",
     "UNET_ROI_PADDING_PX": "U-Net ROI padding (px)",
     "UNET_FAIL_HARD": "Stop run if U-Net inference fails",
     "UNET_RESCUE_ENABLE": "Enable U-Net rescue lane",
@@ -10031,6 +10129,8 @@ PARAM_TITLES = {
     "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": "Overlong split trigger (um)",
     "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": "Overlong split target spacing (um)",
     "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": "Minimum split child length (um)",
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE": "Core-peak split prominence",
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM": "Core-peak minimum spacing (um)",
     "UNET_PRIMARY_MIN_COMPONENT_PX": "U-Net-primary minimum component size (px)",
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": "Add residual Saturn-only detections",
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": "Saturn residual exclusion dilation (px)",
@@ -10155,8 +10255,10 @@ PARAM_DESCRIPTIONS = {
     "UNET_INSTANCE_WATERSHED_COMPACTNESS": "Compactness term for watershed instance splitting. Larger values favor compact regions; near-zero follows probability topology more closely.",
     "UNET_PRIMARY_OVERLONG_SPLIT_ENABLE": "Re-watershed a U-Net-primary component only when its mask-derived centerline exceeds the technical overlong trigger.",
     "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": "Technical trigger for a second watershed pass. The default 20 um threshold challenges very improbable fused components; it is not a WT morphology target or an automatic rejection cutoff.",
-    "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": "Approximate spacing for probability-supported watershed markers inside a component above the technical trigger. Child measurements are recalculated from their own masks.",
+    "UNET_PRIMARY_OVERLONG_SPLIT_TARGET_UM": "Reference child scale retained for split-threshold validation. Actual production markers come from independent learned-core regions or separated learned-core peaks.",
     "UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM": "Minimum measurable child centerline required before an overlong watershed split is accepted. Failed proposals leave the original component intact for review.",
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_PROMINENCE": "Minimum learned-core probability prominence required to treat connected core maxima as independent watershed evidence.",
+    "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM": "Minimum calibrated centerline separation between learned-core peaks used to split a technically improbable overlong component.",
     "UNET_PRIMARY_MIN_COMPONENT_PX": "Technical pixel-noise floor used before U-Net-primary instance measurement. It is not a biological length or shape gate.",
     "UNET_PRIMARY_CLASSICAL_ADDITIONS_ENABLE": "When enabled, Saturn may add detections only in residual space outside accepted U-Net-primary masks. It cannot remove or alter U-Net instances.",
     "UNET_PRIMARY_CLASSICAL_EXCLUDE_DILATION_PX": "Display-independent exclusion margin around accepted U-Net-primary masks before optional Saturn-only additions are searched.",
@@ -11238,6 +11340,34 @@ def resolve_stack_microscope_calibration(
     cfg["CALIBRATION_METADATA_FILE"] = str(
         cfg.get("CALIBRATION_METADATA_FILE", "")
     )
+    if bool(cfg.get("_CALIBRATION_LOCKED_FROM_MANIFEST", False)):
+        metadata_path = pl.Path(cfg["CALIBRATION_METADATA_FILE"]).expanduser().resolve()
+        if not metadata_path.is_file():
+            raise FileNotFoundError(
+                "Study-manifest calibration metadata is missing: "
+                f"{metadata_path}"
+            )
+        if fallback_xy <= 0 or fallback_z <= 0:
+            raise ValueError("Study-manifest calibration values must be positive")
+        provenance.update(
+            {
+                "status": "leica_xml_manifest_locked",
+                "metadata_path": str(metadata_path),
+                "xy_um_per_pixel": fallback_xy,
+                "z_um_per_slice": fallback_z,
+                "acquisition_class": str(
+                    cfg.get("_CALIBRATION_PROVENANCE", {}).get(
+                        "acquisition_class",
+                        "study manifest Leica calibration",
+                    )
+                ),
+                "calibration_method": "study_manifest_resolved_leica_xml",
+            }
+        )
+        cfg["CALIBRATION_SOURCE"] = "leica_metadata_xml"
+        cfg["CALIBRATION_METADATA_FILE"] = str(metadata_path)
+        cfg["_CALIBRATION_PROVENANCE"] = provenance
+        return provenance
     if not auto_enabled:
         cfg["_CALIBRATION_PROVENANCE"] = provenance
         return provenance
@@ -11429,6 +11559,60 @@ def save_analysis_settings_bundle(output_dir, cfg, strict=True):
         }
     ]
 
+    runtime_environment = {
+        "requested_unet_device": str(cfg.get("UNET_DEVICE", "auto")),
+        "deterministic_unet_inference": bool(
+            cfg.get("UNET_DETERMINISTIC_INFERENCE", True)
+        ),
+    }
+    try:
+        import torch
+
+        requested_device = runtime_environment["requested_unet_device"].lower()
+        if requested_device == "auto":
+            if torch.cuda.is_available():
+                resolved_device = "cuda"
+            elif (
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            ):
+                resolved_device = "mps"
+            else:
+                resolved_device = "cpu"
+        else:
+            resolved_device = requested_device
+        runtime_environment.update(
+            {
+                "resolved_unet_device": resolved_device,
+                "torch_version": str(torch.__version__),
+                "cuda_available": bool(torch.cuda.is_available()),
+                "cuda_version": str(torch.version.cuda or ""),
+                "cudnn_version": (
+                    int(torch.backends.cudnn.version())
+                    if torch.backends.cudnn.is_available()
+                    else None
+                ),
+            }
+        )
+    except Exception as exc:
+        runtime_environment.update(
+            {
+                "resolved_unet_device": "unavailable",
+                "torch_probe_error": f"{type(exc).__name__}: {exc}",
+            }
+        )
+    runtime_environment_path = settings_dir / "runtime_environment.json"
+    _study_atomic_json(runtime_environment_path, runtime_environment)
+    files.append(
+        {
+            "role": "runtime_environment",
+            "original_path": "",
+            "copied_path": str(runtime_environment_path),
+            "size_bytes": int(runtime_environment_path.stat().st_size),
+            "sha256": _sha256_file(runtime_environment_path),
+        }
+    )
+
     profile_source = str(cfg.get("_ACTIVE_PROFILE_PATH", "")).strip()
     profile_destination = settings_dir / "analysis_profile_used.json"
     if profile_source and pl.Path(profile_source).is_file():
@@ -11530,6 +11714,9 @@ def save_analysis_settings_bundle(output_dir, cfg, strict=True):
                 "z_index": parsed.get("z"),
                 "channel": parsed.get("channel"),
                 "stack_key": parsed.get("stack_key"),
+                "shape": list(ensure_2d_image(
+                    robust_imread(str(source)), source.name
+                ).shape),
             }
         )
     source_manifest_path = settings_dir / "source_image_manifest.json"
@@ -13364,6 +13551,11 @@ def run_multisample_study(
                 "DO_TRACKING": True,
             }
         )
+        metadata_path = str(row.get("calibration_metadata_path", "")).strip()
+        if metadata_path:
+            sample_cfg["CALIBRATION_METADATA_FILE"] = metadata_path
+            sample_cfg["CALIBRATION_SOURCE"] = "leica_metadata_xml"
+            sample_cfg["_CALIBRATION_LOCKED_FROM_MANIFEST"] = True
         sample_cfg["_CALIBRATION_PROVENANCE"] = {
             "status": (
                 "leica_xml"
@@ -15526,6 +15718,10 @@ class SpermGUI:
 
             preview_output_dir = params["OUTPUT_DIR"]
             ensure_dir(preview_output_dir)
+            params["_SOURCE_IMAGE_FILES"] = [str(pl.Path(path).resolve()) for path in self.files]
+            preview_roi_path = pl.Path(preview_output_dir) / "roi_mask_used.npy"
+            np.save(preview_roi_path, np.asarray(roi_mask, dtype=bool))
+            params["ROI_MASK_PATH"] = str(preview_roi_path.resolve())
             save_calibration_provenance(preview_output_dir, params)
             save_analysis_settings_bundle(preview_output_dir, params)
             log(
@@ -15805,6 +16001,12 @@ class SpermGUI:
         params['OUTPUT_DIR'] = out_dir
         params['SAVE_DEBUG_IMAGES'] = False
         params['DO_TRACKING'] = True
+        roi_mask = self.build_roi_mask()
+        exclusion_mask = None
+        params["_SOURCE_IMAGE_FILES"] = [str(pl.Path(path).resolve()) for path in self.files]
+        roi_path = pl.Path(out_dir) / "roi_mask_used.npy"
+        np.save(roi_path, np.asarray(roi_mask, dtype=bool))
+        params["ROI_MASK_PATH"] = str(roi_path.resolve())
         calibration = resolve_stack_microscope_calibration(
             params,
             self.files,
@@ -15818,9 +16020,6 @@ class SpermGUI:
             f"Z={params['UM_PER_SLICE_Z']:.9g} um/slice "
             f"({calibration['status']})"
         )
-
-        roi_mask = self.build_roi_mask()
-        exclusion_mask = None
 
         self.lbl_roi.config(text="Processing... See Top Bar")
         self.root.update_idletasks()

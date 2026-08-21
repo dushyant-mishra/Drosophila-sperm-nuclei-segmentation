@@ -1,0 +1,367 @@
+{
+  "generated_at_utc": "2026-08-21T20:30:57.601085+00:00",
+  "git_commit_at_generation": "8c1f9f53e4a1ab72e66a82ef31b8c675ab9e4bf9",
+  "generator_sha256": "a8e79b38e237e9d33e4bd81ecfa93aaf26446718774acb0c07aecddc0b3412e8",
+  "study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "analysis_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001",
+      "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_post_audit_remediation_run3\\KJ-01_stratified_tracking.png",
+      "artifact_sha256": "1a1160ea9b220a53ba7ab43e72d30a6fd3ab2a1c97b607ed1237794f11d78c63",
+      "records": [
+        {
+          "specimen": "KJ-01",
+          "category": "faint",
+          "track_id": 1019,
+          "displayed_consecutive_z_indices": [
+            18,
+            19,
+            20,
+            21
+          ],
+          "observed_z_indices": [
+            20
+          ],
+          "length_um": 0.757,
+          "body_width_um": NaN,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 1.624995671780031,
+          "mean_unet_probability": 0.6043
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "bright",
+          "track_id": 164,
+          "displayed_consecutive_z_indices": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "observed_z_indices": [
+            4
+          ],
+          "length_um": 5.233,
+          "body_width_um": 1.5138,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 2.1790072457833576,
+          "mean_unet_probability": 0.9857
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "short",
+          "track_id": 1771,
+          "displayed_consecutive_z_indices": [
+            33,
+            34,
+            35,
+            36
+          ],
+          "observed_z_indices": [
+            34,
+            35
+          ],
+          "length_um": 0.34618410700236,
+          "body_width_um": NaN,
+          "tortuosity": 1.0,
+          "nearest_neighbor_um": 1.2116443745082588,
+          "mean_unet_probability": 0.8216
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "long",
+          "track_id": 4409,
+          "displayed_consecutive_z_indices": [
+            76,
+            77,
+            78,
+            79
+          ],
+          "observed_z_indices": [
+            78
+          ],
+          "length_um": 40.122,
+          "body_width_um": 1.6377,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 0.4408032652543741,
+          "mean_unet_probability": 0.9571
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "wide",
+          "track_id": 1844,
+          "displayed_consecutive_z_indices": [
+            39,
+            40,
+            41,
+            42
+          ],
+          "observed_z_indices": [
+            36,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44
+          ],
+          "length_um": 16.675584424547925,
+          "body_width_um": 5.6573,
+          "tortuosity": 1.3475764839565327,
+          "nearest_neighbor_um": 2.7338307182531394,
+          "mean_unet_probability": 0.944625
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "curved",
+          "track_id": 3213,
+          "displayed_consecutive_z_indices": [
+            57,
+            58,
+            59,
+            60
+          ],
+          "observed_z_indices": [
+            58,
+            59,
+            60
+          ],
+          "length_um": 18.53293753682249,
+          "body_width_um": 1.6151,
+          "tortuosity": 8.696861628101026,
+          "nearest_neighbor_um": 3.86785317989838,
+          "mean_unet_probability": 0.9509666666666666
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "touching",
+          "track_id": 1286,
+          "displayed_consecutive_z_indices": [
+            23,
+            24,
+            25,
+            26
+          ],
+          "observed_z_indices": [
+            25
+          ],
+          "length_um": 20.045,
+          "body_width_um": 1.6586,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 0.3482462311809707,
+          "mean_unet_probability": 0.9514
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "irregular",
+          "track_id": 2979,
+          "displayed_consecutive_z_indices": [
+            54,
+            55,
+            56,
+            57
+          ],
+          "observed_z_indices": [
+            54,
+            55,
+            56,
+            57
+          ],
+          "length_um": 18.247578330383163,
+          "body_width_um": 1.5817,
+          "tortuosity": 7.258421060258931,
+          "nearest_neighbor_um": 1.636428355959648,
+          "mean_unet_probability": 0.92535
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "analysis_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001",
+      "artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_post_audit_remediation_run3\\WT-01_stratified_tracking.png",
+      "artifact_sha256": "2e1d646d29457d7a3ceba49ecd01dd5307087bf814feb4a3536a7852bc71d51a",
+      "records": [
+        {
+          "specimen": "WT-01",
+          "category": "faint",
+          "track_id": 398,
+          "displayed_consecutive_z_indices": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "observed_z_indices": [
+            4
+          ],
+          "length_um": 0.378,
+          "body_width_um": NaN,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 2.401696744496672,
+          "mean_unet_probability": 0.6381
+        },
+        {
+          "specimen": "WT-01",
+          "category": "bright",
+          "track_id": 2055,
+          "displayed_consecutive_z_indices": [
+            45,
+            46,
+            47,
+            48
+          ],
+          "observed_z_indices": [
+            46,
+            47,
+            48
+          ],
+          "length_um": 1.0258765733576758,
+          "body_width_um": NaN,
+          "tortuosity": 1.0,
+          "nearest_neighbor_um": 1.196662688784421,
+          "mean_unet_probability": 0.9823
+        },
+        {
+          "specimen": "WT-01",
+          "category": "short",
+          "track_id": 2896,
+          "displayed_consecutive_z_indices": [
+            63,
+            64,
+            65,
+            66
+          ],
+          "observed_z_indices": [
+            65
+          ],
+          "length_um": 0.378,
+          "body_width_um": NaN,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 1.8314662588746813,
+          "mean_unet_probability": 0.706
+        },
+        {
+          "specimen": "WT-01",
+          "category": "long",
+          "track_id": 1822,
+          "displayed_consecutive_z_indices": [
+            38,
+            39,
+            40,
+            41
+          ],
+          "observed_z_indices": [
+            40
+          ],
+          "length_um": 33.214,
+          "body_width_um": 1.8921,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 2.407117987720917,
+          "mean_unet_probability": 0.9569
+        },
+        {
+          "specimen": "WT-01",
+          "category": "wide",
+          "track_id": 1731,
+          "displayed_consecutive_z_indices": [
+            46,
+            47,
+            48,
+            49
+          ],
+          "observed_z_indices": [
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ],
+          "length_um": 19.394419438970296,
+          "body_width_um": 5.4461,
+          "tortuosity": 1.345365871219661,
+          "nearest_neighbor_um": 4.79924735885718,
+          "mean_unet_probability": 0.9329850000000001
+        },
+        {
+          "specimen": "WT-01",
+          "category": "curved",
+          "track_id": 2198,
+          "displayed_consecutive_z_indices": [
+            49,
+            50,
+            51,
+            52
+          ],
+          "observed_z_indices": [
+            50,
+            51,
+            52
+          ],
+          "length_um": 18.79275854534837,
+          "body_width_um": 1.7081,
+          "tortuosity": 5.740547217597882,
+          "nearest_neighbor_um": 1.0207797302222588,
+          "mean_unet_probability": 0.9291666666666667
+        },
+        {
+          "specimen": "WT-01",
+          "category": "touching",
+          "track_id": 1692,
+          "displayed_consecutive_z_indices": [
+            35,
+            36,
+            37,
+            38
+          ],
+          "observed_z_indices": [
+            37
+          ],
+          "length_um": 20.905,
+          "body_width_um": 2.6489,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 0.3461841070023599,
+          "mean_unet_probability": 0.9472
+        },
+        {
+          "specimen": "WT-01",
+          "category": "irregular",
+          "track_id": 852,
+          "displayed_consecutive_z_indices": [
+            15,
+            16,
+            17,
+            18
+          ],
+          "observed_z_indices": [
+            15,
+            16,
+            17,
+            18
+          ],
+          "length_um": 10.037870636916438,
+          "body_width_um": 1.6065,
+          "tortuosity": 5.298881084388178,
+          "nearest_neighbor_um": 2.6215261721325427,
+          "mean_unet_probability": 0.9168000000000001
+        }
+      ]
+    }
+  ]
+}
