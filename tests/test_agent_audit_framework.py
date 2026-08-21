@@ -6,6 +6,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def audit_runner_source():
+    return (ROOT / "scripts" / "run_multi_agent_audit.ps1").read_text(
+        encoding="utf-8"
+    )
+
+
 def load_validator():
     spec = importlib.util.spec_from_file_location(
         "saturn_agent_audit_validator",
@@ -140,3 +146,18 @@ def test_blocking_finding_blocks_even_pass_verdict(tmp_path):
 
     assert result["gate_passed"] is False
     assert result["blocking_findings"][0]["title"] == "Formula mismatch"
+
+
+def test_runner_supports_detached_acceptance_worktrees():
+    source = audit_runner_source()
+
+    assert "IsNullOrWhiteSpace" in source
+    assert "'DETACHED'" in source
+
+
+def test_runner_uses_native_exit_code_for_codex_warnings():
+    source = audit_runner_source()
+
+    assert "$ErrorActionPreference = 'Continue'" in source
+    assert "$exitCode = $LASTEXITCODE" in source
+    assert "return $exitCode" in source

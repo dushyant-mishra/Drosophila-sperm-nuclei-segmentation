@@ -133,8 +133,18 @@ function Invoke-AuditRole {
         '--output-schema', $Schema, '--output-last-message', $Task['OutputPath'],
         '-'
     )
-    $promptText | & $Codex @arguments *> $Task['TranscriptPath']
-    return $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell converts native stderr lines into ErrorRecord
+        # objects. Codex may emit non-fatal warnings there, so preserve them in
+        # the transcript and use the native exit code as the source of truth.
+        $ErrorActionPreference = 'Continue'
+        $promptText | & $Codex @arguments *> $Task['TranscriptPath']
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $exitCode
 }
 
 if ($Parallel) {
