@@ -909,3 +909,44 @@ For every reported experiment, retain:
 
 The figures in the repository README and this guide are illustrative
 development examples. They are not a genotype result or an accuracy benchmark.
+
+## 18. Independent Agent Review and Release Gates
+
+Scientific claims and major measurement changes are registered in
+`audits/claims_registry.json`. Separate agents review geometry, biological
+validity, calibration/provenance, software reproducibility,
+statistics/reporting, visual evidence, and repository/release state. Reviewers
+run read-only and write structured JSON evidence under `audits/runs/`.
+
+Run all reviewers from a clean commit:
+
+```powershell
+Set-Location "C:\path\to\Drosophila-sperm-nuclei-segmentation"
+
+.\scripts\run_multi_agent_audit.ps1 `
+  -ClaimId PIPELINE-V571-PRODUCTION-001 `
+  -RunId YYYYMMDD-v571-production-review `
+  -Parallel
+```
+
+Validate an existing audit without launching agents:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\validate_agent_audit.py `
+  --run .\audits\runs\YYYYMMDD-v571-production-review
+```
+
+Use `-AllowDirty` only for pre-commit diagnostics. Such a run is intentionally
+unable to pass the acceptance gate. A required reviewer verdict of
+`conditional`, `fail`, or `abstain`, or any blocking finding, prevents claim
+acceptance.
+
+The diagnostic run `20260821-v571-production-diagnostic` identified blocking
+v5.7.1 issues and therefore leaves the pipeline as an implemented candidate,
+not an accepted production release. Read its `AUDIT_SUMMARY.md` and individual
+review JSON files before continuing release work.
+
+The repository/release steward checks GitHub synchronization, committed scope,
+tests, version tags, checkpoint/profile identity, documentation, and retained
+evidence. It never commits, pushes, merges, tags, deletes, or changes repository
+visibility without explicit authorization.

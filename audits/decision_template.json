@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "replace-with-run-id",
+  "claim_id": "replace-with-claim-id",
+  "reviewed_commit": "replace-with-full-commit",
+  "gate_result": "pending",
+  "decision": "pending",
+  "decided_by": "human-coordinator",
+  "decision_date": "YYYY-MM-DD",
+  "review_files": [],
+  "accepted_limitations": [],
+  "blocking_findings": [],
+  "required_follow_up": [],
+  "supersedes_decision": ""
+}

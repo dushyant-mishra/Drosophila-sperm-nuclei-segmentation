@@ -126,6 +126,26 @@ Run the active tests with:
 python -m pytest -q
 ```
 
+### Independent agent audits
+
+High-risk measurement and production claims are tracked in
+`audits/claims_registry.json` and reviewed by independent read-only agents for
+geometry, biology, calibration, reproducibility, statistics, visual evidence,
+and repository state. Run an audit with:
+
+```powershell
+.\scripts\run_multi_agent_audit.ps1 `
+  -ClaimId PIPELINE-V571-PRODUCTION-001 `
+  -RunId YYYYMMDD-v571-production-review `
+  -Parallel
+```
+
+The first seven-role diagnostic is preserved under
+`audits/runs/20260821-v571-production-diagnostic/`. It blocked production
+acceptance pending corrections to 3D geometry, biological handling of overlong
+objects, calibration provenance, entry-point consistency, visual evidence, and
+release provenance. Passing unit tests alone does not override that decision.
+
 Historical Saturn versions, old tuning runs, build outputs, and experimental
 AI pilots are preserved under `archive/`. See `PROJECT_LAYOUT.md` and
 `archive/README.md`.

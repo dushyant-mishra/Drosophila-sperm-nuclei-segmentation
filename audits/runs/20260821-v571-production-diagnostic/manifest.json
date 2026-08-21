@@ -1,0 +1,38 @@
+{
+    "schema_version":  "1.0",
+    "audit_run_id":  "20260821-v571-production-diagnostic",
+    "claim_id":  "PIPELINE-V571-PRODUCTION-001",
+    "reviewed_commit":  "d8c498ca3c76b17ce76c02dc85bed5d9ac542d0b",
+    "branch":  "feature/v5.7.1-annotation-tolerant-unet",
+    "dirty_worktree":  true,
+    "working_tree_status":  [
+                                " M PROJECT_LAYOUT.md",
+                                " M sperm_segmentation_saturnv5.7.py",
+                                "?? AGENTS.md",
+                                "?? audits/",
+                                "?? scripts/run_multi_agent_audit.ps1",
+                                "?? scripts/validate_agent_audit.py",
+                                "?? tests/test_agent_audit_framework.py"
+                            ],
+    "mode":  "pre_commit",
+    "roles":  [
+                  "measurement_geometry",
+                  "biological_validity",
+                  "calibration_provenance",
+                  "software_reproducibility",
+                  "statistics_reporting",
+                  "visual_evidence",
+                  "repository_release"
+              ],
+    "started_at_utc":  "2026-08-21T16:19:53.9252879Z",
+    "completed_at_utc":  "2026-08-21T16:22:50.0000000Z",
+    "role_exit_codes":  {
+                            "measurement_geometry":  0,
+                            "biological_validity":  0,
+                            "calibration_provenance":  0,
+                            "software_reproducibility":  0,
+                            "statistics_reporting":  0,
+                            "visual_evidence":  0,
+                            "repository_release":  0
+                        }
+}

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Saturn independent agent review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "audit_run_id",
+    "claim_id",
+    "role",
+    "reviewed_commit",
+    "verdict",
+    "confidence",
+    "summary",
+    "checks",
+    "findings",
+    "limitations",
+    "recommended_follow_up"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "audit_run_id": {"type": "string", "minLength": 1},
+    "claim_id": {"type": "string", "minLength": 1},
+    "role": {
+      "type": "string",
+      "enum": [
+        "measurement_geometry",
+        "biological_validity",
+        "calibration_provenance",
+        "software_reproducibility",
+        "statistics_reporting",
+        "visual_evidence",
+        "repository_release"
+      ]
+    },
+    "reviewed_commit": {"type": "string", "minLength": 7},
+    "verdict": {"type": "string", "enum": ["pass", "conditional", "fail", "abstain"]},
+    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "summary": {"type": "string", "minLength": 1},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "status", "evidence"],
+        "properties": {
+          "check_id": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["pass", "fail", "not_applicable", "not_verified"]},
+          "evidence": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "title", "impact", "evidence", "recommendation"],
+        "properties": {
+          "severity": {"type": "string", "enum": ["blocking", "high", "medium", "low", "note"]},
+          "title": {"type": "string", "minLength": 1},
+          "impact": {"type": "string", "minLength": 1},
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "recommendation": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "recommended_follow_up": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

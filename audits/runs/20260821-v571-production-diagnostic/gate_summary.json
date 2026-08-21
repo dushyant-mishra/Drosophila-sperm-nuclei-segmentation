@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260821-v571-production-diagnostic",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "d8c498ca3c76b17ce76c02dc85bed5d9ac542d0b",
+  "mode": "pre_commit",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "fail",
+    "calibration_provenance": "fail",
+    "measurement_geometry": "fail",
+    "repository_release": "fail",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "conditional",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "measurement_geometry",
+      "title": "Reported 3D tortuosity is not the tortuosity of a reconstructed 3D path"
+    },
+    {
+      "role": "biological_validity",
+      "title": "Length above 20 um is an automatic comparative technical veto"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Production permits stale calibration fallback when Leica metadata is expected"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Run artifacts do not freeze calibration and source identity sufficiently for reproduction"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Production profile is not the default for GUI, single-slice, batch, or tuner execution"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Study command runs v5.7 code instead of v5.7.1"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Required stage-by-stage visual evidence is absent"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Tracking examples are selection-biased and omit required cases"
+    },
+    {
+      "role": "repository_release",
+      "title": "Current high-risk audit and decision are not recoverable from Git"
+    },
+    {
+      "role": "repository_release",
+      "title": "Validation commands are not proven to have run on the reviewed commit"
+    }
+  ],
+  "validation_errors": [
+    "pre-commit audits are diagnostic and cannot pass the acceptance gate"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260821-v571-production-diagnostic",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "d8c498ca3c76b17ce76c02dc85bed5d9ac542d0b",
+  "gate_result": "failed",
+  "decision": "blocked_pending_remediation",
+  "decided_by": "audit-gate-coordinator",
+  "decision_date": "2026-08-21",
+  "review_files": [
+    "reviews/measurement_geometry.json",
+    "reviews/biological_validity.json",
+    "reviews/calibration_provenance.json",
+    "reviews/software_reproducibility.json",
+    "reviews/statistics_reporting.json",
+    "reviews/visual_evidence.json",
+    "reviews/repository_release.json"
+  ],
+  "accepted_limitations": [
+    "Body width is apparent filled-mask width rather than PSF-corrected chromatin width",
+    "A repeated 2D ROI cannot establish anatomical SV volume"
+  ],
+  "blocking_findings": [
+    "Correct 3D tortuosity so numerator and denominator represent one reconstructed 3D path",
+    "Replace length-only above-20-um technical rejection with evidence-based merge review behavior",
+    "Require Leica metadata for production study runs and freeze calibration/source identity",
+    "Route study, GUI, batch, and tuner entry points consistently through v5.7.1 and its production profile",
+    "Create representative stage-by-stage and cross-slice visual evidence",
+    "Bind tests and retained pilot evidence to a clean reviewed commit"
+  ],
+  "required_follow_up": [
+    "Remediate blocking findings without changing WT or mutant morphology toward an expected target",
+    "Add independent synthetic 3D geometry and v5.7.1 entry-point integration tests",
+    "Run a clean-commit superseding audit with all seven roles",
+    "Do not merge or tag v5.7.1 as production until the superseding audit passes"
+  ],
+  "supersedes_decision": ""
+}

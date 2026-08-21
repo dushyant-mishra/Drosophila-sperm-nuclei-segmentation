@@ -23,6 +23,10 @@ durable supporting material.
 - `USER_GUIDE.md`: operating and interpretation guidance.
 - `scratch/`: small active v5.7 validation and report scripts only.
 - `tests/test_saturn_v57_multisample.py`: active automated regression tests.
+- `audits/`: independent agent charters, scientific claims registry, structured
+  review schema, append-only audit runs, and release-gate decisions.
+- `AGENTS.md`: repository-wide scientific and evidence rules for coding and
+  review agents.
 - `pytest.ini`: limits test discovery to active tests and excludes archived
   historical suites.
 
@@ -39,8 +43,8 @@ durable supporting material.
 
 - `gemini_api_key.txt`: active local key used by the optional report assistant;
   ignored by Git.
-- `.agents/`: empty tool-managed workspace directory; it may be recreated or
-  protected by the development environment.
+- `.agents/`: optional tool-managed workspace directory; durable agent review
+  policy and evidence live under tracked `AGENTS.md` and `audits/` instead.
 
 New generated batch outputs should remain outside the source tree when
 possible. Reviewed development outputs can be moved into

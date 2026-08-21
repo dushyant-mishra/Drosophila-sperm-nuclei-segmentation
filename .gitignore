@@ -27,6 +27,7 @@ batch_output/
 batch_output*/
 sperm_results_saturnv*/
 scratch/
+audits/runs/*launcher-smoke*/
 archive/project_history/
 archive/private_config/
 scratch/v5_6_unblinding_key/
