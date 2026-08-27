@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "software_reproducibility",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "The focused v5.7.1 tests pass, but the retained RC5 evidence is bound to commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa rather than the reviewed commit. The repository also has a dirty working tree, so production behavior cannot be reproduced from the reviewed commit alone.",
+  "checks": [
+    {
+      "check_id": "software-focused-tests",
+      "status": "pass",
+      "evidence": [
+        "Command: .venv\\Scripts\\python.exe -m pytest -q tests/test_saturn_v571_dual_head.py tests/test_saturn_v571_body_width.py tests/test_saturn_v571_audit_blockers.py tests/test_tuner_v57.py",
+        "Result: 77 passed in 10.12s"
+      ]
+    },
+    {
+      "check_id": "checkpoint-identity-enforcement",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:800-829 validates checkpoint presence, SHA-256 format, file digest, and cached-probability checkpoint identity.",
+        "production_profiles/saturn_v5_7_1_model_c_epoch003.json:25-27 specifies the dual-head checkpoint and SHA-256."
+      ]
+    },
+    {
+      "check_id": "calibration-runtime-path",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:11393-11411 resolves stack calibration before measurement and supports required Leica metadata.",
+        "audits/evidence/v571_rc5_candidate/provenance/acceptance_provenance_manifest.json:10-15 and :66-71 record Leica XML calibration provenance for both specimens."
+      ]
+    },
+    {
+      "check_id": "evidence-commit-binding",
+      "status": "fail",
+      "evidence": [
+        "Command: .venv\\Scripts\\python.exe scripts\\validate_v571_evidence_provenance.py --stage-manifest audits\\evidence\\v571_rc5_candidate\\stages\\visual_evidence_manifest.json --tracking-manifest audits\\evidence\\v571_rc5_candidate\\tracking\\tracking_replay_manifest.json --end-to-end-manifest audits\\evidence\\v571_rc5_candidate\\end_to_end\\end_to_end_visual_evidence_manifest.json --profile production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+        "Result: ValueError: Commit mismatch in audits\\evidence\\v571_rc5_candidate\\stages\\visual_evidence_manifest.json",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:3 records git_commit_at_generation as 35396b0e42f9d1afb9a2991c41bf31330a4c89aa, not reviewed commit 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+        "audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json:3 and audits/evidence/v571_rc5_candidate/end_to_end/end_to_end_visual_evidence_manifest.json:3 record the same different generation commit."
+      ]
+    },
+    {
+      "check_id": "working-tree-integrity",
+      "status": "fail",
+      "evidence": [
+        "Command: git status --short",
+        "Result: modified files include sperm_segmentation_saturnv5.7.py, tests/test_saturn_v57_multisample.py, tests/test_saturn_v57_unet_primary.py, and tests/test_tuner_v57.py."
+      ]
+    },
+    {
+      "check_id": "report-consistency-artifact",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/report_consistency_validation.json:2-6 reports source CSV, Excel, and PDF consistency validation as true."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "RC5 evidence is not bound to the reviewed commit",
+      "impact": "The production-candidate claim cannot be reproduced or audited at commit 24b9ef27e9a3b602e037acc5995030cbbf496788. The required provenance validator fails before artifact validation.",
+      "evidence": [
+        "scripts/validate_v571_evidence_provenance.py:48-60 compares manifest commit and pipeline/profile Git-blob identities against HEAD.",
+        "Command result: ValueError: Commit mismatch in audits\\evidence\\v571_rc5_candidate\\stages\\visual_evidence_manifest.json.",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:3 contains generation commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa."
+      ],
+      "recommendation": "Regenerate or supersede the RC5 evidence at reviewed commit 24b9ef27e9a3b602e037acc5995030cbbf496788, then rerun the provenance validator and retain the resulting hashes."
+    },
+    {
+      "severity": "blocking",
+      "title": "Working tree is dirty during acceptance review",
+      "impact": "The executable pipeline and tests differ from the committed repository state, so passing focused tests do not establish reproducibility of the reviewed commit.",
+      "evidence": [
+        "Command: git status --short",
+        "Result lists modified sperm_segmentation_saturnv5.7.py and three test files."
+      ],
+      "recommendation": "Perform the acceptance audit from a clean checkout of commit 24b9ef27e9a3b602e037acc5995030cbbf496788 and regenerate commit-bound evidence there."
+    }
+  ],
+  "limitations": [
+    "No full-stack inference was run, per audit instructions.",
+    "GUI, batch, tuner, and study entry points were inspected only through source and retained evidence; commit-bound end-to-end execution was not verified because provenance validation failed."
+  ],
+  "recommended_follow_up": [
+    "Create a clean working tree at commit 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+    "Regenerate all RC5 manifests and replay artifacts against that commit.",
+    "Rerun scripts/validate_v571_evidence_provenance.py and record a passing result before requesting acceptance."
+  ]
+}

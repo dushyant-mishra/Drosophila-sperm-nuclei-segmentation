@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "statistics_reporting",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "Specimen-level reporting and suppression of inferential tests are correctly demonstrated for the two-specimen pilot, but required statistical sensitivity evidence is not demonstrated for the full high-risk production claim.",
+  "checks": [
+    {
+      "check_id": "STAT-001",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/README.md:9 identifies the biological specimen as the analysis unit.",
+        "audits/evidence/v571_rc5_candidate/report/report_metadata.json:5-13 records n=1 per group, insufficient specimens, and primary_test unavailable.",
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/biological_statistical_tests.csv:2-8 labels every comparison as biological specimen with inference_status insufficient_specimens."
+      ]
+    },
+    {
+      "check_id": "STAT-002",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/02_quality_control/source_files/specimen_group_comparison_qc.json:2-3 states that nested nucleus records are descriptive/audit-only and not independent replicates.",
+        "audits/evidence/v571_rc5_candidate/report/02_quality_control/source_files/specimen_group_comparison_qc.json:11-17 records one specimen per group and suppresses inferential estimates below three specimens per group."
+      ]
+    },
+    {
+      "check_id": "STAT-003",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/biological_statistical_tests.csv:1-8 provides explicit estimands, units, denominators, specimen-level medians, differences, and percent differences.",
+        "audits/evidence/v571_rc5_candidate/report/02_quality_control/source_files/specimen_group_comparisons.csv:1-12 keeps count/density metrics separate from morphology metrics and labels all rows biological specimen."
+      ]
+    },
+    {
+      "check_id": "STAT-004",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/biological_statistical_tests.csv:1-8 leaves confidence intervals, p-values, effect tests, and BH-FDR fields unavailable when specimen counts are insufficient.",
+        "audits/evidence/v571_rc5_candidate/report/report_metadata.json:9-13 explicitly records insufficient specimens and no primary or secondary tests."
+      ]
+    },
+    {
+      "check_id": "STAT-005",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/report_consistency_validation.json:2-10 reports source CSV, Excel, and PDF numerical agreement.",
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/report_numeric_contract.json:84-93 records passing source, Excel, and PDF contract validation with artifact hashes."
+      ]
+    },
+    {
+      "check_id": "STAT-006",
+      "status": "not_verified",
+      "evidence": [
+        "audits/agent_charters/statistics_reporting.md:7-8 requires sensitivity analyses.",
+        "No retained artifact under audits/evidence/v571_rc5_candidate/report documents a specimen-level sensitivity analysis for exclusions, missingness, or alternative denominators."
+      ]
+    },
+    {
+      "check_id": "STAT-007",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/02_quality_control/source_files/normalization_qc.json:2-12 reports separate ROI area, sampled ROI volume, invalid-normalization count, and boundary checks.",
+        "audits/evidence/v571_rc5_candidate/report/02_quality_control/data/specimen_technical_qc.csv:1-3 contains separate count, sampled volume, and density fields."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "Required statistical sensitivity analysis is not evidenced",
+      "impact": "The statistics_reporting role cannot independently validate the high-risk production claim's required coverage of missingness, exclusion, denominator, and sensitivity behavior. The pilot report appropriately suppresses inference, but that does not establish sensitivity reporting across supported production workflows.",
+      "evidence": [
+        "audits/agent_charters/statistics_reporting.md:7-8 requires formulas, denominators, missingness, multiplicity correction, effect sizes, confidence intervals, and sensitivity analyses.",
+        "audits/evidence/v571_rc5_candidate/report/report_metadata.json:5-13 documents only two specimens and no inferential or secondary tests.",
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/biological_statistical_tests.csv:2-8 contains no sensitivity-analysis fields or results."
+      ],
+      "recommendation": "Add retained, independently reviewable specimen-level sensitivity outputs covering applicable exclusion/QC, missingness, and normalization scenarios, or narrow the production claim so it does not assert complete statistical-reporting coverage."
+    }
+  ],
+  "limitations": [
+    "The retained biological evidence contains one KJ and one WT specimen, so it cannot establish a group effect or validate inferential behavior at the required minimum of three specimens per group.",
+    "No PDF visual inspection was performed; numerical agreement was accepted only from the retained pypdf token-validation artifact.",
+    "No full-stack inference was run, per instruction."
+  ],
+  "recommended_follow_up": [
+    "Provide an append-only remediation evidence artifact with specimen-level sensitivity analyses and independent statistical review.",
+    "Keep the explicit insufficient-specimens status and prohibition on biological group-effect claims for the current pilot."
+  ]
+}

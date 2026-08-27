@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "biological_validity",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "The retained evidence supports biologically neutral handling of varied morphology and correctly limits biological inference to specimen-level outcomes. Short, long, wide, curved, touching, and single-slice cases remain represented without WT morphology serving as an acceptance target. The evidence does not claim a biological group effect or anatomical organ volume.",
+  "checks": [
+    {"check_id":"BIO-001-morphology-neutrality","status":"pass","evidence":["audits/V5_7_1_DESIGN_DECISIONS.md:9-15 states that unusual morphology remains measurable and must not be used as a WT-like acceptance target.","audits/evidence/v571_rc5_candidate/tracking/tracking_replay_candidates.json:2-4 records COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL=true.","audits/evidence/v571_rc5_candidate/tracking/tracking_evidence_manifest.json:79-109 and :362-391 provide retained short cases; :112-250 provide long, wide, curved, and touching cases."]},
+    {"check_id":"BIO-002-short-single-slice-retention","status":"pass","evidence":["audits/evidence/v571_rc5_candidate/tracking/tracking_replay_summary.csv:2-3 reports single-slice fractions of 0.3581 for KJ-01 and 0.3499 for WT-01.","audits/evidence/v571_rc5_candidate/report/02_quality_control/data/morphology_warning_proportions.csv:2-3 reports below-2-um fractions of 0.1916 and 0.2028 while retaining technical-valid nuclei.","audits/V5_7_1_DESIGN_DECISIONS.md:30-38 explicitly retains short observations and single-slice tracks."]},
+    {"check_id":"BIO-003-warning-veto-separation","status":"pass","evidence":["audits/evidence/v571_rc5_candidate/report/02_quality_control/data/morphology_warning_proportions.csv:2-3 shows morphology warnings are reported as proportions while technical-valid nuclei remain quantified.","audits/evidence/v571_rc5_candidate/report/02_quality_control/data/specimen_technical_qc.csv:2 and :20 show complete specimen outputs with technical-valid track populations of 4624 and 2816 despite boundary and morphology QC warnings."]},
+    {"check_id":"BIO-004-specimen_level_inference","status":"pass","evidence":["audits/evidence/v571_rc5_candidate/report/report_metadata.json:5-13 identifies the biological specimen as the analysis unit and marks inference_status=insufficient_specimens.","audits/evidence/v571_rc5_candidate/report/01_biological_results/data/biological_statistical_tests.csv:2-7 marks every comparison insufficient_specimens with reference_n=1 and comparison_n=1.","audits/validation/v571_35396b0_validation.md:65 states that the representative specimens do not establish a biological group effect."]},
+    {"check_id":"BIO-005-sampled_ROI-language","status":"pass","evidence":["audits/V5_7_1_DESIGN_DECISIONS.md:64-65 distinguishes repeated 2D ROI sampled-area normalization from anatomical seminal-vesicle volume.","audits/evidence/v571_rc5_candidate/report/01_biological_results/data/biological_statistical_tests.csv:7 labels the volume-related outcome as median_observed_slice_mask_volume_um3 and analysis_role=morphology_psf_sensitive.","audits/claims_registry.json:55 and :59 record the non-claims that repeated 2D ROIs do not establish anatomical SV volume or a biological KJ-versus-WT effect."]},
+    {"check_id":"BIO-006-biological-validation-scope","status":"not_verified","evidence":["audits/agent_charters/biological_validity.md:8-12 requires consideration of plausible morphology and identifies cases requiring manual masks or external biological validation.","audits/validation/v571_35396b0_validation.md:65 limits the evidence to execution and provenance for two representative specimens."]}
+  ],
+  "findings": [],
+  "limitations": [
+    "Only one specimen per group is represented in the retained biological report: audits/evidence/v571_rc5_candidate/report/report_metadata.json:5-13.",
+    "The retained evidence demonstrates software handling of morphology categories but does not independently establish biological identity for every short, fragmented-looking, or fused-looking object: audits/claims_registry.json:53-54 and :168.",
+    "Boundary censoring is present in both complete specimen QC records: audits/evidence/v571_rc5_candidate/report/02_quality_control/data/specimen_technical_qc.csv:2 and :20."
+  ],
+  "recommended_follow_up": [
+    "Acquire and review at least three independent biological specimens per group before performing group-level inference: audits/evidence/v571_rc5_candidate/report/report_metadata.json:10-13.",
+    "Use manually reviewed masks or external biological validation to distinguish genuine short nuclei from unresolved fragments where that biological conclusion is required: audits/claims_registry.json:53-54 and :168."
+  ]
+}

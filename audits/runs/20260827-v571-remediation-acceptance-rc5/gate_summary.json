@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "pass",
+    "calibration_provenance": "fail",
+    "measurement_geometry": "fail",
+    "repository_release": "fail",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "fail",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "measurement_geometry",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "measurement_geometry",
+      "title": "Validation evidence is bound to a different commit"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Source-image channel provenance is unavailable"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "RC5 evidence is not bound to the reviewed commit"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Working tree is dirty during acceptance review"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "Required statistical sensitivity analysis is not evidenced"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Visual evidence is not bound to the reviewed commit"
+    },
+    {
+      "role": "repository_release",
+      "title": "Acceptance evidence is bound to a different commit"
+    }
+  ],
+  "validation_errors": []
+}

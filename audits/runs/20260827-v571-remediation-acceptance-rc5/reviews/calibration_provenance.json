@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "calibration_provenance",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "Leica calibration and core artifact provenance are documented and locked, but channel provenance is recorded as null for every source image despite channel-dependent execution, so source/channel alignment is not independently reproducible.",
+  "checks": [
+    {
+      "check_id": "CAL-001",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/calibration_used.json:2-10 records leica_xml_manifest_locked status, Leica XML source, XY calibration, and Z spacing.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/calibration_used.json:2-10 records leica_xml_manifest_locked status, Leica XML source, XY calibration, and Z spacing.",
+        "sperm_segmentation_saturnv5.7.1.py:11439-11487 verifies locked metadata existence, SHA-256, parsed calibration, and agreement with manifest values."
+      ]
+    },
+    {
+      "check_id": "CAL-002",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:11162-11250 parses Leica X/Y/Z dimensions, units, element counts, and voxel or dimension-derived spacing.",
+        "sperm_segmentation_saturnv5.7.1.py:8068-8078 resolves calibration and saves calibration provenance before production processing.",
+        "audits/V5_7_1_DESIGN_DECISIONS.md:56-63 requires Leica calibration before physical measurements and archival of resolved calibration."
+      ]
+    },
+    {
+      "check_id": "CAL-003",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/settings_manifest.json:36-47 records copied calibration JSON and Leica XML paths, sizes, and SHA-256 values.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/settings_manifest.json:36-47 records copied calibration JSON and Leica XML paths, sizes, and SHA-256 values.",
+        "audits/evidence/v571_rc5_candidate/provenance/acceptance_provenance_manifest.json:3-4 and :7-10 records checkpoint identity and resolved calibration for KJ-01; :63-66 records the corresponding WT specimen."
+      ]
+    },
+    {
+      "check_id": "CAL-004",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json:10 and repeated entries record \"channel\": null for source files named *_ch00.tif.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json:10 and repeated entries record \"channel\": null for source files named *_ch00.tif.",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:11-19 identifies ch00 source images and Leica metadata but does not provide an explicit resolved channel field.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/runtime_parameters.json contains SINGLE_TEST_IMAGE with ch00 and EXCLUSION_MASK_PATH empty, but no explicit selected-channel provenance."
+      ]
+    },
+    {
+      "check_id": "CAL-005",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/settings_manifest.json:43-54 records the copied Leica metadata and ROI mask with SHA-256 values.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/settings_manifest.json:43-54 records the copied Leica metadata and ROI mask with SHA-256 values.",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:9-19 and :35-45 align specimen, Z index, source image, ROI, profile, calibration metadata, and checkpoint."
+      ]
+    },
+    {
+      "check_id": "CAL-006",
+      "status": "pass",
+      "evidence": [
+        "audits/V5_7_1_DESIGN_DECISIONS.md:62-65 distinguishes repeated 2D ROI sampled-area normalization from anatomical 3D volume.",
+        "sperm_segmentation_saturnv5.7.1.py:8755 and :9245 define observed-slice mask volume without inventing mask area on missing planes.",
+        "audits/evidence/v571_rc5_candidate/report/README.md:1-10 documents the retained report evidence and provenance package."
+      ]
+    },
+    {
+      "check_id": "CAL-007",
+      "status": "pass",
+      "evidence": [
+        "audits/validation/v571_35396b0_validation.md:27-28 reports PASS from validate_v571_evidence_provenance.py.",
+        "audits/validation/v571_35396b0_validation.md:5-12 records the validated profile, pipeline, and checkpoint identities.",
+        "git show -s --format=fuller 24b9ef27e9a3b602e037acc5995030cbbf496788 identifies the reviewed commit as Add v5.7.1 RC5 acceptance evidence; git rev-parse 24b9ef27e9a3b602e037acc5995030cbbf496788:<path> confirms the production pipeline, profile, and checkpoint blobs are present at that commit."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "Source-image channel provenance is unavailable",
+      "impact": "The calibration/provenance record cannot independently demonstrate that the analyzed image channel is the intended channel for every source plane. Filenames imply ch00, but the retained manifests explicitly store channel as null, leaving channel selection and alignment dependent on inference from filenames.",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json:6-10 records Project001_Series002_z00_ch00.tif with \"channel\": null.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json:6-10 records Project001_Series001_z00_ch00.tif with \"channel\": null.",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:11-19 records source image and calibration metadata but no resolved channel field.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/runtime_parameters.json contains SINGLE_TEST_IMAGE ending in _ch00.tif but no explicit selected-channel value."
+      ],
+      "recommendation": "Regenerate the RC5 provenance manifests with an explicit resolved channel identifier for every ordered source image and record the channel-selection rule or metadata field used to verify it."
+    }
+  ],
+  "limitations": [
+    "Original source TIFF files and external source directories were not available under the retained repository evidence, so source-image hashes and channel labels could not be independently recomputed.",
+    "No full-stack inference or destructive operation was performed."
+  ],
+  "recommended_follow_up": [
+    "Add explicit channel provenance to both specimen source_image_manifest.json files and rerun the evidence provenance validator.",
+    "Obtain an independent review of the corrected channel alignment before acceptance."
+  ]
+}

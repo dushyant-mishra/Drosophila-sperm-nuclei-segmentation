@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "repository_release",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "The RC5 evidence is not release-valid for reviewed commit 24b9ef27. Validation and all retained evidence manifests identify commit 35396b0e, and the checkout is detached with untracked audit-run files.",
+  "checks": [
+    {
+      "check_id": "release_commit_identity",
+      "status": "fail",
+      "evidence": [
+        "git log -1 reports HEAD 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+        "audits/validation/v571_35396b0_validation.md:3 identifies production code commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa.",
+        "audits/validation/v571_35396b0_validation.md:27 states provenance passed against commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa.",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:3, audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json:3, and audits/evidence/v571_rc5_candidate/end_to_end/end_to_end_visual_evidence_manifest.json:3 all record generation at 35396b0e42f9d1afb9a2991c41bf31330a4c89aa."
+      ]
+    },
+    {
+      "check_id": "provenance_and_artifact_consistency",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:4-5 records pipeline hashes associated with the 35396b0 generation.",
+        "audits/evidence/v571_rc5_candidate/provenance/acceptance_provenance_manifest.json:120-156 records replay artifacts but contains no reviewed-commit identity matching 24b9ef27.",
+        "The validation receipt and retained manifests therefore do not establish that the artifacts were generated from the requested reviewed commit."
+      ]
+    },
+    {
+      "check_id": "repository_state",
+      "status": "fail",
+      "evidence": [
+        "git status --short --branch reports detached HEAD and untracked audits/runs/20260827-v571-remediation-acceptance-rc5/.",
+        "git status --short --ignored reports ignored .venv/ and audits/runs/20260827-v571-remediation-acceptance-rc5/logs/.",
+        "audits/agent_charters/repository_release.md:8-11 requires recording and reconciling branch, commit, remote, upstream, status, diff scope, ignored artifacts, and version-consistent audit decisions."
+      ]
+    },
+    {
+      "check_id": "report_consistency",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/report_consistency_validation.json:2-10 reports pass and confirms source CSV, Excel, and PDF contract agreement."
+      ]
+    },
+    {
+      "check_id": "automated_validation_receipt",
+      "status": "not_verified",
+      "evidence": [
+        "audits/validation/v571_35396b0_validation.md:19-31 records passing validation commands, but those commands are explicitly tied to 35396b0e rather than reviewed commit 24b9ef27."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "Acceptance evidence is bound to a different commit",
+      "impact": "The required repository-release claim cannot be accepted because the validation receipt and retained RC5 manifests prove execution and provenance for 35396b0e, not for reviewed commit 24b9ef27.",
+      "evidence": [
+        "git log -1 --format=fuller reports 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+        "audits/validation/v571_35396b0_validation.md:3 and :27 identify and validate 35396b0e42f9d1afb9a2991c41bf31330a4c89aa.",
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:3, audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json:3, and audits/evidence/v571_rc5_candidate/end_to_end/end_to_end_visual_evidence_manifest.json:3 identify 35396b0e as generation commit."
+      ],
+      "recommendation": "Regenerate or formally rebind all required validation and evidence manifests on reviewed commit 24b9ef27, rerun the required audit gate, and archive a superseding acceptance run."
+    },
+    {
+      "severity": "high",
+      "title": "Reviewed checkout is detached and not clean",
+      "impact": "Release provenance is not recoverable as a clean branch state, and the requested audit-run directory is untracked.",
+      "evidence": [
+        "git status --short --branch reports ## HEAD (no branch) and ?? audits/runs/20260827-v571-remediation-acceptance-rc5/.",
+        "git branch -vv reports the reviewed commit on detached HEAD; no upstream is associated with the reviewed checkout."
+      ],
+      "recommendation": "Perform the release audit from a clean, explicitly identified branch or immutable commit checkout, record upstream/push state, and ensure the final audit record is intentionally archived without unrelated untracked content."
+    },
+    {
+      "severity": "high",
+      "title": "Claim registry still points to a blocked prior audit",
+      "impact": "The claim metadata does not document a passed superseding decision for RC5.",
+      "evidence": [
+        "audits/claims_registry.json:62-65 records latest_audit run_id 20260827-v571-remediation-acceptance-rc4 with gate_passed false and decision blocked_pending_remediation."
+      ],
+      "recommendation": "After independent reviews pass, record a new append-only audit decision for RC5 and update the claim registry through the repository's audit workflow."
+    }
+  ],
+  "limitations": [
+    "No full-stack inference or new audit-gate execution was performed, per instruction.",
+    "No other review outputs were read."
+  ],
+  "recommended_follow_up": [
+    "Re-run validation and provenance checks on commit 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+    "Regenerate every retained manifest whose generation commit is 35396b0e.",
+    "Repeat the complete independent audit gate and archive the superseding decision."
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "visual_evidence",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "The retained visual artifacts provide broad stage and tracking coverage, but they were generated from commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa rather than the reviewed commit, so visual evidence for the requested commit is not established.",
+  "checks": [
+    {
+      "check_id": "VIS-001",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/stages/KJ-01_z035_stages.png",
+        "audits/evidence/v571_rc5_candidate/stages/WT-01_z035_stages.png",
+        "audits/evidence/v571_rc5_candidate/end_to_end/v571_end_to_end_visual_evidence.pdf"
+      ]
+    },
+    {
+      "check_id": "VIS-002",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/stages/KJ-01_z035_stages.png and WT-01_z035_stages.png visibly provide raw, foreground probability, core probability, filled mask, instance boundaries, centerlines, and final overlay at shared framing."
+      ]
+    },
+    {
+      "check_id": "VIS-003",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/tracking/KJ-01_stratified_tracking.png",
+        "audits/evidence/v571_rc5_candidate/tracking/WT-01_stratified_tracking.png"
+      ]
+    },
+    {
+      "check_id": "VIS-004",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/tracking/tracking_evidence_manifest.json records faint, bright, short, long, wide, curved, touching, and irregular examples for both KJ-01 and WT-01."
+      ]
+    },
+    {
+      "check_id": "VIS-005",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:3 identifies generation commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa",
+        "audits/evidence/v571_rc5_candidate/end_to_end/end_to_end_visual_evidence_manifest.json:3 identifies generation commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa",
+        "audits/validation/v571_35396b0b_validation.md:3 identifies the production code commit as 35396b0e42f9d1afb9a2991c41bf31330a4c89aa",
+        "Requested reviewed commit is 24b9ef27e9a3b602e037acc5995030cbbf496788."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "Visual evidence is not bound to the reviewed commit",
+      "impact": "The visual reviewer cannot establish that segmentation stages, overlays, or tracking behavior correspond to commit 24b9ef27e9a3b602e037acc5995030cbbf496788. Evidence from commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa cannot validate the requested commit.",
+      "evidence": [
+        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json:3",
+        "audits/evidence/v571_rc5_candidate/end_to_end/end_to_end_visual_evidence_manifest.json:3",
+        "audits/validation/v571_35396b0b_validation.md:3"
+      ],
+      "recommendation": "Regenerate or provide commit-bound visual stage and tracking artifacts from 24b9ef27e9a3b602e037acc5995030cbbf496788, with manifests recording that commit and artifact hashes."
+    }
+  ],
+  "limitations": [
+    "Only retained RC5 candidate visual artifacts were inspected.",
+    "No inference or full-stack rerun was performed.",
+    "The available artifacts demonstrate visual coverage but not commit identity for the requested reviewed commit."
+  ],
+  "recommended_follow_up": [
+    "Produce commit-bound visual evidence manifests and images for 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+    "Repeat this independent visual-evidence audit after the regenerated artifacts are available."
+  ]
+}

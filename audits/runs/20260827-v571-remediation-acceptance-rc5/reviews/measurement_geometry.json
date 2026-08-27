@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc5",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "measurement_geometry",
+  "reviewed_commit": "24b9ef27e9a3b602e037acc5995030cbbf496788",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "Geometry implementation and synthetic body-width checks are supported, but the retained validation and provenance evidence identify commit 35396b0 rather than the requested reviewed commit 24b9ef27. The evidence therefore cannot establish that the geometry and calibration behavior was validated at the reviewed commit.",
+  "checks": [
+    {
+      "check_id": "MG-001",
+      "status": "fail",
+      "evidence": [
+        "audits/validation/v571_35396b0_validation.md:3 identifies production code commit 35396b0e42f9d1afb9a2991c41bf31330a4c89aa, not reviewed commit 24b9ef27e9a3b602e037acc5995030cbbf496788.",
+        "audits/evidence/v571_rc5_candidate/provenance/acceptance_provenance_manifest.json:4-7 records git_commit_at_generation as 35396b0e42f9d1afb9a2991c41bf31330a4c89aa.",
+        "audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json:3 records git_commit_at_generation as 35396b0e42f9d1afb9a2991c41bf31330a4c89aa."
+      ]
+    },
+    {
+      "check_id": "MG-002",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3387-3457 traces central-body width from the filled instance mask and ordered centerline through smoothed/resampled centerline normals to contour chords, with median, P90, IQR, and sample count outputs.",
+        "tests/test_saturn_v571_body_width.py:test_subpixel_body_width_is_rotation_stable and tests/test_saturn_v571_body_width.py:59-73 provide a known-width rotated synthetic-mask check."
+      ]
+    },
+    {
+      "check_id": "MG-003",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3417-3421 applies explicit endpoint trimming.",
+        "sperm_segmentation_saturnv5.7.1.py:3442-3447 returns unavailable width when the valid chord count is below the configured minimum.",
+        "tests/test_saturn_v571_body_width.py:test_short_centerline_reports_unavailable_without_fabricating_width and lines 139-150 cover missing-value behavior."
+      ]
+    },
+    {
+      "check_id": "MG-004",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:5116-5165 selects representative width candidates using valid body width, mask area, support, centerline validity, and Z ordering.",
+        "tests/test_saturn_v571_body_width.py:test_representative_track_width_uses_largest_area_not_widest_plane and lines 153-180 cover largest-area-plane selection."
+      ]
+    },
+    {
+      "check_id": "MG-005",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:4744-4749 and 4784-4825 preserve legacy EDT width fields separately from primary body-width fields.",
+        "tests/test_saturn_v571_body_width.py:test_analysis_summary_uses_body_width_as_primary_and_labels_legacy and lines 203-226 verify primary-field selection and legacy labeling."
+      ]
+    },
+    {
+      "check_id": "MG-006",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:11393-11410 requires source files and resolves XY/Z calibration before measurement execution.",
+        "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/calibration_used.json:3-10 and audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/calibration_used.json:3-10 record Leica XML-derived XY and Z calibration."
+      ]
+    },
+    {
+      "check_id": "MG-007",
+      "status": "not_verified",
+      "evidence": [
+        "audits/validation/v571_35396b0_validation.md:21-28 reports broad validation and provenance checks, but those checks are explicitly tied to commit 35396b0 and do not validate reviewed commit 24b9ef27.",
+        "No commit-bound measurement replay or independent geometry artifact for 24b9ef27 was provided under audits/evidence/v571_rc5_candidate."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "Validation evidence is bound to a different commit",
+      "impact": "The requested acceptance claim concerns commit 24b9ef27, but all retained validation/provenance receipts reviewed here identify 35396b0. Because geometry and calibration behavior may differ between commits, the evidence cannot support production acceptance at the specified reviewed commit.",
+      "evidence": [
+        "audits/validation/v571_35396b0_validation.md:3",
+        "audits/evidence/v571_rc5_candidate/provenance/acceptance_provenance_manifest.json:4-7",
+        "audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json:3-7",
+        "git rev-parse 24b9ef27:sperm_segmentation_saturnv5.7.1.py returned blob 797853373ae76fc9cd3e647d341a08e2c4b031be, whereas audits/validation/v571_35396b0_validation.md:7 reports blob b1183da136146a6e48dc9ffafcde11244768c5fe565bf4a2ba7c6486fec2b808."
+      ],
+      "recommendation": "Regenerate independent geometry, calibration, and downstream evidence at commit 24b9ef27, including commit-matching blob hashes and focused synthetic/adversarial test results."
+    }
+  ],
+  "limitations": [
+    "The review did not run full-stack inference or inspect other reviewers' outputs.",
+    "The retained replay is explicitly downstream replay from frozen 2D detections; audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json:8 states that U-Net inference was not rerun.",
+    "Body width remains apparent mask width and does not establish PSF-corrected molecular chromatin diameter, consistent with audits/V5_7_1_DESIGN_DECISIONS.md:32-34.",
+    "The evidence does not establish biological group effects or anatomical seminal-vesicle volume."
+  ],
+  "recommended_follow_up": [
+    "Run the focused measurement and calibration validation suite against reviewed commit 24b9ef27.",
+    "Produce a new commit-bound provenance manifest whose git commit and pipeline/profile blob hashes match 24b9ef27.",
+    "Repeat the geometry replay or provide equivalent frozen artifacts generated from 24b9ef27, including adversarial orientation, short-centerline, missing-width, and representative-plane cases."
+  ]
+}
