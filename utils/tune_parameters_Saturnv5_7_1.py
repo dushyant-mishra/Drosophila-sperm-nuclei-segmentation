@@ -535,8 +535,26 @@ def segment_eval_images(cfg, save_debug=False):
 def summarize_candidate(rows, segs, cfg):
     counts = [len(meas["results"]) for _, meas in segs]
     lengths = np.array([r["length_px_geodesic"] * cfg["UM_PER_PX_XY"] for r in rows], dtype=float)
-    widths = np.array([r["width_px"] * cfg["UM_PER_PX_XY"] for r in rows], dtype=float)
-    ratios = np.array([r["length_width_ratio"] for r in rows], dtype=float)
+    widths = np.array([
+        float(r.get("body_width_px", np.nan)) * cfg["UM_PER_PX_XY"]
+        for r in rows
+    ], dtype=float)
+    ratios = np.array([
+        float(r.get("length_body_width_ratio", np.nan)) for r in rows
+    ], dtype=float)
+    legacy_widths = np.array([
+        float(r.get("width_px_dt_median_legacy", r.get("width_px", np.nan)))
+        * cfg["UM_PER_PX_XY"]
+        for r in rows
+    ], dtype=float)
+    legacy_ratios = np.array([
+        float(r.get("length_width_ratio_dt_legacy", r.get("length_width_ratio", np.nan)))
+        for r in rows
+    ], dtype=float)
+    widths = widths[np.isfinite(widths) & (widths > 0)]
+    ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
+    legacy_widths = legacy_widths[np.isfinite(legacy_widths) & (legacy_widths > 0)]
+    legacy_ratios = legacy_ratios[np.isfinite(legacy_ratios) & (legacy_ratios > 0)]
     count_cv = float(np.std(counts) / (np.mean(counts) + 1e-9)) if counts else 0.0
     empty_slice_fraction = (
         float(np.mean(np.asarray(counts) == 0)) if counts else 1.0
@@ -766,6 +784,14 @@ def summarize_candidate(rows, segs, cfg):
         "mean_length_um": float(np.mean(lengths)) if lengths.size else 0.0,
         "median_width_um": median_width,
         "median_length_width_ratio": median_ratio,
+        "body_width_available_count": int(widths.size),
+        "body_width_missing_fraction": float(1.0 - widths.size / max(len(rows), 1)),
+        "median_width_um_dt_legacy": (
+            float(np.median(legacy_widths)) if legacy_widths.size else 0.0
+        ),
+        "median_length_width_ratio_dt_legacy": (
+            float(np.median(legacy_ratios)) if legacy_ratios.size else 0.0
+        ),
         "short_length_fraction_reported_not_optimized": short_frac,
         "long_object_fraction": long_frac,
         "very_short_object_fraction": very_short_frac,
@@ -1984,14 +2010,40 @@ def run_self_check():
     checks.append(("physical parameters resolve", resolved["pixels"]["MAX_BRIDGE_PX"] >= 0))
     cfg["ANALYSIS_MODE"] = "comparative"
     fake_rows = [
-        {"length_px_geodesic": 10, "width_px": 2, "length_width_ratio": 5.0},
-        {"length_px_geodesic": 30, "width_px": 2, "length_width_ratio": 15.0},
+        {
+            "length_px_geodesic": 10,
+            "body_width_px": 4,
+            "length_body_width_ratio": 2.5,
+            "width_px": 2,
+            "length_width_ratio": 5.0,
+        },
+        {
+            "length_px_geodesic": 30,
+            "body_width_px": 6,
+            "length_body_width_ratio": 5.0,
+            "width_px": 2,
+            "length_width_ratio": 15.0,
+        },
     ]
     fake_segs = [
         ({"mask_clean": np.zeros((5, 5), dtype=bool), "mask_hyst": np.zeros((5, 5), dtype=bool), "bridge_stats": {"skeleton_pixels_before": 1, "skeleton_pixels_after": 1}}, {"results": [fake_rows[0]]}),
         ({"mask_clean": np.zeros((5, 5), dtype=bool), "mask_hyst": np.zeros((5, 5), dtype=bool), "bridge_stats": {"skeleton_pixels_before": 1, "skeleton_pixels_after": 1}}, {"results": [fake_rows[1]]}),
     ]
     checks.append(("comparative score excludes morphology prior", summarize_candidate(fake_rows, fake_segs, cfg)["morphology_prior_score_reported_not_optimized"] > 0))
+    width_summary = summarize_candidate(fake_rows, fake_segs, cfg)
+    checks.append(
+        (
+            "tuner primary width uses body chord field",
+            np.isclose(
+                width_summary["median_width_um"],
+                np.median([4.0, 6.0]) * cfg["UM_PER_PX_XY"],
+            )
+            and np.isclose(
+                width_summary["median_width_um_dt_legacy"],
+                2.0 * cfg["UM_PER_PX_XY"],
+            ),
+        )
+    )
     constrained_thresholds = params_from_vector(
         [88.0, 87.0, 8, 1.0, 6.0, 4.0, 2.0, 2.5],
         SEGMENTATION_PARAM_SPACE,

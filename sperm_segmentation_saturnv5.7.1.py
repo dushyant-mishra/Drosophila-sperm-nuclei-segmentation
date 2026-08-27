@@ -5115,6 +5115,23 @@ def _attach_tracking_audit(df, track_summary, rejected_extensions):
 
 def _attach_representative_body_width(df, track_summary):
     """Select one body-width plane per track by area, support, then Z index."""
+    track_summary = track_summary.copy()
+    defaults = {
+        "representative_body_width_um": np.nan,
+        "representative_body_width_p90_um": np.nan,
+        "representative_body_width_iqr_um": np.nan,
+        "representative_area_length_width_um": np.nan,
+        "representative_width_z": np.nan,
+        "representative_width_sample_count": 0,
+        "representative_width_method": "unavailable",
+        "representative_width_selection": (
+            "largest_filled_mask_area_then_unet_support_then_lowest_z"
+        ),
+        "length_body_width_ratio": np.nan,
+    }
+    for column, default in defaults.items():
+        if column not in track_summary.columns:
+            track_summary[column] = default
     if (
         df.empty
         or track_summary.empty
@@ -5199,6 +5216,12 @@ def _attach_representative_body_width(df, track_summary):
             errors="coerce",
         ).clip(lower=1e-9)
     )
+    track_summary["representative_width_sample_count"] = pd.to_numeric(
+        track_summary["representative_width_sample_count"], errors="coerce"
+    ).fillna(0).astype(int)
+    track_summary["representative_width_method"] = track_summary[
+        "representative_width_method"
+    ].fillna("unavailable")
     return track_summary
 
 

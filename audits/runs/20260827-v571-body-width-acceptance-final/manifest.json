@@ -1,0 +1,28 @@
+﻿{
+    "schema_version":  "1.0",
+    "audit_run_id":  "20260827-v571-body-width-acceptance-final",
+    "claim_id":  "MEAS-BODY-WIDTH-001",
+    "reviewed_commit":  "1ac87a958cb6ff3b83588617e48e40b1e8035c19",
+    "branch":  "DETACHED",
+    "dirty_worktree":  false,
+    "working_tree_status":  [
+
+                            ],
+    "mode":  "acceptance_candidate",
+    "roles":  [
+                  "measurement_geometry",
+                  "biological_validity",
+                  "software_reproducibility",
+                  "statistics_reporting",
+                  "visual_evidence"
+              ],
+    "started_at_utc":  "2026-08-27T22:01:10.0802731Z",
+    "completed_at_utc":  "2026-08-27T22:03:59.6571838Z",
+    "role_exit_codes":  {
+                            "measurement_geometry":  0,
+                            "biological_validity":  0,
+                            "software_reproducibility":  0,
+                            "statistics_reporting":  0,
+                            "visual_evidence":  0
+                        }
+}

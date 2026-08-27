@@ -200,6 +200,26 @@ def test_representative_width_tie_breaks_by_support_then_z():
     assert result.loc[0, "representative_body_width_um"] == pytest.approx(2.6)
 
 
+def test_all_unavailable_track_width_retains_explicit_schema():
+    saturn = load_saturn_v571()
+    detections = pd.DataFrame(
+        {
+            "track_id": [1, 1],
+            "z_slice": [3, 4],
+            "body_width_um": [np.nan, np.nan],
+        }
+    )
+    tracks = pd.DataFrame({"track_id": [1], "max_length_2d": [8.0]})
+
+    result = saturn._attach_representative_body_width(detections, tracks)
+
+    assert np.isnan(result.loc[0, "representative_body_width_um"])
+    assert np.isnan(result.loc[0, "representative_width_z"])
+    assert result.loc[0, "representative_width_sample_count"] == 0
+    assert result.loc[0, "representative_width_method"] == "unavailable"
+    assert np.isnan(result.loc[0, "length_body_width_ratio"])
+
+
 def test_analysis_summary_uses_body_width_as_primary_and_labels_legacy():
     saturn = load_saturn_v571()
     tracks = pd.DataFrame(

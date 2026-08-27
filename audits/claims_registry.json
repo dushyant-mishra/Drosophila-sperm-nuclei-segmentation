@@ -84,7 +84,10 @@
       "implementation_evidence": [
         "sperm_segmentation_saturnv5.7.1.py:3186",
         "sperm_segmentation_saturnv5.7.1.py:3258",
-        "tests/test_saturn_v571_body_width.py"
+        "utils/tune_parameters_Saturnv5_7_1.py",
+        "tests/test_saturn_v571_body_width.py",
+        "tests/test_tuner_v571_body_width.py",
+        "scripts/generate_v571_body_width_evidence.py"
       ],
       "acceptance_criteria": [
         "Known-width synthetic masks are recovered within stated tolerance",
