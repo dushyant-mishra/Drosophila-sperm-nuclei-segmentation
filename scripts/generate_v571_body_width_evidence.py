@@ -77,7 +77,7 @@ def read_replay_table(archive, stem, name):
         return pd.read_csv(handle)
 
 
-def select_track(track_summary, target_z=35):
+def select_track(track_summary, detections, target_z=35):
     frame = track_summary.copy()
     frame = frame[
         (pd.to_numeric(frame["n_slices"], errors="coerce") >= 3)
@@ -87,11 +87,32 @@ def select_track(track_summary, target_z=35):
     frame["_z_distance"] = (
         pd.to_numeric(frame["representative_width_z"], errors="coerce") - target_z
     ).abs()
+    representative = detections.copy()
+    representative["z_slice"] = pd.to_numeric(
+        representative["z_slice"], errors="coerce"
+    )
+    representative = representative.merge(
+        frame[["track_id", "representative_width_z"]], on="track_id", how="inner"
+    )
+    representative = representative[
+        representative["z_slice"]
+        == pd.to_numeric(representative["representative_width_z"], errors="coerce")
+    ]
+    clean_track_ids = set(
+        representative.loc[
+            (pd.to_numeric(representative["n_branch_nodes"], errors="coerce") == 0)
+            & (pd.to_numeric(representative["instance_mask_area_px"], errors="coerce").between(60, 180))
+            & (pd.to_numeric(representative["length_body_width_ratio"], errors="coerce") > 3.0)
+            & ~representative["morphology_warning"].fillna(False).astype(bool),
+            "track_id",
+        ]
+    )
+    frame = frame[frame["track_id"].isin(clean_track_ids)].copy()
     if frame.empty:
-        raise ValueError("No eligible representative-width track")
+        raise ValueError("No eligible unbranched representative-width track")
     return frame.sort_values(
-        ["_z_distance", "n_slices", "track_id"],
-        ascending=[True, False, True],
+        ["_z_distance", "track_id"],
+        ascending=[True, True],
         kind="mergesort",
     ).iloc[0]
 
@@ -319,7 +340,7 @@ def main():
             context = saturn.build_stack_preprocess_context(files, roi, cfg)
             tracks = read_replay_table(archive, stem, "track_summary")
             detections = read_replay_table(archive, stem, "tracked_detections")
-            selected_track = select_track(tracks, args.target_z)
+            selected_track = select_track(tracks, detections, args.target_z)
             track_id = int(selected_track["track_id"])
             target_z = int(selected_track["representative_width_z"])
             observations = detections[detections["track_id"] == track_id].copy()
