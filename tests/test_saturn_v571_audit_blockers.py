@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 
@@ -555,3 +556,96 @@ def test_primary_comparison_fields_are_in_biological_specimen_table():
         "median_length_body_width_ratio",
     ):
         assert field in biological_block
+
+
+def test_primary_specimen_export_excludes_unqualified_3d_aliases():
+    source = (ROOT / "sperm_segmentation_saturnv5.7.1.py").read_text(
+        encoding="utf-8"
+    )
+    biological_block = source.split("biological_columns = [", 1)[1].split(
+        "]", 1
+    )[0]
+    for misleading_alias in (
+        '"median_3d_length_um"',
+        '"median_3d_thickness_um"',
+        '"median_3d_volume_um3"',
+    ):
+        assert misleading_alias not in biological_block
+    for explicit_field in (
+        '"median_projection_z_extent_um"',
+        '"median_observed_slab_effective_thickness_um"',
+        '"median_observed_slice_mask_volume_um3"',
+    ):
+        assert explicit_field in biological_block
+
+
+def test_evidence_git_blob_hash_is_checkout_line_ending_independent():
+    import importlib.util
+    import subprocess
+
+    script_path = ROOT / "scripts" / "generate_v571_stage_evidence.py"
+    spec = importlib.util.spec_from_file_location("stage_evidence_test", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    profile = ROOT / "production_profiles" / "saturn_v5_7_1_model_c_epoch003.json"
+    blob = subprocess.check_output(
+        ["git", "show", f"HEAD:{profile.relative_to(ROOT).as_posix()}"], cwd=ROOT
+    )
+    assert module.git_blob_sha256(profile) == hashlib.sha256(blob).hexdigest()
+
+
+def test_production_profile_uses_runtime_version_identifier():
+    profile = json.loads(
+        (ROOT / "production_profiles" / "saturn_v5_7_1_model_c_epoch003.json")
+        .read_text(encoding="utf-8")
+    )
+    assert profile["_TUNING_METADATA"]["pipeline_version"] == "v5.7.1-body-width"
+
+
+def test_v571_primary_summaries_use_explicit_projection_and_slab_names(tmp_path):
+    saturn = load_saturn()
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 2],
+            "technical_valid": [True, True],
+            "projection_z_extent_um": [8.0, 10.0],
+            "observed_slab_effective_thickness_um": [1.4, 1.8],
+            "observed_slice_mask_volume_um3": [20.0, 24.0],
+            "max_length_2d": [7.5, 9.5],
+            "tortuosity_3d": [1.0, 1.1],
+            "z_span_um": [1.0, 2.0],
+        }
+    )
+    summary = saturn.export_analysis_summary(
+        tmp_path, pd.DataFrame(), tracks, cfg={}
+    )
+    assert summary["median_projection_z_extent_um"] == pytest.approx(9.0)
+    assert summary["median_3d_length_um_legacy_alias"] == pytest.approx(9.0)
+    payload = json.loads((tmp_path / "analysis_summary.json").read_text())
+    assert payload["median_projection_z_extent_um"] == pytest.approx(9.0)
+    assert "median_3d_length_um" not in payload
+    assert "median_3d_length_um_legacy_alias" not in payload
+
+    paths = saturn.export_biologist_results(tmp_path, tracks, "v571")
+    exported = pd.read_csv(paths["summary"])
+    assert exported.loc[0, "median_projection_z_extent_um"] == pytest.approx(9.0)
+    assert "median_3d_length_um" not in exported
+    assert exported.loc[0, "median_3d_length_um_legacy_alias"] == pytest.approx(9.0)
+
+
+def test_v571_group_comparison_uses_explicit_projection_metric():
+    saturn = load_saturn()
+    frame = pd.DataFrame(
+        {
+            "sample_id": ["A1", "A2", "A3", "B1", "B2", "B3"],
+            "group": ["A", "A", "A", "B", "B", "B"],
+            "status": ["complete"] * 6,
+            "median_projection_z_extent_um": [8, 9, 10, 10, 11, 12],
+            "median_3d_length_um_legacy_alias": [8, 9, 10, 10, 11, 12],
+        }
+    )
+    comparisons, _qc = saturn._study_specimen_group_comparisons(
+        frame, random_seed=7, bootstrap_resamples=50, permutation_resamples=99
+    )
+    assert "median_projection_z_extent_um" in set(comparisons["metric"])
+    assert "median_3d_length_um_legacy_alias" not in set(comparisons["metric"])

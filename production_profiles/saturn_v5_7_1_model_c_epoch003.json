@@ -213,7 +213,7 @@
   "SHOW_PREVIEW_WINDOW": true,
   "SHOW_DEBUG_PREVIEW": true,
   "_TUNING_METADATA": {
-    "pipeline_version": "v5.7.1-dual-head-width",
+    "pipeline_version": "v5.7.1-body-width",
     "mode": "unet_primary_tracking_shared",
     "numerical_rank": 6,
     "selection_status": "production_selected_after_four_stratum_technical_review",

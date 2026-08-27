@@ -7328,7 +7328,7 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
         "analysis_population": "included estimated nuclei",
         "estimated_unique_nuclei": int(len(primary)),
         "median_projection_z_extent_um": median("projection_z_extent_um"),
-        "median_3d_length_um": median("projection_z_extent_um"),
+        "median_3d_length_um_legacy_alias": median("projection_z_extent_um"),
         "median_maximum_2d_length_um": median("max_length_2d"),
         "median_body_width_um": median("representative_body_width_um"),
         "median_body_width_p90_um": median(
@@ -7487,7 +7487,9 @@ def build_analysis_summary(
         "biological_count_available": bool(tracking_completed),
         "estimated_unique_nuclei": int(len(primary)) if tracking_completed else np.nan,
         "median_projection_z_extent_um": median(primary, "projection_z_extent_um"),
-        "median_3d_length_um": median(primary, "projection_z_extent_um"),
+        "median_3d_length_um_legacy_alias": median(
+            primary, "projection_z_extent_um"
+        ),
         "median_maximum_2d_length_um": median(primary, "max_length_2d"),
         "median_body_width_um": median(
             primary,
@@ -7574,7 +7576,6 @@ def export_analysis_summary(
         primary_keys.extend(
             [
                 "median_projection_z_extent_um",
-                "median_3d_length_um",
                 "median_maximum_2d_length_um",
                 "median_body_width_um",
                 "median_body_width_p90_um",
@@ -12815,20 +12816,20 @@ def summarize_study_sample(row, output_dir):
         "median_projection_z_extent_um": median(
             analysis_tracks, "projection_z_extent_um"
         ),
-        "median_3d_length_um": median(
+        "median_3d_length_um_legacy_alias": median(
             analysis_tracks, "projection_z_extent_um"
         ),
         "median_3d_tortuosity": median(analysis_tracks, "tortuosity_3d"),
         "median_observed_slab_effective_thickness_um": median(
             analysis_tracks, "observed_slab_effective_thickness_um"
         ),
-        "median_3d_thickness_um": median(
+        "median_3d_thickness_um_legacy_alias": median(
             analysis_tracks, "observed_slab_effective_thickness_um"
         ),
         "median_observed_slice_mask_volume_um3": median(
             analysis_tracks, "observed_slice_mask_volume_um3"
         ),
-        "median_3d_volume_um3": median(
+        "median_3d_volume_um3_legacy_alias": median(
             analysis_tracks, "observed_slice_mask_volume_um3"
         ),
         "median_3d_z_span_um": median(analysis_tracks, "z_span_um"),
@@ -12855,12 +12856,9 @@ def _study_group_summary(specimen_frame):
         "median_length_body_width_ratio",
         "body_width_available_fraction",
         "median_projection_z_extent_um",
-        "median_3d_length_um",
         "median_3d_tortuosity",
         "median_observed_slab_effective_thickness_um",
-        "median_3d_thickness_um",
         "median_observed_slice_mask_volume_um3",
-        "median_3d_volume_um3",
         "median_3d_z_span_um",
         "roi_area_um2",
         "sampled_roi_volume_um3",
@@ -12889,12 +12887,9 @@ _STUDY_COMPARISON_METRICS = {
     "median_body_width_p90_um": "Specimen median P90 body width (um)",
     "median_length_body_width_ratio": "Specimen median length / body width",
     "median_projection_z_extent_um": "Specimen median projection + Z extent (um)",
-    "median_3d_length_um": "Legacy alias: specimen median projection + Z extent (um)",
     "median_3d_tortuosity": "Specimen median 3D tortuosity",
     "median_observed_slab_effective_thickness_um": "Specimen median observed-slab effective thickness (um)",
-    "median_3d_thickness_um": "Legacy alias: specimen median observed-slab effective thickness (um)",
     "median_observed_slice_mask_volume_um3": "Specimen median observed-slice mask slab sum (um3)",
-    "median_3d_volume_um3": "Legacy alias: specimen median observed-slice mask slab sum (um3)",
     "median_3d_z_span_um": "Specimen median Z span (um)",
 }
 
@@ -13214,7 +13209,7 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         "Length / width\n"
         "Centerline length divided by mask width. Larger values indicate a more "
         "elongated, slender object.\n\n"
-        "3D length\n"
+        "Projection + Z extent\n"
         "sqrt(maximum lateral 2D length^2 + Z span^2). This is a calibrated "
         "projection-plus-Z estimate, not a surface-mesh length.\n\n"
         "3D tortuosity\n"
@@ -13223,7 +13218,8 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         "Volume\n"
         "Sum of filled-mask pixels across slices x XY pixel area x Z step.\n\n"
         "Effective thickness\n"
-        "2 x sqrt((volume / 3D length) / pi). This is a diameter proxy and is "
+        "2 x sqrt((observed-slice slab sum / projection + Z extent) / pi). "
+        "This is a diameter proxy and is "
         "PSF- and segmentation-sensitive.\n\n"
         "Z span\n"
         "(last Z index - first Z index) x Z step."
@@ -13336,7 +13332,7 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
             "should be interpreted together with length and width.",
         ),
         (
-            "Specimen median 3D length",
+            "Specimen median projection + Z extent",
             "Question: Are nuclei longer after accounting for their Z orientation?",
             "Meaning: Combines maximum lateral length with calibrated Z span. It "
             "can exceed 2D length when a nucleus extends through several planes. "
@@ -13542,12 +13538,9 @@ def _write_study_aggregates(output_root, rows, state):
         "median_length_body_width_ratio",
         "body_width_available_fraction",
         "median_projection_z_extent_um",
-        "median_3d_length_um",
         "median_3d_tortuosity",
         "median_observed_slab_effective_thickness_um",
-        "median_3d_thickness_um",
         "median_observed_slice_mask_volume_um3",
-        "median_3d_volume_um3",
         "median_3d_z_span_um",
         "normalization_warning",
     ]
@@ -16421,7 +16414,7 @@ class SpermGUI:
 
                 n_candidates = int(ts["technical_valid"].sum()) if "technical_valid" in ts.columns else len(ts)
                 primary_tracks = _technical_valid_track_population(ts)
-                median_3d_length = (
+                median_projection_z_extent = (
                     float(primary_tracks["projection_z_extent_um"].median())
                     if not primary_tracks.empty and "projection_z_extent_um" in primary_tracks.columns
                     else np.nan
@@ -16429,7 +16422,7 @@ class SpermGUI:
                 self.lbl_batch_op.config(
                     text=(
                         f'Primary result: {n_candidates} estimated unique nuclei | '
-                        f'median 3D length {median_3d_length:.2f} um'
+                        f'median projection + Z extent {median_projection_z_extent:.2f} um'
                     ),
                     fg='#27ae60')
                 self.root.update()

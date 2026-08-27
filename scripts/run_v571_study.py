@@ -119,7 +119,7 @@ def main():
                 "group",
                 "estimated_unique_nuclei",
                 "median_2d_length_um",
-                "median_3d_length_um",
+                "median_projection_z_extent_um",
             )
             if column in summary.columns
         ]

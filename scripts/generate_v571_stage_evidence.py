@@ -28,6 +28,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def git_blob_sha256(path, commit="HEAD"):
+    relative = Path(path).resolve().relative_to(ROOT).as_posix()
+    content = subprocess.check_output(
+        ["git", "show", f"{commit}:{relative}"], cwd=ROOT
+    )
+    return hashlib.sha256(content).hexdigest()
+
+
 def load_pipeline():
     spec = importlib.util.spec_from_file_location("saturn_v571_stage_evidence", PIPELINE)
     module = importlib.util.module_from_spec(spec)
@@ -80,7 +88,7 @@ def main():
     parser.add_argument("--pilot-manifest", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--profile", default=str(DEFAULT_PROFILE))
-    parser.add_argument("--z", type=int, default=35)
+    parser.add_argument("--z", type=int, nargs="+", default=[5, 35, 60])
     parser.add_argument("--overlong-split-trigger-um", type=float)
     args = parser.parse_args()
 
@@ -107,47 +115,56 @@ def main():
         files = [path for _parsed, path in parsed_files]
         z_values = [int(parsed["z"]) for parsed, _path in parsed_files]
         files_by_z = {int(z): path for path, z in zip(files, z_values)}
-        if args.z not in files_by_z:
-            nearest = min(files_by_z, key=lambda z: abs(z - args.z))
-        else:
-            nearest = args.z
-        saturn.resolve_stack_microscope_calibration(cfg, files, input_dir=input_dir)
-        raw = saturn.ensure_2d_image(
-            saturn.robust_imread(files_by_z[nearest]),
-            Path(files_by_z[nearest]).name,
-        )
-        roi = saturn.load_roi_mask_file(roi_path, expected_shape=raw.shape)
-        context = saturn.build_stack_preprocess_context(files, roi, cfg)
-        unet_context = saturn._make_unet_context_from_paths(files_by_z, nearest)
-        segmentation = saturn.segment_slice(
-            raw,
-            cfg,
-            z_idx=nearest,
-            roi_mask=roi,
-            preprocess_context=context,
-            unet_context_stack=unet_context,
-        )
-        measured = saturn.measure_spermatids(segmentation, cfg)
-        measured_lengths_um = np.asarray(
-            [
-                float(row["length_px_geodesic"]) * float(cfg["UM_PER_PX_XY"])
-                for row in measured["results"]
-            ],
-            dtype=np.float64,
-        )
-        overlay = saturn.make_overlay(raw, measured["skel_label"])
-        destination = output_dir / f"{specimen['specimen']}_z{nearest:03d}_stages.png"
-        render_panel(
-            raw,
-            segmentation,
-            measured["skel_label"],
-            overlay,
-            roi,
-            destination,
-            f"{specimen['specimen']} z{nearest:03d}: Saturn v5.7.1 production stages",
-        )
-        evidence.append(
+        nearest_values = sorted(
             {
+                requested
+                if requested in files_by_z
+                else min(files_by_z, key=lambda z: abs(z - requested))
+                for requested in args.z
+            }
+        )
+        saturn.resolve_stack_microscope_calibration(cfg, files, input_dir=input_dir)
+        calibration_metadata = Path(cfg["CALIBRATION_METADATA_FILE"]).resolve()
+        first_raw = saturn.ensure_2d_image(
+            saturn.robust_imread(files_by_z[nearest_values[0]]),
+            Path(files_by_z[nearest_values[0]]).name,
+        )
+        roi = saturn.load_roi_mask_file(roi_path, expected_shape=first_raw.shape)
+        context = saturn.build_stack_preprocess_context(files, roi, cfg)
+        for nearest in nearest_values:
+            raw = saturn.ensure_2d_image(
+                saturn.robust_imread(files_by_z[nearest]),
+                Path(files_by_z[nearest]).name,
+            )
+            unet_context = saturn._make_unet_context_from_paths(files_by_z, nearest)
+            segmentation = saturn.segment_slice(
+                raw,
+                cfg,
+                z_idx=nearest,
+                roi_mask=roi,
+                preprocess_context=context,
+                unet_context_stack=unet_context,
+            )
+            measured = saturn.measure_spermatids(segmentation, cfg)
+            measured_lengths_um = np.asarray(
+                [
+                    float(row["length_px_geodesic"]) * float(cfg["UM_PER_PX_XY"])
+                    for row in measured["results"]
+                ],
+                dtype=np.float64,
+            )
+            overlay = saturn.make_overlay(raw, measured["skel_label"])
+            destination = output_dir / f"{specimen['specimen']}_z{nearest:03d}_stages.png"
+            render_panel(
+                raw,
+                segmentation,
+                measured["skel_label"],
+                overlay,
+                roi,
+                destination,
+                f"{specimen['specimen']} z{nearest:03d}: Saturn v5.7.1 production stages",
+            )
+            evidence.append({
                 "specimen": specimen["specimen"],
                 "z_index": nearest,
                 "source_image": str(Path(files_by_z[nearest]).resolve()),
@@ -155,12 +172,16 @@ def main():
                 "roi_path": str(roi_path.resolve()),
                 "roi_sha256": sha256(roi_path),
                 "profile_path": str(Path(args.profile).resolve()),
-                "profile_sha256": sha256(args.profile),
+                "profile_working_copy_sha256": sha256(args.profile),
+                "profile_git_blob_sha256": git_blob_sha256(args.profile),
+                "calibration_metadata_path": str(calibration_metadata),
+                "calibration_metadata_sha256": sha256(calibration_metadata),
                 "overlong_split_trigger_um": cfg[
                     "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM"
                 ],
                 "checkpoint_sha256": cfg["UNET_CHECKPOINT_SHA256"],
                 "artifact": str(destination),
+                "artifact_repository_path": destination.relative_to(ROOT).as_posix(),
                 "artifact_sha256": sha256(destination),
                 "detection_count": len(measured["results"]),
                 "median_2d_length_um": (
@@ -184,8 +205,7 @@ def main():
                 ),
                 "xy_um_per_pixel": cfg["UM_PER_PX_XY"],
                 "z_um_per_slice": cfg["UM_PER_SLICE_Z"],
-            }
-        )
+            })
     try:
         git_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
@@ -195,8 +215,12 @@ def main():
     manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit_at_generation": git_commit,
-        "pipeline_sha256": sha256(PIPELINE),
-        "generator_sha256": sha256(Path(__file__)),
+        "pipeline_working_copy_sha256": sha256(PIPELINE),
+        "pipeline_git_blob_sha256": git_blob_sha256(PIPELINE, git_commit),
+        "profile_working_copy_sha256": sha256(args.profile),
+        "profile_git_blob_sha256": git_blob_sha256(args.profile, git_commit),
+        "generator_working_copy_sha256": sha256(Path(__file__)),
+        "generator_git_blob_sha256": git_blob_sha256(Path(__file__), git_commit),
         "records": evidence,
     }
     (output_dir / "visual_evidence_manifest.json").write_text(

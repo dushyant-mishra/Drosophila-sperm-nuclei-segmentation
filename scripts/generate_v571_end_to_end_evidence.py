@@ -24,6 +24,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def git_blob_sha256(path, commit="HEAD"):
+    relative = Path(path).resolve().relative_to(ROOT).as_posix()
+    content = subprocess.check_output(
+        ["git", "show", f"{commit}:{relative}"], cwd=ROOT
+    )
+    return hashlib.sha256(content).hexdigest()
+
+
 def image_page(path, title, note):
     image = plt.imread(path)
     figure = plt.figure(figsize=(16, 10))
@@ -50,22 +58,25 @@ def main():
     records = []
     with PdfPages(pdf_path) as pdf:
         for specimen in ("KJ-01", "WT-01"):
-            stages = next(stage_dir.glob(f"{specimen}_z*_stages.png"))
             tracking = tracking_dir / f"{specimen}_stratified_tracking.png"
-            for role, path, title, note in (
+            pages = [
                 (
                     "segmentation_stages",
                     stages,
-                    f"{specimen}: raw image to measured 2D instances",
+                    f"{specimen}: raw image to measured 2D instances ({stages.stem})",
                     "All stage panels use the same ROI crop and pixel framing.",
-                ),
+                )
+                for stages in sorted(stage_dir.glob(f"{specimen}_z*_stages.png"))
+            ]
+            pages.append(
                 (
                     "cross_slice_tracking",
                     tracking,
-                    f"{specimen}: cross-slice identity evidence",
-                    "Color is fixed within each track; display strokes do not alter measurements.",
-                ),
-            ):
+                    f"{specimen}: cross-slice identity and instance-geometry evidence",
+                    "Cyan is U-Net support; white is neighboring boundaries; track color is target mask/boundary/centerline.",
+                )
+            )
+            for role, path, title, note in pages:
                 figure = image_page(path, title, note)
                 pdf.savefig(figure, bbox_inches="tight")
                 plt.close(figure)
@@ -74,6 +85,7 @@ def main():
                         "specimen": specimen,
                         "role": role,
                         "source_artifact": str(path),
+                        "source_artifact_repository_path": path.relative_to(ROOT).as_posix(),
                         "source_artifact_sha256": sha256(path),
                     }
                 )
@@ -83,8 +95,10 @@ def main():
     manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit_at_generation": commit,
-        "generator_sha256": sha256(Path(__file__)),
+        "generator_working_copy_sha256": sha256(Path(__file__)),
+        "generator_git_blob_sha256": git_blob_sha256(Path(__file__), commit),
         "pdf": str(pdf_path),
+        "pdf_repository_path": pdf_path.relative_to(ROOT).as_posix(),
         "pdf_sha256": sha256(pdf_path),
         "records": records,
     }

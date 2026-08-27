@@ -62,6 +62,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def git_blob_sha256(path, commit="HEAD"):
+    relative = Path(path).resolve().relative_to(ROOT).as_posix()
+    content = subprocess.check_output(
+        ["git", "show", f"{commit}:{relative}"], cwd=ROOT
+    )
+    return hashlib.sha256(content).hexdigest()
+
+
 def specimen_outputs(root):
     samples = Path(root) / "samples"
     if samples.is_dir():
@@ -163,9 +171,13 @@ def main():
             {
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
                 "git_commit_at_generation": commit,
-                "pipeline_sha256": sha256(PIPELINE_PATH),
+                "pipeline_working_copy_sha256": sha256(PIPELINE_PATH),
+                "pipeline_git_blob_sha256": git_blob_sha256(
+                    PIPELINE_PATH, commit
+                ),
                 "profile": str(args.profile.resolve()),
-                "profile_sha256": sha256(args.profile),
+                "profile_working_copy_sha256": sha256(args.profile),
+                "profile_git_blob_sha256": git_blob_sha256(args.profile, commit),
                 "note": (
                     "Deterministic downstream replay from frozen 2D detections; "
                     "U-Net inference was not rerun."
