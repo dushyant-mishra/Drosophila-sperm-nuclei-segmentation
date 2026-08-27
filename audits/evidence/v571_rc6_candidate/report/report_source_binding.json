@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-08-27T21:08:15.158358+00:00",
+  "source_study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3",
+  "tracking_replay": "C:\\tmp\\saturn-v571-acceptance-rc6\\scratch\\v571_rc6_tracking_replay",
+  "tracking_replay_manifest_sha256": "35820bf364756a727060383b68adfb50c01d75a936847dd7781623b374181497",
+  "tracking_generation_commit": "6f9e73b170db121460ab82f28542d1ed1e8f96bb",
+  "tracking_pipeline_working_copy_sha256": "21f94b24ecdfd3f19de4f108255e2ef559299a1f60a67a9a4eecce322742f8cf",
+  "tracking_pipeline_git_blob_sha256": "1f56404b2bd683065bb229e3aa5b3579fbf3470d58563967c9db0efc12f572a1",
+  "report_generation_pipeline_working_copy_sha256": "fb8a676125d4b81a51ab120f53c0581a60b929659b01b3100671739c165e81fb",
+  "report_rebuild_script_sha256": "e5b6680fe839d846c744a94430871752b4f75d8064cebd2f1d1561b6ecdcf1e6",
+  "retained_replay_archive": "audits/evidence/v571_rc6_candidate/provenance/tracking_replay_inputs_outputs.zip",
+  "retained_replay_archive_sha256": "11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9",
+  "retained_replay_members": {
+    "kj_sv_40xx0.75-1/source_2d_detections.csv": "c8586941d475d3e057730cd3f2b321e5402e0f40e39af4a3831b7f9be47597b7",
+    "kj_sv_40xx0.75-1/tracked_detections.csv": "bd5866ed72caec7246a0bb7e265bd9b423544536939d041ef8c6103f1cc5fd30",
+    "kj_sv_40xx0.75-1/track_summary.csv": "de3d448d0bdac466d24c32b661e249063d77516cb449ce3612f7d3daa92ae9e2",
+    "w1118_sv_feb_40xx0.75-1/source_2d_detections.csv": "845ab542fda59a70876e3bbf3a0677c14811e125d268e54321544b19ab086ed5",
+    "w1118_sv_feb_40xx0.75-1/tracked_detections.csv": "35867ec335f2d925cc76cfcc0b910a6361b85431d8a19396c090a1e51e697f8f",
+    "w1118_sv_feb_40xx0.75-1/track_summary.csv": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
+  },
+  "records": [
+    {
+      "specimen": "kj_sv_40xx0.75-1",
+      "detections_2d": 26651,
+      "all_reconstructed_tracks": 5766,
+      "technical_valid_tracks": 5517,
+      "frozen_2d_detections_sha256": "c8586941d475d3e057730cd3f2b321e5402e0f40e39af4a3831b7f9be47597b7",
+      "replay_tracked_sha256": "bd5866ed72caec7246a0bb7e265bd9b423544536939d041ef8c6103f1cc5fd30",
+      "replay_tracks_sha256": "de3d448d0bdac466d24c32b661e249063d77516cb449ce3612f7d3daa92ae9e2"
+    },
+    {
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "detections_2d": 16421,
+      "all_reconstructed_tracks": 3541,
+      "technical_valid_tracks": 3423,
+      "frozen_2d_detections_sha256": "845ab542fda59a70876e3bbf3a0677c14811e125d268e54321544b19ab086ed5",
+      "replay_tracked_sha256": "35867ec335f2d925cc76cfcc0b910a6361b85431d8a19396c090a1e51e697f8f",
+      "replay_tracks_sha256": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
+    }
+  ],
+  "assertions": {
+    "report_and_sensitivity_use_replay_tracks": true,
+    "all_counts_reconciled": true,
+    "retained_replay_archive_verified": true,
+    "unet_inference_rerun": false
+  }
+}

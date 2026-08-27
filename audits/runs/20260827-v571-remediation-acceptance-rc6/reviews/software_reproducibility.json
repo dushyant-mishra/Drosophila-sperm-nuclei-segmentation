@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "software_reproducibility",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "verdict": "fail",
+  "confidence": "high",
+  "summary": "RC6 content-addressed evidence binding, explicit ch00 provenance, specimen-level sensitivity output, and clean worktree are verified. Acceptance fails because RC6 report metadata still points to RC5 artifacts, making report retrieval non-reproducible.",
+  "checks": [
+    {
+      "check_id": "content_addressed_commit_binding",
+      "status": "pass",
+      "evidence": [
+        "Command: python scripts/validate_v571_evidence_provenance.py ...; result: PASS, evidence remained content-identical from generation commit 6f9e73b170db121460ab82f28542d1ed1e8f96bb through reviewed commit cfd0f3ff0927fae2ed5e34849048c02ca94c6a80.",
+        "audits/evidence/v571_rc6_candidate/stages/visual_evidence_manifest.json:3-9, tracking/tracking_replay_manifest.json:3-10, and end_to_end/end_to_end_visual_evidence_manifest.json:3-6 record generation commits and Git-blob hashes."
+      ]
+    },
+    {
+      "check_id": "explicit_channel_provenance",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json:1764-1765 states all accepted source images resolve to ch00 and identifies the manifest cross-check source.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json:1-21 records explicit filename channel resolution and accepted ch00 selection."
+      ]
+    },
+    {
+      "check_id": "specimen_level_sensitivity_output",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:3-9 identifies biological_specimen as the analysis unit and retains excluded specimens.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:17-21 separates primary technical-valid output, descriptive sensitivity, width missingness, and sampled-volume normalization."
+      ]
+    },
+    {
+      "check_id": "clean_reviewed_worktree",
+      "status": "pass",
+      "evidence": [
+        "Command: git status --porcelain=v1; result: empty output.",
+        "Command: git rev-parse HEAD; result: cfd0f3ff0927fae2ed5e34849048c02ca94c6a80."
+      ]
+    },
+    {
+      "check_id": "report_metadata_points_to_rc6_artifacts",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 points biological report artifacts to audits/evidence/v571_rc5_candidate.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 points quality-control artifacts to audits/evidence/v571_rc5_candidate.",
+        "The RC6 candidate contains corresponding report files under audits/evidence/v571_rc6_candidate/report, so the metadata is stale and does not identify the reviewed retained artifacts."
+      ]
+    },
+    {
+      "check_id": "full_automated_suite",
+      "status": "not_verified",
+      "evidence": [
+        "audits/validation/v571_6f9e73b_validation.md:18-29 documents a 225-test run, but the required .venv interpreter is absent in this detached worktree; command .\\.venv\\Scripts\\python.exe -m pytest ... failed because the executable was not found."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "RC6 report metadata references RC5 paths",
+      "impact": "A reproducibility consumer following report_metadata.json can retrieve the wrong release's reports or fail to locate the intended RC6 artifacts. The candidate therefore does not provide a self-consistent report artifact index.",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 contains v571_rc5_candidate paths for biological outputs.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 contains v571_rc5_candidate paths for quality-control outputs.",
+        "RC6 report files are present under audits/evidence/v571_rc6_candidate/report as shown by the retained candidate artifact inventory."
+      ],
+      "recommendation": "Regenerate or correct report_metadata.json so every report and numeric-contract path resolves to the RC6 candidate tree, then rerun the report consistency and provenance validation checks under a new audit run."
+    }
+  ],
+  "limitations": [
+    "The full pytest suite was not rerun because the detached worktree lacks .venv; only focused read-only provenance validation and repository checks were executed.",
+    "No full image stack or new image inference was run, per review scope."
+  ],
+  "recommended_follow_up": [
+    "Correct the stale RC5 paths in the RC6 report metadata.",
+    "Rerun the focused report consistency validator and the complete pytest suite in an environment containing the documented dependencies.",
+    "Issue a superseding acceptance audit run after the metadata correction."
+  ]
+}

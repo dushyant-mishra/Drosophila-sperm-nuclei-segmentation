@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "conditional",
+    "calibration_provenance": "pass",
+    "measurement_geometry": "pass",
+    "repository_release": "conditional",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "conditional",
+    "visual_evidence": "conditional"
+  },
+  "required_roles_not_passed": [
+    "biological_validity",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "biological_validity",
+      "title": "RC6 report metadata remains bound to RC5 artifact paths"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "RC6 report metadata references RC5 paths"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "RC6 report metadata references RC5 artifacts"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "KJ-01 technical-valid count is inconsistent across retained evidence"
+    },
+    {
+      "role": "repository_release",
+      "title": "RC6 report metadata references RC5 artifacts"
+    }
+  ],
+  "validation_errors": []
+}

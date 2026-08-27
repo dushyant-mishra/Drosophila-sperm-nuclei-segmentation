@@ -8,77 +8,77 @@
       "display_name": "Specimen median 2D length (um)",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 8.952,
-      "comparison_median": 10.52,
-      "reference_display": "8.952",
-      "comparison_display": "10.52",
-      "pdf_token": "SOURCE_VALUE median_2d_length_um REF=8.952 COMP=10.52"
+      "reference_median": 8.536,
+      "comparison_median": 9.92,
+      "reference_display": "8.536",
+      "comparison_display": "9.92",
+      "pdf_token": "SOURCE_VALUE median_2d_length_um REF=8.536 COMP=9.92"
     },
     {
       "metric": "median_body_width_um",
       "display_name": "Specimen median apparent body width (um)",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 1.692,
-      "comparison_median": 1.558,
-      "reference_display": "1.692",
-      "comparison_display": "1.558",
-      "pdf_token": "SOURCE_VALUE median_body_width_um REF=1.692 COMP=1.558"
+      "reference_median": 1.6921,
+      "comparison_median": 1.5523,
+      "reference_display": "1.6921",
+      "comparison_display": "1.5523",
+      "pdf_token": "SOURCE_VALUE median_body_width_um REF=1.6921 COMP=1.5523"
     },
     {
       "metric": "median_length_body_width_ratio",
       "display_name": "Specimen median length / apparent body width",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 5.931504677342636,
-      "comparison_median": 7.398548942449581,
-      "reference_display": "5.9315",
-      "comparison_display": "7.39855",
-      "pdf_token": "SOURCE_VALUE median_length_body_width_ratio REF=5.9315 COMP=7.39855"
+      "reference_median": 5.716582874626884,
+      "comparison_median": 7.045072686098327,
+      "reference_display": "5.71658",
+      "comparison_display": "7.04507",
+      "pdf_token": "SOURCE_VALUE median_length_body_width_ratio REF=5.71658 COMP=7.04507"
     },
     {
       "metric": "median_projection_z_extent_um",
       "display_name": "Specimen median projection + Z extent (um)",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 9.291831344991367,
-      "comparison_median": 10.916883321384908,
-      "reference_display": "9.29183",
-      "comparison_display": "10.9169",
-      "pdf_token": "SOURCE_VALUE median_projection_z_extent_um REF=9.29183 COMP=10.9169"
+      "reference_median": 8.912929321313497,
+      "comparison_median": 10.19698420605453,
+      "reference_display": "8.91293",
+      "comparison_display": "10.197",
+      "pdf_token": "SOURCE_VALUE median_projection_z_extent_um REF=8.91293 COMP=10.197"
     },
     {
       "metric": "median_3d_tortuosity",
       "display_name": "Specimen median 3D tortuosity",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 1.1799289075165784,
-      "comparison_median": 1.2195027569457249,
-      "reference_display": "1.17993",
-      "comparison_display": "1.2195",
-      "pdf_token": "SOURCE_VALUE median_3d_tortuosity REF=1.17993 COMP=1.2195"
+      "reference_median": 1.123739361502195,
+      "comparison_median": 1.1323619966509142,
+      "reference_display": "1.12374",
+      "comparison_display": "1.13236",
+      "pdf_token": "SOURCE_VALUE median_3d_tortuosity REF=1.12374 COMP=1.13236"
     },
     {
       "metric": "median_observed_slab_effective_thickness_um",
       "display_name": "Specimen median observed-slab effective thickness (um)",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 1.4375745315470598,
-      "comparison_median": 1.4105613540018584,
-      "reference_display": "1.43757",
-      "comparison_display": "1.41056",
-      "pdf_token": "SOURCE_VALUE median_observed_slab_effective_thickness_um REF=1.43757 COMP=1.41056"
+      "reference_median": 1.2816081944627444,
+      "comparison_median": 1.262565868114934,
+      "reference_display": "1.28161",
+      "comparison_display": "1.26257",
+      "pdf_token": "SOURCE_VALUE median_observed_slab_effective_thickness_um REF=1.28161 COMP=1.26257"
     },
     {
       "metric": "median_observed_slice_mask_volume_um3",
       "display_name": "Specimen median observed-slice mask slab sum (um3)",
       "reference_group": "WT",
       "comparison_group": "KJ",
-      "reference_median": 14.723364899798138,
-      "comparison_median": 17.15247224016886,
-      "reference_display": "14.7234",
-      "comparison_display": "17.1525",
-      "pdf_token": "SOURCE_VALUE median_observed_slice_mask_volume_um3 REF=14.7234 COMP=17.1525"
+      "reference_median": 11.748947748323769,
+      "comparison_median": 13.037861847295982,
+      "reference_display": "11.7489",
+      "comparison_display": "13.0379",
+      "pdf_token": "SOURCE_VALUE median_observed_slice_mask_volume_um3 REF=11.7489 COMP=13.0379"
     }
   ],
   "validation": {
@@ -88,9 +88,9 @@
     "pdf_contains_contract_tokens": true,
     "pdf_validation_method": "pypdf_text_tokens",
     "artifact_sha256": {
-      "source_csv": "e57ba390871673aa1bbad9460ac8571aff0dadb8aa9ce36cd7feddff7ae05662",
-      "excel": "95d3084d5737000799c0119c9f6ddb9d2fb8e008f7eab484ed68b8892807b787",
-      "pdf": "e24e9bbdadc6f9ec749030a878bb5a523ab67d9c20a66cda753168f0b4f85030"
+      "source_csv": "9925380eb31ba3d09b4e16b85f19ab565062e5cd57bf7a68aba323e5ba9a2e74",
+      "excel": "f30dddab46e1938259d63cb5e8f2a34013cfcf3bc912bedfd6e5bd6ddbdac064",
+      "pdf": "b1937d51bdc4e9d533a7cccfa869667d47fa5956466a369917166a09ab01886f"
     }
   }
 }

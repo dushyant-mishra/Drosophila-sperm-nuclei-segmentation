@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "biological_validity",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "verdict": "conditional",
+  "confidence": "high",
+  "summary": "RC6 evidence supports morphology-neutral biological measurement and specimen-level sensitivity reporting, but report_metadata.json still points to RC5 artifacts, preventing clean confirmation that the documented biological outputs are the reviewed RC6 outputs.",
+  "checks": [
+    {
+      "check_id": "BIO-001",
+      "status": "pass",
+      "evidence": [
+        "audits/V5_7_1_DESIGN_DECISIONS.md:10-12 states unusual morphology remains measurable and may receive warnings.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/analysis_profile_used.json:56,85,164 records morphology-warning retention and morphology-neutral comparative tracking.",
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_manifest.json:3 records the generation commit for the morphology-neutral replay."
+      ]
+    },
+    {
+      "check_id": "BIO-002",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:3-9 identifies the biological specimen as the analysis unit and retains excluded or missing specimens.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:18-21 separates the primary technical-valid population, descriptive failure sensitivity, width missingness, and sampled ROI normalization."
+      ]
+    },
+    {
+      "check_id": "BIO-003",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-12 records one specimen per group, biological-specimen analysis, and insufficient specimens for inference.",
+        "audits/evidence/v571_rc6_candidate/report/README.md:9 states that the biological specimen is the analysis unit.",
+        "audits/validation/v571_6f9e73b_validation.md:75 states the two representative specimens do not establish a biological group effect."
+      ]
+    },
+    {
+      "check_id": "BIO-004",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:7-9 reports 35 specimens with 33 excluded or missing rather than silently dropping them.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:46-47 and 496-497 explicitly report acquisition-Z-boundary warnings for included specimens."
+      ]
+    },
+    {
+      "check_id": "BIO-005",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json:10,20-21 and :1764-1765 record channel 0 and the ch00 selection rule.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json:10,20-21 and :1344 record channel 0 and the ch00 selection rule.",
+        "audits/validation/v571_6f9e73b_validation.md:49-52 reports 88 and 67 unique images resolving to channel 0 and rejection of unresolved or nonzero channels."
+      ]
+    },
+    {
+      "check_id": "BIO-006",
+      "status": "pass",
+      "evidence": [
+        "audits/V5_7_1_DESIGN_DECISIONS.md:65 states a repeated 2D ROI does not establish anatomical organ volume.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:21 explicitly labels sampled ROI volume as not anatomical organ volume."
+      ]
+    },
+    {
+      "check_id": "BIO-007",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 points biological report artifacts to audits/evidence/v571_rc5_candidate rather than the RC6 candidate.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 likewise points QC artifacts to the RC5 candidate.",
+        "The RC6 candidate contains corresponding report artifacts under audits/evidence/v571_rc6_candidate/report/01_biological_results and /02_quality_control, so the metadata binding is inconsistent."
+      ]
+    },
+    {
+      "check_id": "BIO-008",
+      "status": "pass",
+      "evidence": [
+        "Command result: git rev-parse HEAD returned cfd0f3ff0927fae2ed5e34849048c02ca94c6a80.",
+        "Command result: git status --short --branch returned only ## HEAD (no branch), with no worktree modifications.",
+        "audits/validation/v571_6f9e73b_validation.md:24 and :53-54 document content-addressed evidence binding and later audit-only commit handling."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "RC6 report metadata remains bound to RC5 artifact paths",
+      "impact": "The biological and QC report outputs cannot be independently established as the reviewed RC6 outputs from report_metadata.json; this weakens provenance for biological conclusions and violates the required clean reviewed-evidence binding.",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 references audits/evidence/v571_rc5_candidate/report/01_biological_results.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 references audits/evidence/v571_rc5_candidate/report/02_quality_control."
+      ],
+      "recommendation": "Regenerate or correct report_metadata.json in a superseding audit run so every biological and QC artifact reference resolves to the RC6 candidate and is content-hashed against the reviewed commit."
+    }
+  ],
+  "limitations": [
+    "Only two complete representative specimens are included in the retained sensitivity artifact, one per group; the evidence does not establish a biological group effect.",
+    "No full image-stack execution was performed, per instruction.",
+    "Biological validity of segmentation boundaries and morphology labels still requires independent biological review or manual-mask comparison."
+  ],
+  "recommended_follow_up": [
+    "Correct the RC6 report metadata artifact paths and rerun the provenance and report-consistency checks.",
+    "Obtain independent biological-validity review of representative short, long, wide, thin, curved, fragmented-looking, fused-looking, single-slice, and low-ratio cases."
+  ]
+}

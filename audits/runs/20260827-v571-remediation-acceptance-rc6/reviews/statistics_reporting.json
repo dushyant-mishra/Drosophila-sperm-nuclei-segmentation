@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "statistics_reporting",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "verdict": "conditional",
+  "confidence": "high",
+  "summary": "Specimen-level sensitivity reporting, explicit ch00 provenance, content-addressed evidence binding, and clean-worktree status are supported. Acceptance is conditional because RC6 report_metadata.json still points to RC5 report artifacts, creating an internal report/manifest consistency defect.",
+  "checks": [
+    {
+      "check_id": "content_addressed_binding",
+      "status": "pass",
+      "evidence": [
+        "audits/validation/v571_6f9e73b_validation.md records successful provenance validation and identical pipeline/profile/generator Git-blob identities through the reviewed commit.",
+        "audits/evidence/v571_rc6_candidate/stages/visual_evidence_manifest.json, tracking/tracking_replay_manifest.json, tracking/tracking_evidence_manifest.json, and end_to_end/end_to_end_visual_evidence_manifest.json record generation commit 6f9e73b170db121460ab82f28542d1ed1e8f96bb and content hashes.",
+        "audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json records SHA-256 hashes for checkpoint, specimen settings, source manifests, and replay archive."
+      ]
+    },
+    {
+      "check_id": "explicit_ch00_provenance",
+      "status": "pass",
+      "evidence": [
+        "Both RC6 resolved source manifests contain only channel 0 images: KJ has 88 images and WT has 67 images.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json and the corresponding WT manifest identify channel_resolution_source as filename:explicit_channel and state that accepted source images resolve to ch00.",
+        "The source filenames in both manifests explicitly end in ch00.tif."
+      ]
+    },
+    {
+      "check_id": "specimen_level_sensitivity",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:2-21 declares biological specimen as the analysis unit, no inference, explicit specimen-level formulas, separate area and sampled-volume denominators, and no anatomical-organ-volume interpretation.",
+        "The same artifact reports 35 ledger specimens, 2 included specimens, and 33 excluded or missing specimens, preserving exclusions rather than silently dropping them."
+      ]
+    },
+    {
+      "check_id": "clean_worktree",
+      "status": "pass",
+      "evidence": [
+        "Read-only git status in C:\\tmp\\saturn-v571-final-audit returned no porcelain changes and HEAD was cfd0f3ff0927fae2ed5e34849048c02ca94c6a80."
+      ]
+    },
+    {
+      "check_id": "report_manifest_consistency",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 points biological PDF, PowerPoint, Excel, and numeric contract to audits/evidence/v571_rc5_candidate.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 points quality-control artifacts to audits/evidence/v571_rc5_candidate.",
+        "The RC6 report consistency artifact audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json:2-10 reports hashes for those RC5 paths, while the RC6 candidate contains its own report directory."
+      ]
+    },
+    {
+      "check_id": "specimen_level_group_inference",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/biological_statistical_tests.csv records analysis_unit=biological specimen, reference_n=1, comparison_n=1, inference_status=insufficient_specimens, and empty inferential test fields.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 declares one specimen per group, minimum three specimens per group, primary_test=unavailable, and inference_status=insufficient_specimens."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "RC6 report metadata references RC5 artifacts",
+      "impact": "The acceptance package cannot establish that its report manifest, numeric contract, and reported artifact hashes describe the RC6 candidate. This weakens reproducible report delivery and can cause consumers to open the wrong generation.",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 references audits/evidence/v571_rc5_candidate for biological outputs.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 references audits/evidence/v571_rc5_candidate for quality-control outputs.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json:7-10 contains hashes associated with the referenced RC5 artifacts."
+      ],
+      "recommendation": "Regenerate or correct the RC6 report metadata and consistency validation so every report, spreadsheet, PDF, source table, and hash points to v571_rc6_candidate; rerun the focused report-consistency validator and issue a superseding audit run."
+    }
+  ],
+  "limitations": [
+    "The retained RC6 evidence contains only one representative specimen per group, so biological group inference is appropriately unavailable.",
+    "This review used retained artifacts and focused read-only checks; no full image-stack execution was performed."
+  ],
+  "recommended_follow_up": [
+    "Repair the RC6 report metadata and hash manifest references, rerun report consistency validation, and obtain an independent confirmation before acceptance."
+  ]
+}

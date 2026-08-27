@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "visual_evidence",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "verdict": "conditional",
+  "confidence": "high",
+  "summary": "Visual evidence, content-addressed bindings, explicit ch00 provenance, clean worktree state, and specimen-level sensitivity structure were verified. Acceptance is blocked pending reconciliation of inconsistent KJ-01 technical-valid counts across retained evidence.",
+  "checks": [
+    {
+      "check_id": "VISUAL-STAGES-CONSISTENCY",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/stages/KJ-01_z035_stages.png: identical framing shows raw image, foreground probability, core probability, filled mask, instance boundaries, centerlines, and final overlay.",
+        "audits/evidence/v571_rc6_candidate/stages/visual_evidence_manifest.json: records six representative stage artifacts with SHA-256 bindings."
+      ]
+    },
+    {
+      "check_id": "VISUAL-ADVERSARIAL-COVERAGE",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/tracking/KJ-01_stratified_tracking.png: labeled faint, bright, short, long, wide, curved, touching, and irregular examples with raw and tracked panels.",
+        "The tracking figure preserves target identities across adjacent Z planes and distinguishes target overlays from neighboring instance boundaries."
+      ]
+    },
+    {
+      "check_id": "CONTENT-ADDRESSED-BINDING",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json: checkpoint SHA-256 is 7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25 and replay members have SHA-256 bindings.",
+        "audits/validation/v571_6f9e73b_validation.md: retained pipeline, profile, checkpoint, and evidence hashes are recorded.",
+        "Focused certutil SHA-256 checks matched the recorded hashes for all five checked RC6 manifests/artifacts."
+      ]
+    },
+    {
+      "check_id": "EXPLICIT-CH00-PROVENANCE",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json: accepted filenames include explicit _ch00, channel=0, channel_resolution_source=filename:explicit_channel, and channel_selection_rule=accepted source channel is ch00.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json: all accepted source images resolve to ch00."
+      ]
+    },
+    {
+      "check_id": "SPECIMEN-LEVEL-SENSITIVITY",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json: analysis_unit=biological_specimen, inference_performed=false, specimen_count=35, included_specimen_count=2, and excluded specimens retained in the ledger.",
+        "The artifact explicitly separates technical-valid counts from all reconstructed counts and states that sampled ROI volume is not anatomical organ volume."
+      ]
+    },
+    {
+      "check_id": "REPORT-MANIFEST-CONSISTENCY",
+      "status": "fail",
+      "evidence": [
+        "audits/validation/v571_6f9e73b_validation.md: representative KJ-01 results report 5,517 technical-valid tracks out of 5,766 tracks.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json: KJ-01 reports 4,624 technical-valid tracks out of 4,906 reconstructed tracks.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json: internal CSV, Excel, and PDF agreement passes, but it does not reconcile this cross-artifact count discrepancy."
+      ]
+    },
+    {
+      "check_id": "CLEAN-WORKTREE",
+      "status": "pass",
+      "evidence": [
+        "git status --short --branch at C:\\tmp\\saturn-v571-final-audit returned only ## HEAD (no branch), with no modified or untracked files.",
+        "git rev-parse HEAD returned cfd0f3ff0927fae2ed5e34849048c02ca94c6a80."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "KJ-01 technical-valid count is inconsistent across retained evidence",
+      "impact": "The acceptance claim requires internally consistent report and manifest evidence; the differing KJ-01 denominators and technical-valid counts prevent confirming that the sensitivity artifact and validation receipt describe the same production result.",
+      "evidence": [
+        "audits/validation/v571_6f9e73b_validation.md: KJ-01 = 5,766 tracks and 5,517 technical-valid tracks.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json: KJ-01 = 4,906 all reconstructed tracks and 4,624 technical-valid tracks."
+      ],
+      "recommendation": "Reconcile the source run and specimen identifier, regenerate or explicitly cross-reference the affected artifact, and add a validator proving that all retained KJ-01 report, tracking, and sensitivity counts refer to the same frozen inputs."
+    }
+  ],
+  "limitations": [
+    "Visual review used retained PNG evidence and did not rerun image inference or the full image stack.",
+    "The visual panels demonstrate representative examples and cannot establish exhaustive object-level correctness."
+  ],
+  "recommended_follow_up": [
+    "Resolve the KJ-01 count discrepancy before acceptance; conditional status blocks the production gate."
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "repository_release",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "verdict": "conditional",
+  "confidence": "high",
+  "summary": "RC6 evidence is present, the worktree is clean, explicit ch00 provenance and specimen-level sensitivity artifacts are retained, but RC6 report metadata still points to RC5 report artifacts. Release acceptance is conditional pending correction and superseding audit evidence.",
+  "checks": [
+    {
+      "check_id": "RELEASE-001",
+      "status": "pass",
+      "evidence": [
+        "git rev-parse HEAD returned cfd0f3ff0927fae2ed5e34849048c02ca94c6a80 in C:\\tmp\\saturn-v571-final-audit.",
+        "git status --porcelain=v1 returned no entries."
+      ]
+    },
+    {
+      "check_id": "RELEASE-002",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json records checkpoint SHA-256 7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25.",
+        "audits/validation/v571_6f9e73b_validation.md records the production pipeline and profile Git-blob hashes and states that RC6 evidence was content-identical across the later audit-only review commit."
+      ]
+    },
+    {
+      "check_id": "RELEASE-003",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json and the WT counterpart are retained resolved manifests.",
+        "audits/validation/v571_6f9e73b_validation.md:49-52 reports 88 KJ and 67 WT source images resolved to channel 0 with no unresolved or nonzero channels.",
+        "Resolved manifest paths visibly use *_ch00.tif."
+      ]
+    },
+    {
+      "check_id": "RELEASE-004",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json declares analysis_unit biological_specimen and inference_performed false.",
+        "The artifact contains two included specimens, one KJ and one WT, and explicitly states that sensitivity rows are descriptive with no group inference."
+      ]
+    },
+    {
+      "check_id": "RELEASE-005",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 points biological report artifacts and the numeric contract to audits/evidence/v571_rc5_candidate.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 points quality-control report artifacts to audits/evidence/v571_rc5_candidate.",
+        "The RC6 report directory contains corresponding RC6 report artifacts, so metadata does not bind the declared RC6 report to its co-located artifacts."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "RC6 report metadata references RC5 artifacts",
+      "impact": "A release consumer following report_metadata.json can retrieve stale RC5 outputs, preventing reliable recovery and invalidating the claim that the RC6 report and manifest are internally consistent.",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 contains C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate paths.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 contains RC5 quality-control paths.",
+        "The referenced RC6 report artifacts exist under audits/evidence/v571_rc6_candidate/report."
+      ],
+      "recommendation": "Create a superseding audit run whose report_metadata.json points exclusively to RC6 artifacts, regenerate or verify the consistency contract, and rerun the release acceptance gate."
+    }
+  ],
+  "limitations": [
+    "No full image-processing stack was run.",
+    "This review used retained manifests, reports, validation receipts, Git metadata, and focused read-only checks only.",
+    "Remote, upstream, tags, and ignored-large-artifact policy were not independently verified because the acceptance request prioritized the specified RC6 evidence and prohibited edits."
+  ],
+  "recommended_follow_up": [
+    "Correct the stale RC5 paths in the RC6 report metadata.",
+    "Regenerate the affected report metadata or produce a superseding append-only audit run.",
+    "Re-run internal report/manifest consistency validation and obtain independent release approval."
+  ]
+}

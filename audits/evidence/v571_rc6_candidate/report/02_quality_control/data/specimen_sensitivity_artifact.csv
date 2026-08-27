@@ -1,5 +1,5 @@
 sample_id,group,status,analysis_included,technical_valid_count,technical_failure_count,all_reconstructed_count,technical_exclusion_fraction,width_available_fraction,width_missing,width_available_estimated_count,width_missing_estimated_count,roi_area_um2,sampled_depth_um,sampled_roi_volume_um3,primary_count_per_1000_um2,all_reconstructed_count_per_1000_um2,primary_count_per_100000_um3,all_reconstructed_count_per_100000_um3,area_denominator_valid,volume_denominator_valid,normalization_valid,normalization_warning
-kj_sv_40xx0.75-1,KJ,complete,True,4624,282,4906,0.057480635955972276,0.7731401384083045,True,3575,1049,45647.62830734253,30.464201416207683,1390618.542927066,101.29770530172799,107.47546328076936,332.51390350851347,352.7926493539721,True,True,True,detections reach an acquisition Z boundary
+kj_sv_40xx0.75-1,KJ,complete,True,5517,249,5766,0.04318418314255983,0.7806779046583288,True,4307,1210,45647.62830734253,30.464201416207683,1390618.542927066,120.86060556869232,126.31543442252674,396.72993201913243,414.6356331379949,True,True,True,detections reach an acquisition Z boundary
 kj_sv_40xx0.75-10,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 kj_sv_40xx0.75-11,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 kj_sv_40xx0.75-12,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
@@ -17,7 +17,7 @@ kj_sv_40xx0.75-7,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 kj_sv_40xx0.75-8,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 kj_sv_40xx0.75-9,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 lkj_sv_40xx0.75-18,KJ,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
-w1118_sv_feb_40xx0.75-1,WT,complete,True,2816,132,2948,0.04477611940298507,0.7624289772727273,True,2147,669,35931.78391456604,23.194335169158144,833413.83934021,78.37072622654976,82.0443540184193,337.88735764567423,353.7258275353152,True,True,True,detections reach an acquisition Z boundary
+w1118_sv_feb_40xx0.75-1,WT,complete,True,3423,118,3541,0.03332391979666761,0.7724218521764534,True,2644,779,35931.78391456604,23.19433516915814,833413.8393402098,95.26384796643461,98.54784856825736,410.7203214563718,424.8789536304448,True,True,True,detections reach an acquisition Z boundary
 w1118_sv_feb_40xx0.75-10,WT,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 w1118_sv_feb_40xx0.75-11,WT,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,
 w1118_sv_feb_40xx0.75-12,WT,excluded,False,0,0,0,,,True,,,,,,,,,,False,False,False,

@@ -14,14 +14,14 @@ bytes on Windows.
 ## Automated validation
 
 ```text
-.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp C:\tmp\saturn-v571-pytest-rc6
-225 passed in 32.18s
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp .\scratch\pytest_full_<timestamp>
+229 passed in 32.32s
 
 .\.venv\Scripts\python.exe .\utils\tune_parameters_Saturnv5_7_1.py --self-check
 Saturn v5.7.1 tuner self-check passed
 
 .\.venv\Scripts\python.exe .\scripts\validate_v571_evidence_provenance.py <RC6 manifests/profile>
-PASS: evidence artifacts remain content-identical from generation commit 6f9e73b through reviewed commit 6f9e73b
+PASS: evidence artifacts remain content-identical from generation commit 6f9e73b through reviewed commit cfd0f3f
 
 git diff --check
 PASS for tracked RC6 production sources (pre-existing v5.7 line-ending notices remain outside v5.7.1 scope)
@@ -42,7 +42,11 @@ directory and produced setup errors only. Re-running with the explicit clean
 | `audits/evidence/v571_rc6_candidate/end_to_end/v571_end_to_end_visual_evidence.pdf` | `72f0f86cbeeca6efc9478057449d9898bf773a1ab2dcd6f9a1a0e85a1e528689` |
 | `audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json` | `63463808567c92e7e933b8d53b093daa1e4c4a084ed170b299b042cbb9b9da5b` |
 | `audits/evidence/v571_rc6_candidate/provenance/tracking_replay_inputs_outputs.zip` | `11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9` |
-| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json` | `7a5da26831f58895845c116a704f0d55f9e9a950085e61f16fe1d6edbaa77ebc` |
+| `audits/evidence/v571_rc6_candidate/report/report_source_binding.json` | `4ccece01281f6ceb9f7f1d69cea22d62c6b01f5880c06748300c75f6989affb2` |
+| `audits/evidence/v571_rc6_candidate/report/01_biological_results/Biological_Comparison_Report.pdf` | `b1937d51bdc4e9d533a7cccfa869667d47fa5956466a369917166a09ab01886f` |
+| `audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json` | `208bcfa20c8a5822fe4bf70fc7da37fd71055e2602132a5765786ce3bfa28625` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/Quality_Control_Report.pdf` | `de8200015664a180fe8721bdd3cd0ad895f1dc2bd7524e518fe00c3ac3a6d343` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json` | `4b9d41283d9f694bf2a7df39dd6a7c75f1dbe2b225ef73c35cbee25d49901088` |
 
 ## Provenance remediation
 
@@ -53,6 +57,14 @@ directory and produced setup errors only. Re-running with the explicit clean
 - Evidence is bound to the generation commit by Git-blob hashes for the
   pipeline, profile, and generator. Validation permits later audit-only commits
   only when those blobs remain identical.
+- The report package was rebuilt from the frozen 2D detections and corrected
+  tracking replay after the RC6 audit identified stale RC5 report paths and a
+  KJ count mismatch. `report_source_binding.json` verifies every retained
+  source, tracked-detection, and track-summary CSV against the durable replay
+  archive before report generation.
+- Report metadata now points only to the RC6 report package. KJ counts reconcile
+  to 5,766 reconstructed / 5,517 technical-valid tracks; WT counts reconcile to
+  3,541 / 3,423 in the replay, biological report, and sensitivity artifact.
 
 ## Representative results and regression check
 
@@ -74,3 +86,11 @@ claim anatomical organ volume.
 
 These two representative specimens validate execution and provenance only;
 they do not establish a biological group effect.
+
+## Audit history
+
+The independent RC6 audit is retained at
+`audits/runs/20260827-v571-remediation-acceptance-rc6`. Its gate failed because
+the original report package referenced RC5 paths and disagreed with the
+corrected KJ tracking replay. This receipt documents the remediation; acceptance
+requires a new superseding audit and does not rewrite the RC6 verdict.

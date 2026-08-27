@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc6",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "calibration_provenance",
+  "reviewed_commit": "cfd0f3ff0927fae2ed5e34849048c02ca94c6a80",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "RC6 calibration and provenance evidence resolves Leica calibration, explicit ch00 source provenance, content-addressed pipeline/profile identity, specimen-level sensitivity reporting, and clean reviewed worktree.",
+  "checks": [
+    {
+      "check_id": "CAL-001",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json:3-10 records checkpoint identity, specimen calibration status, and Leica XML provenance.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/calibration_used.json:2-11 records Leica XML calibration, XY=0.37841796875 um/pixel, Z=0.34618410700236 um/slice, and auto_leica_calibration=true.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/calibration_used.json:2-11 records corresponding WT Leica XML calibration and resolved units.",
+        "sperm_segmentation_saturnv5.7.1.py:11410-11501 contains stack calibration resolution and Leica metadata handling."
+      ]
+    },
+    {
+      "check_id": "CAL-002",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json:2-20 records ordered source images, Z indices, channel=0, explicit filename channel resolution, and accepted source channel ch00.",
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json:2-20 records the corresponding WT ordered source and ch00 provenance.",
+        "audits/validation/v571_6f9e73b_validation.md:49-52 reports 88 KJ and 67 WT unique source images resolved to channel 0 and rejection of unresolved or nonzero channels.",
+        "audits/evidence/v571_rc6_candidate/stages/visual_evidence_manifest.json:12-24 and :90-102 bind representative images, Z indices, ROI hashes, calibration XML hashes, and checkpoint hash."
+      ]
+    },
+    {
+      "check_id": "CAL-003",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/settings_manifest.json:3-44 archives profile, checkpoint, resolved calibration, microscope XML, ROI, and source manifest hashes.",
+        "audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json:10-104 records copied settings paths, sizes, and SHA-256 hashes for both specimens.",
+        "audits/validation/v571_6f9e73b_validation.md:53-55 states evidence binding uses Git-blob hashes for pipeline, profile, and generator."
+      ]
+    },
+    {
+      "check_id": "CAL-004",
+      "status": "pass",
+      "evidence": [
+        "git rev-parse HEAD returned cfd0f3ff0927fae2ed5e34849048c02ca94c6a80.",
+        "git status --short --branch returned ## HEAD (no branch) with no worktree modifications.",
+        "git diff --name-status 6f9e73b170db1214600ab82f28542d1ed1e8f96bb HEAD shows only audit/evidence additions and claims/validation records; no production pipeline or profile changes.",
+        "audits/validation/v571_6f9e73b_validation.md:24 and :53-55 document content-addressed validation and later audit-only commits."
+      ]
+    },
+    {
+      "check_id": "CAL-005",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:2-15 defines specimen-level sensitivity rows and calibrated area/volume formulas.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-12 identifies biological specimen as analysis unit and marks inference insufficient with one specimen per group.",
+        "audits/validation/v571_6f9e73b_validation.md:69-72 states the artifact retains excluded specimens, separates technical-valid from reconstructed tracks, and distinguishes ROI area from sampled slab volume."
+      ]
+    }
+  ],
+  "findings": [],
+  "limitations": [
+    "Review was restricted to retained text manifests, artifacts, repository metadata, and focused source inspection; no full image stack was executed.",
+    "Calibration source files referenced by retained manifests are external absolute paths, so their live availability was not independently tested from this worktree.",
+    "The RC6 validation receipt records generation commit 6f9e73b, while the reviewed commit is the later audit-only commit cfd0f3ff0927fae2ed5e34849048c02ca94c6a80; content identity is supported by the receipt's Git-blob binding and the reviewed diff."
+  ],
+  "recommended_follow_up": [
+    "Retain the reviewed commit and RC6 manifests together for release-gate review.",
+    "Require the remaining independent role reviews before accepting the high-risk production claim."
+  ]
+}

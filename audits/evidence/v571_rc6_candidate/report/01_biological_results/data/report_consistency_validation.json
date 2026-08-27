@@ -5,8 +5,8 @@
   "pdf_contains_contract_tokens": true,
   "pdf_validation_method": "pypdf_text_tokens",
   "artifact_sha256": {
-    "source_csv": "e57ba390871673aa1bbad9460ac8571aff0dadb8aa9ce36cd7feddff7ae05662",
-    "excel": "95d3084d5737000799c0119c9f6ddb9d2fb8e008f7eab484ed68b8892807b787",
-    "pdf": "e24e9bbdadc6f9ec749030a878bb5a523ab67d9c20a66cda753168f0b4f85030"
+    "source_csv": "9925380eb31ba3d09b4e16b85f19ab565062e5cd57bf7a68aba323e5ba9a2e74",
+    "excel": "f30dddab46e1938259d63cb5e8f2a34013cfcf3bc912bedfd6e5bd6ddbdac064",
+    "pdf": "b1937d51bdc4e9d533a7cccfa869667d47fa5956466a369917166a09ab01886f"
   }
 }

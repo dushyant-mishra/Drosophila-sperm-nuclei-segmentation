@@ -6,7 +6,7 @@
     "kj_sv_40xx0.75-1": {
       "status": "complete",
       "group": "KJ",
-      "output_dir": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001",
+      "output_dir": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc6_report_replay_study_final\\samples\\kj_sv_40xx0.75-1\\attempt_001",
       "message": "",
       "started_at": "2026-08-21T16:00:19",
       "completed_at": "2026-08-21T16:18:45"
@@ -14,11 +14,13 @@
     "w1118_sv_feb_40xx0.75-1": {
       "status": "complete",
       "group": "WT",
-      "output_dir": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001",
+      "output_dir": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc6_report_replay_study_final\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001",
       "message": "",
       "started_at": "2026-08-21T16:18:46",
       "completed_at": "2026-08-21T16:29:51"
     }
   },
-  "run_status": "complete"
+  "run_status": "complete",
+  "source_study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3",
+  "tracking_replay": "C:\\tmp\\saturn-v571-acceptance-rc6\\scratch\\v571_rc6_tracking_replay"
 }
