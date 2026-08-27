@@ -1,14 +1,19 @@
 {
   "schema_version": "1.0",
-  "generated_at_utc": "2026-08-27T21:29:09.115748+00:00",
+  "generated_at_utc": "2026-08-27T21:55:42.122396+00:00",
   "source_study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3",
   "tracking_replay": "C:\\tmp\\saturn-v571-acceptance-rc6\\scratch\\v571_rc6_tracking_replay",
   "tracking_replay_manifest_sha256": "35820bf364756a727060383b68adfb50c01d75a936847dd7781623b374181497",
   "tracking_generation_commit": "6f9e73b170db121460ab82f28542d1ed1e8f96bb",
   "tracking_pipeline_working_copy_sha256": "21f94b24ecdfd3f19de4f108255e2ef559299a1f60a67a9a4eecce322742f8cf",
   "tracking_pipeline_git_blob_sha256": "1f56404b2bd683065bb229e3aa5b3579fbf3470d58563967c9db0efc12f572a1",
-  "report_generation_pipeline_working_copy_sha256": "fb8a676125d4b81a51ab120f53c0581a60b929659b01b3100671739c165e81fb",
-  "report_rebuild_script_sha256": "52481e3496ec08d9e35281b8e6c93f760fced88723a9e80b45501fd25def9bf1",
+  "report_generation_pipeline_working_copy_sha256": "a14e2933e34009305d60cd8be2bcc57cc042063041e993199f7690ddf8dcdebb",
+  "report_rebuild_script_sha256": "8047b6da1205992b43cb86aa6a21b4c9ad317a3219b0b6c54d02a690d719146b",
+  "report_rebuild_script_git_blob_sha256": "8047b6da1205992b43cb86aa6a21b4c9ad317a3219b0b6c54d02a690d719146b",
+  "report_rebuild_script_git_commit": "0459af857bb65033a77e7bc097e577b1b1a6f14d",
+  "reference_group": "WT",
+  "comparison_group": "KJ",
+  "group_direction_source": "explicit command arguments bound to study manifest groups",
   "retained_replay_archive": "audits/evidence/v571_rc6_candidate/provenance/tracking_replay_inputs_outputs.zip",
   "retained_replay_archive_sha256": "11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9",
   "retained_replay_members": {
@@ -20,9 +25,9 @@
     "w1118_sv_feb_40xx0.75-1/track_summary.csv": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
   },
   "below_2_um_sensitivity_csv": "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.csv",
-  "below_2_um_sensitivity_csv_sha256": "31aa41b89ed0fd50db45ac9d7f81e42b379cf57f71abe91ce25e638bf1738b18",
+  "below_2_um_sensitivity_csv_sha256": "713de5e1d4dee33badbeb643d2a50156b0a8643d6d96ae9e59efb25da4063f36",
   "below_2_um_sensitivity_json": "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.json",
-  "below_2_um_sensitivity_json_sha256": "6660e2aebd407dbda7ebd89d11b1f00eacdd862fd2008691cb6fe77bd039993b",
+  "below_2_um_sensitivity_json_sha256": "685248c19099b915c4f8854c7f50782137bec46b5c6f59f834133924e6d29052",
   "records": [
     {
       "specimen": "kj_sv_40xx0.75-1",

@@ -19,6 +19,10 @@
       "sensitivity_median_length_um": 11.404388157586641,
       "primary_median_body_width_um": 1.5523,
       "sensitivity_median_body_width_um": 1.5523,
+      "primary_width_available_n": 4307,
+      "primary_width_missing_fraction": 0.21932209534167124,
+      "sensitivity_width_available_n": 4307,
+      "sensitivity_width_missing_fraction": 0.04501108647450114,
       "interpretation": "Automated sensitivity only; below-2-um technical-valid tracks remain in the primary biological population.",
       "track_summary_sha256": "de3d448d0bdac466d24c32b661e249063d77516cb449ce3612f7d3daa92ae9e2"
     },
@@ -32,6 +36,10 @@
       "sensitivity_median_length_um": 10.335889881547951,
       "primary_median_body_width_um": 1.6921,
       "sensitivity_median_body_width_um": 1.6921,
+      "primary_width_available_n": 2644,
+      "primary_width_missing_fraction": 0.22757814782354657,
+      "sensitivity_width_available_n": 2644,
+      "sensitivity_width_missing_fraction": 0.04823614110871133,
       "interpretation": "Automated sensitivity only; below-2-um technical-valid tracks remain in the primary biological population.",
       "track_summary_sha256": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
     }

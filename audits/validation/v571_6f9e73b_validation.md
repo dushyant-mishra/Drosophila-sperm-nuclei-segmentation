@@ -15,13 +15,13 @@ bytes on Windows.
 
 ```text
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp .\scratch\pytest_full_<timestamp>
-231 passed in 32.02s
+237 passed in 22.87s
 
 .\.venv\Scripts\python.exe .\utils\tune_parameters_Saturnv5_7_1.py --self-check
 Saturn v5.7.1 tuner self-check passed
 
 .\.venv\Scripts\python.exe .\scripts\validate_v571_evidence_provenance.py <RC6 manifests/profile>
-PASS: evidence artifacts remain content-identical from generation commit 6f9e73b through reviewed commit cfd0f3f
+PASS: evidence artifacts remain content-identical from generation commit 6f9e73b through reviewed commit 7a4c7d1
 
 git diff --check
 PASS for tracked RC6 production sources (pre-existing v5.7 line-ending notices remain outside v5.7.1 scope)
@@ -42,12 +42,12 @@ directory and produced setup errors only. Re-running with the explicit clean
 | `audits/evidence/v571_rc6_candidate/end_to_end/v571_end_to_end_visual_evidence.pdf` | `72f0f86cbeeca6efc9478057449d9898bf773a1ab2dcd6f9a1a0e85a1e528689` |
 | `audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json` | `63463808567c92e7e933b8d53b093daa1e4c4a084ed170b299b042cbb9b9da5b` |
 | `audits/evidence/v571_rc6_candidate/provenance/tracking_replay_inputs_outputs.zip` | `11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9` |
-| `audits/evidence/v571_rc6_candidate/report/report_source_binding.json` | `11d12ae1d6e5780a6224167c5ac80d1def36745121c4df4ac939b2ea57adb120` |
-| `audits/evidence/v571_rc6_candidate/report/01_biological_results/Biological_Comparison_Report.pdf` | `d35162473e520a9b758b3ee6512fd2286bfe54d7bee5c27bb61c038bf03bfd85` |
-| `audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json` | `c291585c4df41b9283b0784a6312d0a8f08c39dd61ce0be6616a08ab9dc04bb0` |
-| `audits/evidence/v571_rc6_candidate/report/02_quality_control/Quality_Control_Report.pdf` | `6db66e2b3c6f8b247e8600196a994486838fbc4d6ba53f011382bc0c6709ea60` |
-| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.csv` | `31aa41b89ed0fd50db45ac9d7f81e42b379cf57f71abe91ce25e638bf1738b18` |
-| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.json` | `6660e2aebd407dbda7ebd89d11b1f00eacdd862fd2008691cb6fe77bd039993b` |
+| `audits/evidence/v571_rc6_candidate/report/report_source_binding.json` | `90ca61c0b482995d296806f6e81aa3e0946b52da12a3f7fb8cabacc2ac9a299d` |
+| `audits/evidence/v571_rc6_candidate/report/01_biological_results/Biological_Comparison_Report.pdf` | `9cee6aa4ed7ce12fbd132860275c0c3271c85cc51cf262df690fd392af8ab9f1` |
+| `audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json` | `dc57184c8a20141244c86b8fc7eb4afec7ab3a2a4d5bf8a4d99efa4edd8a451d` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/Quality_Control_Report.pdf` | `cecea3011efbe2b34c9c19e39e1e6ffc5a27f54deffe278d7a645e0b3e899538` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.csv` | `713de5e1d4dee33badbeb643d2a50156b0a8643d6d96ae9e59efb25da4063f36` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.json` | `685248c19099b915c4f8854c7f50782137bec46b5c6f59f834133924e6d29052` |
 | `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json` | `4b9d41283d9f694bf2a7df39dd6a7c75f1dbe2b225ef73c35cbee25d49901088` |
 
 ## Provenance remediation
@@ -59,6 +59,10 @@ directory and produced setup errors only. Re-running with the explicit clean
 - Evidence is bound to the generation commit by Git-blob hashes for the
   pipeline, profile, and generator. Validation permits later audit-only commits
   only when those blobs remain identical.
+- Stage, tracking, and end-to-end evidence therefore stop at reviewed commit
+  `7a4c7d13a88f441e490b330ffe5206b418633c1e`, the last reviewed commit with
+  an unchanged production pipeline blob. Later study/report-only edits are not
+  represented as regenerated segmentation or tracking evidence.
 - The report package was rebuilt from the frozen 2D detections and corrected
   tracking replay after the RC6 audit identified stale RC5 report paths and a
   KJ count mismatch. `report_source_binding.json` verifies every retained
@@ -71,6 +75,13 @@ directory and produced setup errors only. Re-running with the explicit clean
   content-bound track summaries. They preserve the primary technical-valid
   population and describe only the effect of omitting short tracks; they do
   not create a second accepted population or perform group inference.
+- Remediation commit `0459af857bb65033a77e7bc097e577b1b1a6f14d`
+  makes the calculation fail closed for nonfinite technical-valid lengths,
+  records width availability for both scenarios, and obtains report direction
+  from explicit manifest-derived roles. The retained binding records matching
+  SHA-256 values for the committed rebuild-script blob and execution bytes.
+  This report binding is the separate provenance link for the post-`7a4c7d1`
+  study/report changes.
 
 ## Representative results and regression check
 

@@ -2,6 +2,7 @@
   "study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc6_report_replay_study_final",
   "reference_group": "WT",
   "comparison_group": "KJ",
+  "group_direction_source": "explicit command arguments",
   "specimen_counts": {
     "KJ": 1,
     "WT": 1
@@ -25,8 +26,8 @@
       "pdf_validation_method": "pypdf_text_tokens",
       "artifact_sha256": {
         "source_csv": "9925380eb31ba3d09b4e16b85f19ab565062e5cd57bf7a68aba323e5ba9a2e74",
-        "excel": "aad6c89cff4c05733c54ff300681733f241a010c96084d9d5a8bb99a68e0cf77",
-        "pdf": "d35162473e520a9b758b3ee6512fd2286bfe54d7bee5c27bb61c038bf03bfd85"
+        "excel": "f4362eb00518df7ef2ab6a04eeda6be7e9a2e14aa322a672ec43c9cfce88dfde",
+        "pdf": "9cee6aa4ed7ce12fbd132860275c0c3271c85cc51cf262df690fd392af8ab9f1"
       }
     }
   },
