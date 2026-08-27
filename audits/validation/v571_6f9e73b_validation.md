@@ -15,7 +15,7 @@ bytes on Windows.
 
 ```text
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp .\scratch\pytest_full_<timestamp>
-229 passed in 32.32s
+231 passed in 32.02s
 
 .\.venv\Scripts\python.exe .\utils\tune_parameters_Saturnv5_7_1.py --self-check
 Saturn v5.7.1 tuner self-check passed
@@ -42,10 +42,12 @@ directory and produced setup errors only. Re-running with the explicit clean
 | `audits/evidence/v571_rc6_candidate/end_to_end/v571_end_to_end_visual_evidence.pdf` | `72f0f86cbeeca6efc9478057449d9898bf773a1ab2dcd6f9a1a0e85a1e528689` |
 | `audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json` | `63463808567c92e7e933b8d53b093daa1e4c4a084ed170b299b042cbb9b9da5b` |
 | `audits/evidence/v571_rc6_candidate/provenance/tracking_replay_inputs_outputs.zip` | `11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9` |
-| `audits/evidence/v571_rc6_candidate/report/report_source_binding.json` | `4ccece01281f6ceb9f7f1d69cea22d62c6b01f5880c06748300c75f6989affb2` |
-| `audits/evidence/v571_rc6_candidate/report/01_biological_results/Biological_Comparison_Report.pdf` | `b1937d51bdc4e9d533a7cccfa869667d47fa5956466a369917166a09ab01886f` |
-| `audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json` | `208bcfa20c8a5822fe4bf70fc7da37fd71055e2602132a5765786ce3bfa28625` |
-| `audits/evidence/v571_rc6_candidate/report/02_quality_control/Quality_Control_Report.pdf` | `de8200015664a180fe8721bdd3cd0ad895f1dc2bd7524e518fe00c3ac3a6d343` |
+| `audits/evidence/v571_rc6_candidate/report/report_source_binding.json` | `11d12ae1d6e5780a6224167c5ac80d1def36745121c4df4ac939b2ea57adb120` |
+| `audits/evidence/v571_rc6_candidate/report/01_biological_results/Biological_Comparison_Report.pdf` | `d35162473e520a9b758b3ee6512fd2286bfe54d7bee5c27bb61c038bf03bfd85` |
+| `audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json` | `c291585c4df41b9283b0784a6312d0a8f08c39dd61ce0be6616a08ab9dc04bb0` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/Quality_Control_Report.pdf` | `6db66e2b3c6f8b247e8600196a994486838fbc4d6ba53f011382bc0c6709ea60` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.csv` | `31aa41b89ed0fd50db45ac9d7f81e42b379cf57f71abe91ce25e638bf1738b18` |
+| `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.json` | `6660e2aebd407dbda7ebd89d11b1f00eacdd862fd2008691cb6fe77bd039993b` |
 | `audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json` | `4b9d41283d9f694bf2a7df39dd6a7c75f1dbe2b225ef73c35cbee25d49901088` |
 
 ## Provenance remediation
@@ -65,6 +67,10 @@ directory and produced setup errors only. Re-running with the explicit clean
 - Report metadata now points only to the RC6 report package. KJ counts reconcile
   to 5,766 reconstructed / 5,517 technical-valid tracks; WT counts reconcile to
   3,541 / 3,423 in the replay, biological report, and sensitivity artifact.
+- The retained below-2-um sensitivity CSV and JSON are recomputed from the
+  content-bound track summaries. They preserve the primary technical-valid
+  population and describe only the effect of omitting short tracks; they do
+  not create a second accepted population or perform group inference.
 
 ## Representative results and regression check
 
@@ -100,3 +106,10 @@ The superseding independent RC7 audit reviewed clean commit
 and `scripts/validate_agent_audit.py` reported `gate_passed: true` with no
 blocking findings. The append-only run and acceptance decision are retained at
 `audits/runs/20260827-v571-remediation-acceptance-rc7`.
+
+The initial focused body-width and short-track audits are retained as failed
+diagnostic runs at `audits/runs/20260827-v571-body-width-acceptance` and
+`audits/runs/20260827-v571-shorttrack-acceptance`. They identified missing
+focused visual review and, for short tracks, missing directly reconciled
+omission evidence. Superseding focused acceptance audits are required after
+the corrected evidence is committed; the earlier verdicts are not rewritten.

@@ -156,6 +156,10 @@
         "tests/test_saturn_v571_dual_head.py",
         "scripts/generate_specimen_sensitivity_artifact.py",
         "tests/test_specimen_sensitivity_artifact.py",
+        "scripts/rebuild_v571_acceptance_report_from_replay.py",
+        "tests/test_v571_acceptance_report_replay.py",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.csv",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/below_2_um_specimen_sensitivity.json",
         "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json",
         "audits/validation/v571_6f9e73b_validation.md"
       ],

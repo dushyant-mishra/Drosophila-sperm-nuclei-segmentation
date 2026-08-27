@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-body-width-acceptance",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "measurement_geometry",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "The implementation and focused synthetic tests support perpendicular subpixel central-body chords, endpoint trimming, unavailable behavior, rotation stability, largest-area representative-plane selection, legacy-field preservation, and explicit apparent-width limitations.",
+  "checks": [
+    {
+      "check_id": "BW-GEOMETRY",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3387-3445 implements smoothed centerline normals, subpixel contours, perpendicular boundary chords, central endpoint trimming, and minimum valid-chord enforcement.",
+        "tests/test_saturn_v571_body_width.py:test_subpixel_body_width_is_rotation_stable covers 0, 20, 45, 70, and 90 degree rotations with a known-width synthetic rectangle."
+      ]
+    },
+    {
+      "check_id": "BW-FAILURE-BEHAVIOR",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3391-3406 returns NaN width fields and an unavailable method when width is disabled, geometry is insufficient, or contour/path support is absent.",
+        "tests/test_saturn_v571_body_width.py:test_short_centerline_reports_unavailable_without_fabricating_width verifies NaN width and fewer-than-minimum samples."
+      ]
+    },
+    {
+      "check_id": "BW-REPRESENTATIVE-PLANE",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:5116-5211 selects representative width by filled-mask area, then support, then lowest Z.",
+        "tests/test_saturn_v571_body_width.py:test_representative_track_width_uses_largest_area_not_widest_plane and test_representative_width_tie_breaks_by_support_then_z cover adversarial plane selection."
+      ]
+    },
+    {
+      "check_id": "BW-FIELDS-UNITS",
+      "status": "pass",
+      "evidence": [
+        "tests/test_saturn_v571_body_width.py:test_measurement_exports_legacy_and_new_width_fields verifies body_width_um, legacy EDT width, area/length width, and sample-count exports.",
+        "audits/claims_registry.json:78-87 identifies Leica XY calibration, filled instance masks, ordered centerlines, and explicit legacy-field supersession.",
+        "audits/claims_registry.json:104-107 records segmentation, focus, annotation, and lateral-PSF limitations; the claim is apparent mask width rather than PSF-corrected chromatin width."
+      ]
+    },
+    {
+      "check_id": "BW-PRIMARY-REPORT",
+      "status": "pass",
+      "evidence": [
+        "tests/test_saturn_v571_body_width.py:test_analysis_summary_uses_body_width_as_primary_and_labels_legacy verifies primary body-width summary fields and separately named legacy EDT output."
+      ]
+    }
+  ],
+  "findings": [],
+  "limitations": [
+    "The retained validation receipt documents execution evidence generated from an earlier production-code commit, although the reviewed commit is clean and the cited implementation/tests are present.",
+    "The measurement remains apparent segmented-mask width and is affected by boundary quality, focus, annotation thickness, and lateral PSF."
+  ],
+  "recommended_follow_up": [
+    "Retain an acceptance-run artifact containing the focused body-width test output and current reviewed-commit identity."
+  ]
+}

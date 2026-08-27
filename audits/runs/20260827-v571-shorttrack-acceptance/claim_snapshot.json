@@ -1,0 +1,37 @@
+{
+  "claim_id": "POP-SHORTTRACK-001",
+  "title": "Below-2-um tracks remain measurable with automated sensitivity analysis",
+  "status": "implemented",
+  "risk": "high",
+  "implementation_owner": "primary_implementation_agent",
+  "statement": "Below-2-um technical-valid tracks remain in the primary biological population; an automated specimen-level sensitivity calculation reports how counts and summary morphometry would change if they were omitted, without creating a second accepted population or a routine manual-review queue.",
+  "biological_meaning": "Preserves genuine short nuclei and terminal optical sections while making potential fragment sensitivity transparent and reproducible.",
+  "population": "technical-valid reconstructed tracks below 2 um",
+  "units": ["um", "count", "fraction"],
+  "calibration_dependencies": ["Leica XY pixel size", "Leica Z spacing"],
+  "source_dependencies": ["raw Z context", "U-Net heads", "instance masks", "tracking audit"],
+  "implementation_evidence": [
+    "sperm_segmentation_saturnv5.7.1.py",
+    "tests/test_saturn_v571_dual_head.py",
+    "scripts/generate_specimen_sensitivity_artifact.py",
+    "tests/test_specimen_sensitivity_artifact.py",
+    "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json",
+    "audits/validation/v571_6f9e73b_validation.md"
+  ],
+  "acceptance_criteria": [
+    "Primary technical-valid population is preserved",
+    "Short 2D observations remain eligible for morphology-neutral cross-slice linking",
+    "Specimen-level count and morphometry sensitivity is computed automatically",
+    "The sensitivity calculation is stored under technical QC and does not create a second user-facing biological population"
+  ],
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "known_limitations": ["Length alone cannot distinguish a genuine short nucleus from an unresolved fragment"],
+  "non_claims": ["Length below 2 um is not automatically technical noise"],
+  "supersedes": []
+}

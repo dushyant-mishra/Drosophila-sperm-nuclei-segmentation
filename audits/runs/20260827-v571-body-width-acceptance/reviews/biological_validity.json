@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-body-width-acceptance",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "biological_validity",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "conditional",
+  "confidence": "high",
+  "summary": "The implementation preserves unusual morphology and defines apparent central-body width with explicit missingness, while retained tests support rotation stability, endpoint trimming, representative-plane selection, and legacy-field separation. Conditional acceptance is appropriate because the evidence remains segmentation-mask and synthetic-test based, with limited independent biological adjudication and substantial width missingness in retained artifacts.",
+  "checks": [
+    {
+      "check_id": "BIO-WIDTH-001",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3387-3457 defines perpendicular contour chords through the central body, trims endpoints, and returns unavailable values when insufficient chords exist.",
+        "tests/test_saturn_v571_body_width.py:test_subpixel_body_width_is_rotation_stable covers five rotations and known-width synthetic rectangles.",
+        "tests/test_saturn_v571_body_width.py:test_endpoint_trimming_reduces_taper_influence covers tapered morphology."
+      ]
+    },
+    {
+      "check_id": "BIO-WIDTH-002",
+      "status": "pass",
+      "evidence": [
+        "tests/test_saturn_v571_body_width.py:test_representative_track_width_uses_largest_area_not_widest_plane verifies that the largest filled-mask area, rather than the widest plane, supplies track width.",
+        "sperm_segmentation_saturnv5.7.1.py:5116-5194 records the representative selection as largest_filled_mask_area_then_unet_support_then_lowest_z."
+      ]
+    },
+    {
+      "check_id": "BIO-WIDTH-003",
+      "status": "pass",
+      "evidence": [
+        "tests/test_saturn_v571_body_width.py:test_measurement_exports_legacy_and_new_width_fields and test_analysis_summary_uses_body_width_as_primary_and_labels_legacy verify primary versus explicitly labelled legacy fields.",
+        "sperm_segmentation_saturnv5.7.1.py:7333-7340 selects apparent body width for primary summaries and retains EDT-derived fields as legacy."
+      ]
+    },
+    {
+      "check_id": "BIO-WIDTH-004",
+      "status": "pass",
+      "evidence": [
+        "tests/test_saturn_v571_body_width.py:test_short_centerline_reports_unavailable_without_fabricating_width verifies explicit unavailable behavior.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:20-21 reports width missingness separately and distinguishes sampled ROI volume from anatomical organ volume."
+      ]
+    },
+    {
+      "check_id": "BIO-WIDTH-005",
+      "status": "not_verified",
+      "evidence": [
+        "audits/claims_registry.json:78-97 lists the apparent-mask and PSF-related limitations, but no independent biological manual-width adjudication artifact was found.",
+        "audits/validation/v571_6f9e73b_validation.md:74-75 states that the retained representative specimens validate execution and provenance only and do not establish a biological group effect."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "Biological width validity remains bounded by segmentation appearance",
+      "impact": "The field supports comparative apparent mask morphology but cannot establish true nucleus diameter, particularly for unusual mutant shapes, focus variation, annotation thickness, or lateral PSF effects.",
+      "evidence": [
+        "audits/claims_registry.json:91-95 defines boundary, focus, annotation-thickness, and lateral-PSF limitations and explicitly disclaims molecular-scale width.",
+        "audits/V5_7_1_DESIGN_DECISIONS.md:55-58 labels width as apparent mask width rather than deconvolved molecular diameter."
+      ],
+      "recommendation": "Retain the apparent-width nomenclature and add independently adjudicated biological examples spanning unusual mutant width and taper phenotypes before interpreting group-level width effects."
+    },
+    {
+      "severity": "medium",
+      "title": "Width availability is incomplete in retained production evidence",
+      "impact": "A substantial subset of technically valid tracks lacks the new width measurement, so width-based summaries may represent a selected measurable subset unless missingness is explicitly reported and assessed.",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:29-37 reports KJ-01 width availability of 0.7806779047 and 1,210 estimated missing widths.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:20-21 specifies that width missingness is reported separately."
+      ],
+      "recommendation": "Carry width availability and missingness into every biological width comparison and verify that missingness is not associated with specimen, genotype, slice position, or morphology warning."
+    }
+  ],
+  "limitations": [
+    "No full stack was run, per instruction.",
+    "Independent biological manual-width labels were not available for this read-only review.",
+    "Retained production evidence contains only two complete representative specimens and does not establish a biological group effect.",
+    "The measurement is apparent segmented-mask width and remains sensitive to optical and segmentation factors."
+  ],
+  "recommended_follow_up": [
+    "Obtain blinded biological adjudication of width overlays for typical, tapered, curved, short, and unusual mutant morphology.",
+    "Report width missingness by specimen and morphology category alongside primary width summaries."
+  ]
+}

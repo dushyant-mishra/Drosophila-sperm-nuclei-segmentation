@@ -13,6 +13,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -117,6 +118,83 @@ def assert_replay_summary_binding(summary, specimen, tracked_path, tracks_path):
     }
 
 
+def reconcile_below_2_um_sensitivity(sensitivity_path, track_paths):
+    sensitivity = pd.read_csv(sensitivity_path)
+    records = []
+    numeric_fields = (
+        "below_2_um_fraction",
+        "primary_median_length_um",
+        "sensitivity_median_length_um",
+        "primary_median_body_width_um",
+        "sensitivity_median_body_width_um",
+    )
+    for specimen, track_path in track_paths.items():
+        rows = sensitivity[sensitivity["sample_id"].astype(str) == str(specimen)]
+        if len(rows) != 1:
+            raise ValueError(f"Expected one below-2-um sensitivity row for {specimen}")
+        observed = rows.iloc[0]
+        tracks = pd.read_csv(track_path)
+        valid = (
+            tracks["technical_valid"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"true", "1", "yes"})
+        )
+        length = pd.to_numeric(tracks["projection_z_extent_um"], errors="coerce")
+        primary = tracks.loc[valid]
+        without_short = tracks.loc[valid & (length >= 2.0)]
+
+        def median(frame, field):
+            return float(pd.to_numeric(frame[field], errors="coerce").median())
+
+        expected = {
+            "primary_technical_valid_count": int(valid.sum()),
+            "below_2_um_count": int((valid & (length < 2.0)).sum()),
+            "sensitivity_count_without_below_2_um": int(len(without_short)),
+            "below_2_um_fraction": float(
+                (valid & (length < 2.0)).sum() / max(valid.sum(), 1)
+            ),
+            "primary_median_length_um": median(primary, "projection_z_extent_um"),
+            "sensitivity_median_length_um": median(
+                without_short, "projection_z_extent_um"
+            ),
+            "primary_median_body_width_um": median(
+                primary, "representative_body_width_um"
+            ),
+            "sensitivity_median_body_width_um": median(
+                without_short, "representative_body_width_um"
+            ),
+        }
+        for field in expected:
+            if field in numeric_fields:
+                if not np.isclose(
+                    float(observed[field]), expected[field], equal_nan=True
+                ):
+                    raise ValueError(
+                        f"Below-2-um sensitivity mismatch for {specimen}: {field}"
+                    )
+            elif int(observed[field]) != expected[field]:
+                raise ValueError(
+                    f"Below-2-um sensitivity mismatch for {specimen}: {field}"
+                )
+        if expected["primary_technical_valid_count"] != (
+            expected["below_2_um_count"]
+            + expected["sensitivity_count_without_below_2_um"]
+        ):
+            raise ValueError(f"Below-2-um count partition mismatch for {specimen}")
+        records.append(
+            {
+                "sample_id": specimen,
+                **expected,
+                "interpretation": str(observed["interpretation"]),
+                "track_summary_sha256": sha256(track_path),
+            }
+        )
+    return records
+
+
 def copy_if_present(source, destination):
     source = Path(source)
     if source.is_file():
@@ -167,6 +245,7 @@ def main():
         if record.get("candidate") == "production_morphology_neutral"
     }
     binding_records = []
+    retained_track_paths = {}
     rebuilt_state = dict(state)
     rebuilt_state["source_study_output"] = str(study_root)
     rebuilt_state["tracking_replay"] = str(replay_root)
@@ -196,6 +275,7 @@ def main():
         shutil.copy2(detections, detections_copy)
         shutil.copy2(tracked, tracked_copy)
         shutil.copy2(tracks, tracks_copy)
+        retained_track_paths[specimen] = tracks_copy
         copy_if_present(
             source_attempt / "stack_preprocessing_qc.json",
             destination / "stack_preprocessing_qc.json",
@@ -224,6 +304,13 @@ def main():
     saturn = load_pipeline()
     saturn._write_study_aggregates(output_study, rows, rebuilt_state)
 
+    below_2_source = (
+        output_study / "technical_qc" / "below_2_um_specimen_sensitivity.csv"
+    )
+    below_2_records = reconcile_below_2_um_sensitivity(
+        below_2_source, retained_track_paths
+    )
+
     subprocess.run(
         [
             sys.executable,
@@ -236,6 +323,35 @@ def main():
         check=True,
         cwd=ROOT,
     )
+    below_2_csv = (
+        output_report
+        / "02_quality_control"
+        / "data"
+        / "below_2_um_specimen_sensitivity.csv"
+    )
+    below_2_json = below_2_csv.with_suffix(".json")
+    shutil.copy2(below_2_source, below_2_csv)
+    below_2_payload = {
+        "schema_version": "1.0",
+        "analysis_unit": "biological_specimen",
+        "inference_performed": False,
+        "population": "technical_valid reconstructed tracks",
+        "length_field": "projection_z_extent_um",
+        "threshold_um": 2.0,
+        "primary_population_preserved": True,
+        "sensitivity_population_role": "descriptive omission scenario only",
+        "formula": (
+            "primary_technical_valid_count = below_2_um_count + "
+            "sensitivity_count_without_below_2_um"
+        ),
+        "records": below_2_records,
+        "assertions": {
+            "all_counts_and_medians_recomputed_from_track_summaries": True,
+            "short_tracks_remain_in_primary_population": True,
+            "no_second_accepted_population": True,
+        },
+    }
+    below_2_json.write_text(json.dumps(below_2_payload, indent=2), encoding="utf-8")
     subprocess.run(
         [
             sys.executable,
@@ -286,11 +402,16 @@ def main():
         "retained_replay_archive": display_path(retained_archive),
         "retained_replay_archive_sha256": sha256(retained_archive),
         "retained_replay_members": archived_replay_hashes,
+        "below_2_um_sensitivity_csv": display_path(below_2_csv),
+        "below_2_um_sensitivity_csv_sha256": sha256(below_2_csv),
+        "below_2_um_sensitivity_json": display_path(below_2_json),
+        "below_2_um_sensitivity_json_sha256": sha256(below_2_json),
         "records": binding_records,
         "assertions": {
             "report_and_sensitivity_use_replay_tracks": True,
             "all_counts_reconciled": True,
             "retained_replay_archive_verified": True,
+            "below_2_um_sensitivity_reconciled": True,
             "unet_inference_rerun": False,
         },
     }

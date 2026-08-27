@@ -113,3 +113,69 @@ def test_retained_replay_archive_rejects_changed_content(tmp_path):
     }
     with pytest.raises(ValueError, match="Retained replay hash mismatch"):
         module.validate_retained_replay_archive(archive_path, manifest)
+
+
+def test_below_2_um_sensitivity_reconciles_primary_and_omitted_counts(tmp_path):
+    module = load_module()
+    tracks_path = tmp_path / "tracks.csv"
+    pd.DataFrame(
+        {
+            "technical_valid": [True, True, True, False],
+            "projection_z_extent_um": [1.5, 2.5, 4.0, 1.0],
+            "representative_body_width_um": [1.0, 2.0, 3.0, 9.0],
+        }
+    ).to_csv(tracks_path, index=False)
+    sensitivity_path = tmp_path / "below_2.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["S1"],
+            "primary_technical_valid_count": [3],
+            "below_2_um_count": [1],
+            "sensitivity_count_without_below_2_um": [2],
+            "below_2_um_fraction": [1 / 3],
+            "primary_median_length_um": [2.5],
+            "sensitivity_median_length_um": [3.25],
+            "primary_median_body_width_um": [2.0],
+            "sensitivity_median_body_width_um": [2.5],
+            "interpretation": [
+                "Automated sensitivity only; short tracks remain primary."
+            ],
+        }
+    ).to_csv(sensitivity_path, index=False)
+    records = module.reconcile_below_2_um_sensitivity(
+        sensitivity_path, {"S1": tracks_path}
+    )
+    assert records[0]["primary_technical_valid_count"] == 3
+    assert records[0]["below_2_um_count"] == 1
+    assert records[0]["sensitivity_count_without_below_2_um"] == 2
+
+
+def test_below_2_um_sensitivity_rejects_count_mismatch(tmp_path):
+    module = load_module()
+    tracks_path = tmp_path / "tracks.csv"
+    pd.DataFrame(
+        {
+            "technical_valid": [True],
+            "projection_z_extent_um": [1.5],
+            "representative_body_width_um": [1.0],
+        }
+    ).to_csv(tracks_path, index=False)
+    sensitivity_path = tmp_path / "below_2.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["S1"],
+            "primary_technical_valid_count": [2],
+            "below_2_um_count": [1],
+            "sensitivity_count_without_below_2_um": [0],
+            "below_2_um_fraction": [1.0],
+            "primary_median_length_um": [1.5],
+            "sensitivity_median_length_um": [float("nan")],
+            "primary_median_body_width_um": [1.0],
+            "sensitivity_median_body_width_um": [float("nan")],
+            "interpretation": ["sensitivity"],
+        }
+    ).to_csv(sensitivity_path, index=False)
+    with pytest.raises(ValueError, match="primary_technical_valid_count"):
+        module.reconcile_below_2_um_sensitivity(
+            sensitivity_path, {"S1": tracks_path}
+        )

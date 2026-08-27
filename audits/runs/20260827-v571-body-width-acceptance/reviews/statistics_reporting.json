@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-body-width-acceptance",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "statistics_reporting",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "conditional",
+  "confidence": "high",
+  "summary": "The primary apparent body-width field is selected and summarized at specimen level with explicit missingness, while legacy EDT fields are retained separately. Acceptance is conditional because the retained RC6 report metadata references RC5 artifacts, preventing complete confirmation that report field selection and displayed width summaries belong to the reviewed evidence package.",
+  "checks": [
+    {
+      "check_id": "specimen_level_estimand_and_non_inference",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:12138-12146 reduces technical-valid tracks to one specimen summary.",
+        "sperm_segmentation_saturnv5.7.1.py:12306-12348 writes specimen_summary.csv and specimen-level comparison outputs.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/biological_statistical_tests.csv records analysis_unit=biological specimen, reference_n=1, comparison_n=1, and inference_status=insufficient_specimens."
+      ]
+    },
+    {
+      "check_id": "primary_width_field_selection",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:7301-7337 maps representative_body_width_um to median_body_width_um and uses it for primary summaries.",
+        "sperm_segmentation_saturnv5.7.1.py:4747-4749 defines body_width_um as the primary central-body contour-chord width.",
+        "tests/test_saturn_v571_body_width.py::test_analysis_summary_uses_body_width_as_primary_and_labels_legacy verifies primary and legacy report-field selection."
+      ]
+    },
+    {
+      "check_id": "width_missingness_and_denominators",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:12840-12843 computes body_width_available_fraction at specimen level.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:2-21 declares width missingness and preserves included and excluded specimens.",
+        "The retained artifact reports width_available_fraction 0.7806779046583288 for KJ and 0.7724218521764534 for WT, with missing-width counts retained rather than silently excluded."
+      ]
+    },
+    {
+      "check_id": "apparent_width_non_inference",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:12788-12792 states that apparent width depends on optical resolution, PSF, focus, and mask boundaries.",
+        "audits/claims_registry.json:73-118 limits MEAS-BODY-WIDTH-001 to apparent segmented-mask width and explicitly excludes molecular-scale width inference.",
+        "V5_7_1_VALIDATION_REPORT.md:72-73 declines biological inference from the one-specimen-per-group pilot."
+      ]
+    },
+    {
+      "check_id": "report_provenance_and_field_binding",
+      "status": "fail",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 and 34-36 reference v571_rc5_candidate report artifacts.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json:2-10 records hashes associated with the referenced RC5 artifacts.",
+        "audits/runs/20260827-v571-remediation-acceptance-rc6/reviews/statistics_reporting.json identifies this report/manifest consistency defect as blocking."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "title": "Report metadata does not bind the primary width outputs to the reviewed candidate",
+      "impact": "Specimen-level width summaries and report field selection cannot be fully accepted as reproducible because the RC6 metadata and consistency record point to RC5 artifacts.",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 references RC5 biological outputs.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:34-36 references RC5 quality-control outputs.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json:7-10 contains hashes for the referenced artifacts."
+      ],
+      "recommendation": "Regenerate the report metadata and consistency validation against the reviewed candidate, then independently verify specimen_summary.csv, width missingness, legacy-field exclusion, and all downstream report formats."
+    }
+  ],
+  "limitations": [
+    "No full image-stack execution was performed.",
+    "The available retained evidence contains one specimen per group, so no biological group inference is available.",
+    "This statistics/reporting review does not independently validate contour geometry."
+  ],
+  "recommended_follow_up": [
+    "Issue a superseding audit run after correcting report provenance and validating all primary body-width report fields against the corrected candidate artifacts."
+  ]
+}

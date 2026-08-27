@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-shorttrack-acceptance",
+  "claim_id": "POP-SHORTTRACK-001",
+  "role": "software_reproducibility",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "conditional",
+  "confidence": "medium",
+  "summary": "The implementation preserves short technical-valid tracks and exposes specimen-level below-2-um sensitivity fields, while focused tests cover morphology-neutral tracking and missing-plane linking. Acceptance remains conditional because the retained sensitivity artifact and tests do not directly prove end-to-end omission-of-below-2-um reconciliation for the reviewed commit.",
+  "checks": [
+    {
+      "check_id": "primary_population_preservation",
+      "status": "pass",
+      "evidence": [
+        "`sperm_segmentation_saturnv5.7.1.py:3554-3561` labels tracks below 2 um with `below_2_um_technical_review`.",
+        "`sperm_segmentation_saturnv5.7.1.py:7141-7164` defines `technical_valid` independently from morphology warnings and sets `is_biological_candidate` from technical validity."
+      ]
+    },
+    {
+      "check_id": "short_observation_linking",
+      "status": "pass",
+      "evidence": [
+        "`tests/test_saturn_v571_dual_head.py:224-250` verifies a short terminal observation can bridge one missing plane with morphology-neutral tracking.",
+        "`tests/test_saturn_v571_audit_blockers.py:200-250` verifies missing-slice accounting and no invented volume interpolation."
+      ]
+    },
+    {
+      "check_id": "automated_specimen_sensitivity",
+      "status": "pass",
+      "evidence": [
+        "`sperm_segmentation_saturnv5.7.1.py:13633-13649` computes below-2-um counts, fractions, omitted-count sensitivity, and sensitivity morphometry per specimen.",
+        "`audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:2-27` declares biological-specimen analysis, descriptive sensitivity, formulas, and primary-versus-upper-bound interpretation."
+      ]
+    },
+    {
+      "check_id": "count_and_missingness_reconciliation",
+      "status": "pass",
+      "evidence": [
+        "`audits/evidence/v571_rc6_candidate/report/report_source_binding.json:24-46` records reconstructed and technical-valid track counts and asserts report/sensitivity replay use and count reconciliation.",
+        "`tests/test_specimen_sensitivity_artifact.py:11-44` verifies retained excluded specimens, denominator validity, count formulas, and specimen-level metadata."
+      ]
+    },
+    {
+      "check_id": "direct_below_2_end_to_end_coverage",
+      "status": "not_verified",
+      "evidence": [
+        "`tests/test_saturn_v571_dual_head.py:224-250` tests linking and missing-plane behavior but does not assert that a below-2-um technical-valid track remains in the primary output.",
+        "`tests/test_specimen_sensitivity_artifact.py:11-44` tests generic specimen sensitivity accounting but does not construct or assert an omitted-below-2-um scenario.",
+        "The retained JSON artifact records `technical_valid_count` and width missingness, but its shown formulas do not include the below-2-um omission scenario."
+      ]
+    },
+    {
+      "check_id": "reviewed_commit_reproduction",
+      "status": "not_verified",
+      "evidence": [
+        "`audits/validation/v571_6f9e73b_validation.md:16-29` records prior passing validation at commit `6f9e73b`, not `7a4c7d13a88f441e490b330ffe5206b418633c1e`.",
+        "No full stack or fresh pytest execution was run under this read-only review."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Direct below-2-um omission sensitivity is not independently executable from retained focused tests",
+      "impact": "The implementation contains the intended sensitivity fields, but software reproducibility of the specific claim is incomplete because the focused tests do not verify that removing below-2-um tracks changes specimen counts and morphometry as declared.",
+      "evidence": [
+        "`sperm_segmentation_saturnv5.7.1.py:13633-13649` contains the production calculation.",
+        "`tests/test_specimen_sensitivity_artifact.py:11-44` lacks a below-2-um synthetic input and expected omitted-population result.",
+        "`audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:8-27` documents sensitivity formulas that do not explicitly include below-2-um omission."
+      ],
+      "recommendation": "Add a deterministic specimen-level synthetic test and retained artifact assertion covering primary count, below-2-um count, omitted count, fraction, and median morphometry before unconditional acceptance."
+    }
+  ],
+  "limitations": [
+    "No full image stack or end-to-end pipeline was run.",
+    "Retained validation evidence predates the reviewed commit."
+  ],
+  "recommended_follow_up": [
+    "Add and run a focused below-2-um sensitivity test at the reviewed commit.",
+    "Regenerate the retained specimen sensitivity artifact with explicit below-2-um scenario fields and commit-bound hashes."
+  ]
+}

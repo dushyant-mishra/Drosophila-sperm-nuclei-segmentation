@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "analysis_unit": "biological_specimen",
+  "inference_performed": false,
+  "population": "technical_valid reconstructed tracks",
+  "length_field": "projection_z_extent_um",
+  "threshold_um": 2.0,
+  "primary_population_preserved": true,
+  "sensitivity_population_role": "descriptive omission scenario only",
+  "formula": "primary_technical_valid_count = below_2_um_count + sensitivity_count_without_below_2_um",
+  "records": [
+    {
+      "sample_id": "kj_sv_40xx0.75-1",
+      "primary_technical_valid_count": 5517,
+      "below_2_um_count": 1007,
+      "sensitivity_count_without_below_2_um": 4510,
+      "below_2_um_fraction": 0.18252673554468007,
+      "primary_median_length_um": 10.19698420605453,
+      "sensitivity_median_length_um": 11.404388157586641,
+      "primary_median_body_width_um": 1.5523,
+      "sensitivity_median_body_width_um": 1.5523,
+      "interpretation": "Automated sensitivity only; below-2-um technical-valid tracks remain in the primary biological population.",
+      "track_summary_sha256": "de3d448d0bdac466d24c32b661e249063d77516cb449ce3612f7d3daa92ae9e2"
+    },
+    {
+      "sample_id": "w1118_sv_feb_40xx0.75-1",
+      "primary_technical_valid_count": 3423,
+      "below_2_um_count": 645,
+      "sensitivity_count_without_below_2_um": 2778,
+      "below_2_um_fraction": 0.18843120070113936,
+      "primary_median_length_um": 8.912929321313497,
+      "sensitivity_median_length_um": 10.335889881547951,
+      "primary_median_body_width_um": 1.6921,
+      "sensitivity_median_body_width_um": 1.6921,
+      "interpretation": "Automated sensitivity only; below-2-um technical-valid tracks remain in the primary biological population.",
+      "track_summary_sha256": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
+    }
+  ],
+  "assertions": {
+    "all_counts_and_medians_recomputed_from_track_summaries": true,
+    "short_tracks_remain_in_primary_population": true,
+    "no_second_accepted_population": true
+  }
+}
