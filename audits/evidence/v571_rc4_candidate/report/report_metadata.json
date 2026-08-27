@@ -1,0 +1,38 @@
+{
+  "study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3",
+  "reference_group": "WT",
+  "comparison_group": "KJ",
+  "specimen_counts": {
+    "KJ": 1,
+    "WT": 1
+  },
+  "analysis_unit": "biological specimen",
+  "inference_status": "insufficient_specimens",
+  "minimum_specimens_per_group_for_inference": 3,
+  "primary_test": "unavailable",
+  "secondary_tests": [],
+  "random_seed": 57057,
+  "biological_results": {
+    "pdf": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\01_biological_results\\Biological_Comparison_Report.pdf",
+    "powerpoint": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\01_biological_results\\Biological_Comparison_Presentation.pptx",
+    "excel": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\01_biological_results\\Biological_Comparison_Data.xlsx",
+    "numeric_contract": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\01_biological_results\\data\\report_numeric_contract.json",
+    "numeric_contract_validation": {
+      "status": "pass",
+      "source_csv_matches_contract": true,
+      "excel_matches_contract": true,
+      "pdf_contains_contract_tokens": true,
+      "pdf_validation_method": "pypdf_text_tokens",
+      "artifact_sha256": {
+        "source_csv": "e57ba390871673aa1bbad9460ac8571aff0dadb8aa9ce36cd7feddff7ae05662",
+        "excel": "d090e343ea804b0de6766f345fe95d79296f806d672464f4261e2e8e08ff761f",
+        "pdf": "3d68705436924fe271bd5cf5d12f5289151b65da308420b31f3a1f91a8fd6810"
+      }
+    }
+  },
+  "quality_control": {
+    "pdf": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\02_quality_control\\Quality_Control_Report.pdf",
+    "powerpoint": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\02_quality_control\\Quality_Control_Presentation.pptx",
+    "excel": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\report\\02_quality_control\\Quality_Control_Data.xlsx"
+  }
+}

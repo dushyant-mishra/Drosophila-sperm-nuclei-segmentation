@@ -1,0 +1,7 @@
+count_metric,exposure_metric,spearman_rho,spearman_p,interpretation,spearman_bh_fdr_q
+estimated_nuclei_per_1000_um2,slice_count,0.9999999999999999,,Residual exposure association; count comparison requires caution,
+estimated_nuclei_per_1000_um2,roi_area_um2,0.9999999999999999,,Residual exposure association; count comparison requires caution,
+estimated_nuclei_per_1000_um2,sampled_roi_volume_um3,0.9999999999999999,,Residual exposure association; count comparison requires caution,
+estimated_nuclei_per_100000_um3,slice_count,-0.9999999999999999,,Residual exposure association; count comparison requires caution,
+estimated_nuclei_per_100000_um3,roi_area_um2,-0.9999999999999999,,Residual exposure association; count comparison requires caution,
+estimated_nuclei_per_100000_um3,sampled_roi_volume_um3,-0.9999999999999999,,Residual exposure association; count comparison requires caution,

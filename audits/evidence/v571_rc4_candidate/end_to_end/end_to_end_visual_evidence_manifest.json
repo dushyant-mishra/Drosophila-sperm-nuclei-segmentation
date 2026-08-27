@@ -1,0 +1,33 @@
+{
+  "generated_at_utc": "2026-08-27T14:36:39.581989+00:00",
+  "git_commit_at_generation": "3a62520b1cfd92a66c060e92df683eb1ab933442",
+  "generator_sha256": "f747bf215ca428343664dc55560a39ac53b365d2928ffae24942bfdc32340cb3",
+  "pdf": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\end_to_end\\v571_end_to_end_visual_evidence.pdf",
+  "pdf_sha256": "6f9ec0b4c4d70a88d65d013c9274f8af8c0fea8d4f6ad2f378259c3681814658",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\stages\\KJ-01_z035_stages.png",
+      "source_artifact_sha256": "0c6a3a0e7607e654b3febaccdb8c5ff32c9a953a5a2998b3f17c0d2b68ed6a55"
+    },
+    {
+      "specimen": "KJ-01",
+      "role": "cross_slice_tracking",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\tracking\\KJ-01_stratified_tracking.png",
+      "source_artifact_sha256": "18ddb12b1bf409b6644bfdd4e180e21b8eaa1343c323e9108bcb0acee28d6fbe"
+    },
+    {
+      "specimen": "WT-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\stages\\WT-01_z035_stages.png",
+      "source_artifact_sha256": "5d01de68c1328f8476132cc8463be08c02c3f482476cdcf4178297b3cf3f4c04"
+    },
+    {
+      "specimen": "WT-01",
+      "role": "cross_slice_tracking",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc4_candidate\\tracking\\WT-01_stratified_tracking.png",
+      "source_artifact_sha256": "18e961522dcc138474469af3eb1de57a878804612002c7487e22c790a19d5867"
+    }
+  ]
+}

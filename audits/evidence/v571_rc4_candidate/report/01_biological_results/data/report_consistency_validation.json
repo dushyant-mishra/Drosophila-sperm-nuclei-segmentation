@@ -1,0 +1,12 @@
+{
+  "status": "pass",
+  "source_csv_matches_contract": true,
+  "excel_matches_contract": true,
+  "pdf_contains_contract_tokens": true,
+  "pdf_validation_method": "pypdf_text_tokens",
+  "artifact_sha256": {
+    "source_csv": "e57ba390871673aa1bbad9460ac8571aff0dadb8aa9ce36cd7feddff7ae05662",
+    "excel": "d090e343ea804b0de6766f345fe95d79296f806d672464f4261e2e8e08ff761f",
+    "pdf": "3d68705436924fe271bd5cf5d12f5289151b65da308420b31f3a1f91a8fd6810"
+  }
+}

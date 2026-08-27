@@ -23,7 +23,12 @@
         "tests/test_saturn_v571_dual_head.py",
         "tests/test_saturn_v571_body_width.py",
         "V5_7_1_VALIDATION_REPORT.md",
-        "audits/V5_7_1_DESIGN_DECISIONS.md"
+        "audits/V5_7_1_DESIGN_DECISIONS.md",
+        "audits/evidence/v571_rc4_candidate/stages/visual_evidence_manifest.json",
+        "audits/evidence/v571_rc4_candidate/tracking/tracking_replay_manifest.json",
+        "audits/evidence/v571_rc4_candidate/end_to_end/end_to_end_visual_evidence_manifest.json",
+        "audits/evidence/v571_rc4_candidate/report/01_biological_results/data/report_consistency_validation.json",
+        "audits/validation/v571_3a62520_validation.md"
       ],
       "acceptance_criteria": [
         "Calibration is resolved before physical thresholds and measurements",

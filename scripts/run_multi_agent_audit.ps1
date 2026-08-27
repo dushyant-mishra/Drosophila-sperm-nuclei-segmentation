@@ -98,6 +98,10 @@ full image stack, do not commit, and do not push. You may run focused read-only
 inspection and tests. Do not read other reviewers' outputs. Treat missing
 evidence as missing; do not infer that another agent checked it.
 
+Use $RepoRoot\.venv\Scripts\python.exe for Python tests; system Python is not
+the validated project environment. Prefer the commit-bound evidence and
+validation receipt under audits over rerunning expensive image inference.
+
 $charterText
 
 CLAIM SNAPSHOT:
