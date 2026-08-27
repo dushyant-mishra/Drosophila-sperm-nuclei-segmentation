@@ -87,7 +87,8 @@
         "utils/tune_parameters_Saturnv5_7_1.py",
         "tests/test_saturn_v571_body_width.py",
         "tests/test_tuner_v571_body_width.py",
-        "scripts/generate_v571_body_width_evidence.py"
+        "scripts/generate_v571_body_width_evidence.py",
+        "audits/evidence/v571_body_width_final/body_width_visual_evidence_manifest.json"
       ],
       "acceptance_criteria": [
         "Known-width synthetic masks are recovered within stated tolerance",

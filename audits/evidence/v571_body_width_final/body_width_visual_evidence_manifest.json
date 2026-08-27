@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "generated_at_utc": "2026-08-27T22:16:41.369778+00:00",
+  "git_commit_at_generation": "9cc3ac08250c6216187f5476f65ee8f80a80a305",
+  "pipeline_git_blob_sha256": "ee8f0e344d3d7c5a12a2073784b159935c40547098ac625c2fca93e7cb327e7c",
+  "profile_git_blob_sha256": "1fcc10c2199295d57210283255ead78cbe9ab51071121552a3668e5d3887d902",
+  "generator_git_blob_sha256": "d0d33c0441e809e08f89b93b11fef328f436309114ac2e1c3ec5f950dbdde4d8",
+  "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+  "replay_archive_sha256": "11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9",
+  "measurement_scope": "apparent filled-mask body width; not PSF-corrected chromatin diameter",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "track_id": 1299,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_body_width_um": 1.3556,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_final/KJ-01_track1299_selected_width.png",
+      "selected_width_artifact_sha256": "4f2999403aee033905b08861bbd79006ee109caaf8d23a2781a8de9e4a041dab",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_final/KJ-01_track1299_representative_plane.png",
+      "representative_plane_artifact_sha256": "3e4095ce1f37e95363614e36f4653efcb2479a04f4dc6f3bb322b56f371bee33",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+          "sha256": "66883b3924cd6bea62a6d42dd663099fe2d07b237e1e1418df375eae462c3a15"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+          "sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z36_ch00.tif",
+          "sha256": "fbf55b742890cfe232b1dd14803ab62e258c419312fa829ecc748f92a8a114b5"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "track_id": 1535,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_body_width_um": 1.4538,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_final/WT-01_track1535_selected_width.png",
+      "selected_width_artifact_sha256": "a44185e1b62f71e79c44c9db1d26a52c65e6ac9e8772724663d8199e3ef75b4c",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_final/WT-01_track1535_representative_plane.png",
+      "representative_plane_artifact_sha256": "1e7791dd228cd000fd47f2d83476ae1e1d166367b0cd8948272bb2e92dc469d3",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+          "sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z36_ch00.tif",
+          "sha256": "14c5f496a9deade800aef57bce41d4b4c30eea7caef8f85226bb9a9b9e3b3f14"
+        }
+      ]
+    }
+  ]
+}
