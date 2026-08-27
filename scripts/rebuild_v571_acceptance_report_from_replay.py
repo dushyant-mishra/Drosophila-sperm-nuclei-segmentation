@@ -35,6 +35,17 @@ def sha256_bytes(payload):
     return hashlib.sha256(payload).hexdigest()
 
 
+def git_blob_sha256(path, commit="HEAD"):
+    relative = Path(path).resolve().relative_to(ROOT).as_posix()
+    payload = subprocess.run(
+        ["git", "show", f"{commit}:{relative}"],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(payload).hexdigest()
+
+
 def display_path(path):
     path = Path(path).resolve()
     try:
@@ -127,6 +138,8 @@ def reconcile_below_2_um_sensitivity(sensitivity_path, track_paths):
         "sensitivity_median_length_um",
         "primary_median_body_width_um",
         "sensitivity_median_body_width_um",
+        "primary_width_missing_fraction",
+        "sensitivity_width_missing_fraction",
     )
     for specimen, track_path in track_paths.items():
         rows = sensitivity[sensitivity["sample_id"].astype(str) == str(specimen)]
@@ -143,11 +156,35 @@ def reconcile_below_2_um_sensitivity(sensitivity_path, track_paths):
             .isin({"true", "1", "yes"})
         )
         length = pd.to_numeric(tracks["projection_z_extent_um"], errors="coerce")
+        valid_length = length.loc[valid]
+        if (
+            valid_length.isna().any()
+            or (~np.isfinite(valid_length)).any()
+            or (valid_length < 0).any()
+        ):
+            raise ValueError(
+                f"Invalid technical-valid projection_z_extent_um for {specimen}"
+            )
         primary = tracks.loc[valid]
         without_short = tracks.loc[valid & (length >= 2.0)]
 
         def median(frame, field):
             return float(pd.to_numeric(frame[field], errors="coerce").median())
+
+        def availability(frame, field):
+            values = pd.to_numeric(frame[field], errors="coerce")
+            available = int(np.isfinite(values).sum())
+            missing_fraction = (
+                float(1.0 - available / len(frame)) if len(frame) else float("nan")
+            )
+            return available, missing_fraction
+
+        primary_width_n, primary_width_missing = availability(
+            primary, "representative_body_width_um"
+        )
+        sensitivity_width_n, sensitivity_width_missing = availability(
+            without_short, "representative_body_width_um"
+        )
 
         expected = {
             "primary_technical_valid_count": int(valid.sum()),
@@ -166,6 +203,10 @@ def reconcile_below_2_um_sensitivity(sensitivity_path, track_paths):
             "sensitivity_median_body_width_um": median(
                 without_short, "representative_body_width_um"
             ),
+            "primary_width_available_n": primary_width_n,
+            "primary_width_missing_fraction": primary_width_missing,
+            "sensitivity_width_available_n": sensitivity_width_n,
+            "sensitivity_width_missing_fraction": sensitivity_width_missing,
         }
         for field in expected:
             if field in numeric_fields:
@@ -210,6 +251,8 @@ def main():
     parser.add_argument("--output-study", type=Path, required=True)
     parser.add_argument("--output-report", type=Path, required=True)
     parser.add_argument("--retained-replay-archive", type=Path, required=True)
+    parser.add_argument("--reference-group", required=True)
+    parser.add_argument("--comparison-group", required=True)
     args = parser.parse_args()
 
     study_root = args.study_output.resolve()
@@ -223,6 +266,20 @@ def main():
     manifest_path = study_root / "study_manifest.csv"
     state_path = study_root / "study_run_state.json"
     rows = pd.read_csv(manifest_path).to_dict(orient="records")
+    groups = {str(row.get("group", "")).strip() for row in rows}
+    if args.reference_group not in groups or args.comparison_group not in groups:
+        raise ValueError("Explicit report groups must exist in the study manifest")
+    if args.reference_group == args.comparison_group:
+        raise ValueError("Reference and comparison groups must differ")
+    for row in rows:
+        group = str(row.get("group", "")).strip()
+        row["group_role"] = (
+            "reference"
+            if group == args.reference_group
+            else "comparison"
+            if group == args.comparison_group
+            else ""
+        )
     state = json.loads(state_path.read_text(encoding="utf-8"))
     replay_summary = pd.read_csv(replay_root / "tracking_replay_summary.csv")
     replay_manifest_path = replay_root / "tracking_replay_manifest.json"
@@ -319,6 +376,10 @@ def main():
             str(output_study),
             "--output-folder",
             str(output_report),
+            "--reference-group",
+            args.reference_group,
+            "--comparison-group",
+            args.comparison_group,
         ],
         check=True,
         cwd=ROOT,
@@ -399,6 +460,19 @@ def main():
         ),
         "report_generation_pipeline_working_copy_sha256": sha256(PIPELINE_PATH),
         "report_rebuild_script_sha256": sha256(Path(__file__)),
+        "report_rebuild_script_git_blob_sha256": git_blob_sha256(Path(__file__)),
+        "report_rebuild_script_git_commit": subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+        "reference_group": args.reference_group,
+        "comparison_group": args.comparison_group,
+        "group_direction_source": (
+            "explicit command arguments bound to study manifest groups"
+        ),
         "retained_replay_archive": display_path(retained_archive),
         "retained_replay_archive_sha256": sha256(retained_archive),
         "retained_replay_members": archived_replay_hashes,

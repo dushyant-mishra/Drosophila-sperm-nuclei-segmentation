@@ -29,11 +29,29 @@ def _specimens():
     return pd.DataFrame(rows)
 
 
-def test_reference_group_uses_generic_control_labels():
+def test_group_pair_requires_explicit_label_independent_direction():
+    assert MODULE.resolve_group_pair(
+        ["Experimental line", "Reference line"], "Reference line"
+    ) == ("Reference line", "Experimental line")
+    assert MODULE.resolve_group_pair(["mutant", "control"], "mutant") == (
+        "mutant", "control"
+    )
+
+
+def test_frozen_v57_reference_group_compatibility():
     assert MODULE.reference_group(["Experimental line", "Reference line"]) == (
         "Reference line"
     )
     assert MODULE.reference_group(["mutant", "control"]) == "control"
+
+
+def test_group_pair_rejects_missing_or_unknown_reference():
+    import pytest
+
+    with pytest.raises(ValueError, match="explicit reference"):
+        MODULE.resolve_group_pair(["A", "B"], "")
+    with pytest.raises(ValueError, match="not present"):
+        MODULE.resolve_group_pair(["A", "B"], "Control")
 
 
 def test_statistics_use_specimens_and_preserve_effect_direction():

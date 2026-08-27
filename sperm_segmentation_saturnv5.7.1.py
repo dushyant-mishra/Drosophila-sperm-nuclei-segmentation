@@ -10949,6 +10949,7 @@ STUDY_MANIFEST_COLUMNS = [
     "include",
     "sample_id",
     "group",
+    "group_role",
     "input_dir",
     "roi_path",
     "file_pattern",
@@ -11978,6 +11979,7 @@ def discover_multisample_study(study_root, roi_filename="analysis_roi_v5_7.npy",
                     "include": True,
                     "sample_id": sample_id,
                     "group": _study_group_from_folder(folder, study_root),
+                    "group_role": "",
                     "input_dir": str(folder),
                     "roi_path": str(roi_path),
                     "file_pattern": stack_info["file_pattern"],
@@ -12314,6 +12316,7 @@ def organize_multisample_study_copy(
                 "include": True,
                 "sample_id": sample_id,
                 "group": row.get("group", ""),
+                "group_role": row.get("group_role", ""),
                 "input_dir": str(destination_dir),
                 "roi_path": str(destination_roi),
                 "file_pattern": f"{sample_id}_z[0-9]*_ch00.tif",
@@ -12410,6 +12413,10 @@ def validate_multisample_manifest(rows, cfg=None):
         seen_ids.add(sample_id.lower())
         if not str(row.get("group", "")).strip():
             row_errors.append("group is blank")
+        role = str(row.get("group_role", "")).strip().lower()
+        if role not in {"", "reference", "comparison"}:
+            row_errors.append("group role must be reference or comparison")
+        row["group_role"] = role
 
         folder = pl.Path(str(row.get("input_dir", "")))
         roi_path = pl.Path(str(row.get("roi_path", "")))
@@ -12770,6 +12777,7 @@ def summarize_study_sample(row, output_dir):
     summary = {
         "sample_id": row["sample_id"],
         "group": row.get("group", ""),
+        "group_role": row.get("group_role", ""),
         "status": "complete",
         "input_dir": row.get("input_dir", ""),
         "output_dir": str(output_dir),
@@ -12927,21 +12935,32 @@ _STUDY_COMPARISON_METRICS = {
 }
 
 
-def _study_reference_group(groups):
-    """Prefer a clearly named reference or control group."""
-    groups = sorted(str(group) for group in groups)
-    for group in groups:
-        label = group.lower()
-        if (
-            "control" in label
-            or "reference" in label
-            or re.search(r"(^|[^a-z])ctrl([^a-z]|$)", label)
-            or "wild" in label
-            or "w1118" in label
-            or re.search(r"(^|[^a-z])wt([^a-z]|$)", label)
-        ):
-            return group
-    return groups[0] if groups else ""
+def _study_explicit_group_pair(specimen_frame):
+    """Resolve report direction only from manifest-provenance study roles."""
+    if not {"group", "group_role"}.issubset(specimen_frame.columns):
+        raise ValueError("Study manifest must declare group_role for pairwise reporting")
+    design = specimen_frame[["group", "group_role"]].copy()
+    design["group"] = design["group"].fillna("").astype(str).str.strip()
+    design["group_role"] = (
+        design["group_role"].fillna("").astype(str).str.strip().str.lower()
+    )
+    if (design["group_role"] == "").any():
+        raise ValueError("Every included specimen must declare group_role")
+    invalid = sorted(set(design["group_role"]) - {"reference", "comparison"})
+    if invalid:
+        raise ValueError(f"Unsupported study group roles: {invalid}")
+    pairs = design.drop_duplicates()
+    if pairs.groupby("group")["group_role"].nunique().max() != 1:
+        raise ValueError("A biological group cannot have conflicting study roles")
+    references = sorted(pairs.loc[pairs["group_role"] == "reference", "group"].unique())
+    comparisons = sorted(pairs.loc[pairs["group_role"] == "comparison", "group"].unique())
+    if len(references) != 1 or len(comparisons) != 1:
+        raise ValueError(
+            "Pairwise reporting requires exactly one reference group and one comparison group"
+        )
+    if references[0] == comparisons[0]:
+        raise ValueError("Reference and comparison groups must differ")
+    return references[0], comparisons[0]
 
 
 def _study_cliffs_delta(reference, comparison):
@@ -13021,8 +13040,7 @@ def _study_specimen_group_comparisons(
             ]
         ), qc
 
-    reference_group = _study_reference_group(groups)
-    comparison_group = next(group for group in groups if group != reference_group)
+    reference_group, comparison_group = _study_explicit_group_pair(complete)
     qc["reference_group"] = reference_group
     qc["comparison_group"] = comparison_group
     qc["effect_direction"] = f"{comparison_group} minus {reference_group}"
@@ -13506,6 +13524,72 @@ def _study_normalization_qc(specimen_frame):
     }
 
 
+def _study_below_2_um_sensitivity_row(sample_id, frame):
+    """Build one fail-closed descriptive short-track sensitivity record."""
+    valid = (
+        _study_series_bool(frame["technical_valid"])
+        if "technical_valid" in frame
+        else pd.Series(True, index=frame.index)
+    )
+    length = pd.to_numeric(frame.get("projection_z_extent_um"), errors="coerce")
+    primary = frame.loc[valid].copy()
+    valid_length = length.loc[valid]
+    if (
+        valid_length.isna().any()
+        or (~np.isfinite(valid_length)).any()
+        or (valid_length < 0).any()
+    ):
+        raise ValueError(
+            f"Cannot compute below-2-um sensitivity for {sample_id}: "
+            "technical-valid tracks require finite nonnegative "
+            "projection_z_extent_um"
+        )
+    without_short = frame.loc[valid & (length >= 2.0)].copy()
+
+    def metric_median(data, column):
+        if column not in data or data.empty:
+            return np.nan
+        return float(pd.to_numeric(data[column], errors="coerce").median())
+
+    def metric_availability(data, column):
+        if column not in data:
+            return 0, float("nan") if data.empty else 1.0
+        values = pd.to_numeric(data[column], errors="coerce")
+        available = int(np.isfinite(values).sum())
+        missing_fraction = (
+            float(1.0 - available / len(data)) if len(data) else float("nan")
+        )
+        return available, missing_fraction
+
+    primary_width_n, primary_width_missing = metric_availability(
+        primary, "representative_body_width_um"
+    )
+    sensitivity_width_n, sensitivity_width_missing = metric_availability(
+        without_short, "representative_body_width_um"
+    )
+    below_short = int((valid & (length < 2.0)).sum())
+    return {
+        "sample_id": sample_id,
+        "group": frame["group"].iloc[0],
+        "primary_technical_valid_count": int(len(primary)),
+        "below_2_um_count": below_short,
+        "sensitivity_count_without_below_2_um": int(len(without_short)),
+        "below_2_um_fraction": float(below_short / max(valid.sum(), 1)),
+        "primary_median_length_um": metric_median(primary, "projection_z_extent_um"),
+        "sensitivity_median_length_um": metric_median(without_short, "projection_z_extent_um"),
+        "primary_median_body_width_um": metric_median(primary, "representative_body_width_um"),
+        "sensitivity_median_body_width_um": metric_median(without_short, "representative_body_width_um"),
+        "primary_width_available_n": primary_width_n,
+        "primary_width_missing_fraction": primary_width_missing,
+        "sensitivity_width_available_n": sensitivity_width_n,
+        "sensitivity_width_missing_fraction": sensitivity_width_missing,
+        "interpretation": (
+            "Automated sensitivity only; below-2-um technical-valid "
+            "tracks remain in the primary biological population."
+        ),
+    }
+
+
 def _write_study_aggregates(output_root, rows, state):
     output_root = pl.Path(output_root)
     summaries = []
@@ -13518,6 +13602,7 @@ def _write_study_aggregates(output_root, rows, state):
                 {
                     "sample_id": row["sample_id"],
                     "group": row.get("group", ""),
+                    "group_role": row.get("group_role", ""),
                     "status": record.get("status", row.get("status", "pending")),
                     "input_dir": row.get("input_dir", ""),
                     "output_dir": output_dir,
@@ -13552,6 +13637,7 @@ def _write_study_aggregates(output_root, rows, state):
     biological_columns = [
         "sample_id",
         "group",
+        "group_role",
         "status",
         "input_dir",
         "output_dir",
@@ -13611,39 +13697,8 @@ def _write_study_aggregates(output_root, rows, state):
         technical_qc_dir.mkdir(parents=True, exist_ok=True)
         sensitivity_rows = []
         for sample_id, frame in study_tracks.groupby("sample_id", sort=False):
-            valid = (
-                _study_series_bool(frame["technical_valid"])
-                if "technical_valid" in frame
-                else pd.Series(True, index=frame.index)
-            )
-            length = pd.to_numeric(frame.get("projection_z_extent_um"), errors="coerce")
-            primary = frame.loc[valid].copy()
-            without_short = frame.loc[valid & (length >= 2.0)].copy()
-
-            def metric_median(data, column):
-                if column not in data or data.empty:
-                    return np.nan
-                return float(pd.to_numeric(data[column], errors="coerce").median())
-
             sensitivity_rows.append(
-                {
-                    "sample_id": sample_id,
-                    "group": frame["group"].iloc[0],
-                    "primary_technical_valid_count": int(len(primary)),
-                    "below_2_um_count": int((valid & (length < 2.0)).sum()),
-                    "sensitivity_count_without_below_2_um": int(len(without_short)),
-                    "below_2_um_fraction": float(
-                        (valid & (length < 2.0)).sum() / max(valid.sum(), 1)
-                    ),
-                    "primary_median_length_um": metric_median(primary, "projection_z_extent_um"),
-                    "sensitivity_median_length_um": metric_median(without_short, "projection_z_extent_um"),
-                    "primary_median_body_width_um": metric_median(primary, "representative_body_width_um"),
-                    "sensitivity_median_body_width_um": metric_median(without_short, "representative_body_width_um"),
-                    "interpretation": (
-                        "Automated sensitivity only; below-2-um technical-valid "
-                        "tracks remain in the primary biological population."
-                    ),
-                }
+                _study_below_2_um_sensitivity_row(sample_id, frame)
             )
         pd.DataFrame(sensitivity_rows).to_csv(
             technical_qc_dir / "below_2_um_specimen_sensitivity.csv",
@@ -13884,11 +13939,17 @@ def generate_study_between_sample_analysis(study_output_dir):
             "Study aggregation must finish before report generation. Missing: "
             + ", ".join(missing)
         )
+    specimens = pd.read_csv(study_output / "specimen_summary.csv")
+    reference_group, comparison_group = _study_explicit_group_pair(specimens)
     command = [
         sys.executable,
         str(generator),
         "--study-output",
         str(study_output),
+        "--reference-group",
+        reference_group,
+        "--comparison-group",
+        comparison_group,
     ]
     completed = subprocess.run(
         command,
@@ -14629,6 +14690,8 @@ class SpermGUI:
             ("Load Manifest", self._study_load_manifest),
             ("Save Manifest", self._study_save_manifest),
             ("Assign Group", self._study_assign_group),
+            ("Set Reference", lambda: self._study_assign_group_role("reference")),
+            ("Set Comparison", lambda: self._study_assign_group_role("comparison")),
             ("Organize Dataset Copy", self._study_organize_copy),
             ("Select Output", self._study_select_output),
             ("Validate", self._study_validate),
@@ -14711,19 +14774,20 @@ class SpermGUI:
         table_frame = tk.Frame(window)
         table_frame.pack(fill="both", expand=True, padx=8, pady=6)
         columns = (
-            "include", "sample_id", "group", "slices", "z_range", "roi",
+            "include", "sample_id", "group", "group_role", "slices", "z_range", "roi",
             "xy", "z_step", "status", "message",
         )
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
         self.study_tree = tree
         headings = {
             "include": "Include", "sample_id": "Sample ID", "group": "Group",
+            "group_role": "Study role",
             "slices": "Slices", "z_range": "Z range", "roi": "ROI",
             "xy": "XY um/px", "z_step": "Z um/slice", "status": "Status",
             "message": "Message",
         }
         widths = {
-            "include": 60, "sample_id": 150, "group": 120, "slices": 55,
+            "include": 60, "sample_id": 150, "group": 120, "group_role": 85, "slices": 55,
             "z_range": 70, "roi": 65, "xy": 80, "z_step": 85,
             "status": 85, "message": 330,
         }
@@ -14745,7 +14809,7 @@ class SpermGUI:
             window,
             text=(
                 "Select one or more rows to Assign Group. Double-click Include, "
-                "Sample ID, Group, XY, or Z spacing to edit. Space toggles Include."
+                "Sample ID, Group, Study role, XY, or Z spacing to edit. Space toggles Include."
             ),
             anchor="w",
             fg="#475569",
@@ -14787,6 +14851,7 @@ class SpermGUI:
                     "Yes" if _study_bool(row.get("include", True)) else "No",
                     row.get("sample_id", ""),
                     row.get("group", ""),
+                    row.get("group_role", ""),
                     row.get("slice_count", 0),
                     f"{row.get('z_min', 0)}-{row.get('z_max', 0)}",
                     "Ready" if roi_ok else "Missing",
@@ -14849,12 +14914,12 @@ class SpermGUI:
         if index is None:
             return
         column_index = int(column_id[1:]) - 1
-        keys = ("include", "sample_id", "group", "slice_count", "z_range", "roi", "xy_um_per_pixel", "z_um_per_slice", "status", "message")
+        keys = ("include", "sample_id", "group", "group_role", "slice_count", "z_range", "roi", "xy_um_per_pixel", "z_um_per_slice", "status", "message")
         key = keys[column_index]
         if key == "include":
             self._study_toggle_selected()
             return
-        if key not in {"sample_id", "group", "xy_um_per_pixel", "z_um_per_slice"}:
+        if key not in {"sample_id", "group", "group_role", "xy_um_per_pixel", "z_um_per_slice"}:
             return
 
         from tkinter import simpledialog
@@ -14862,6 +14927,7 @@ class SpermGUI:
         label = {
             "sample_id": "Sample ID",
             "group": "Biological group",
+            "group_role": "Study role (reference or comparison)",
             "xy_um_per_pixel": "XY calibration (um/pixel)",
             "z_um_per_slice": "Z calibration (um/slice)",
         }[key]
@@ -14874,10 +14940,19 @@ class SpermGUI:
             except ValueError:
                 messagebox.showerror("Invalid Calibration", f"{label} must be a number.", parent=self.study_window)
                 return
+        elif key == "group_role" and value.strip().lower() not in {"reference", "comparison"}:
+            messagebox.showerror(
+                "Invalid Study Role",
+                "Study role must be reference or comparison.",
+                parent=self.study_window,
+            )
+            return
         elif not value.strip():
             messagebox.showerror("Invalid Value", f"{label} cannot be blank.", parent=self.study_window)
             return
-        self.study_rows[index][key] = value
+        self.study_rows[index][key] = (
+            value.strip().lower() if key == "group_role" else value
+        )
         self.study_rows[index]["status"] = "pending"
         self.study_rows[index]["message"] = ""
         self._study_refresh_tree()
@@ -14983,6 +15058,41 @@ class SpermGUI:
         self.study_status_var.set(
             f"Assigned {len(indices)} specimen(s) to group {group!r}"
         )
+        self._study_refresh_tree()
+
+    def _study_assign_group_role(self, role):
+        """Assign an explicit report direction to all selected specimens."""
+        if self._study_running:
+            return
+        role = str(role).strip().lower()
+        if role not in {"reference", "comparison"}:
+            raise ValueError(f"Unsupported study role: {role}")
+        indices = self._study_selected_indices()
+        if not indices:
+            messagebox.showwarning(
+                "No Samples Selected",
+                "Select all specimens belonging to one biological group first.",
+                parent=self.study_window,
+            )
+            return
+        selected_groups = {
+            str(self.study_rows[index].get("group", "")).strip()
+            for index in indices
+        }
+        if "" in selected_groups or len(selected_groups) != 1:
+            messagebox.showerror(
+                "Mixed Group Selection",
+                "Select specimens from exactly one non-empty biological group.",
+                parent=self.study_window,
+            )
+            return
+        group = next(iter(selected_groups))
+        for row in self.study_rows:
+            if str(row.get("group", "")).strip() == group:
+                row["group_role"] = role
+                row["status"] = "pending"
+                row["message"] = ""
+        self.study_status_var.set(f"Assigned group {group!r} as {role}")
         self._study_refresh_tree()
 
     def _study_organize_copy(self):

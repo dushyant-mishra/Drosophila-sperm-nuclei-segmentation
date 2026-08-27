@@ -137,6 +137,10 @@ def test_below_2_um_sensitivity_reconciles_primary_and_omitted_counts(tmp_path):
             "sensitivity_median_length_um": [3.25],
             "primary_median_body_width_um": [2.0],
             "sensitivity_median_body_width_um": [2.5],
+            "primary_width_available_n": [3],
+            "primary_width_missing_fraction": [0.0],
+            "sensitivity_width_available_n": [2],
+            "sensitivity_width_missing_fraction": [0.0],
             "interpretation": [
                 "Automated sensitivity only; short tracks remain primary."
             ],
@@ -172,10 +176,68 @@ def test_below_2_um_sensitivity_rejects_count_mismatch(tmp_path):
             "sensitivity_median_length_um": [float("nan")],
             "primary_median_body_width_um": [1.0],
             "sensitivity_median_body_width_um": [float("nan")],
+            "primary_width_available_n": [1],
+            "primary_width_missing_fraction": [0.0],
+            "sensitivity_width_available_n": [0],
+            "sensitivity_width_missing_fraction": [float("nan")],
             "interpretation": ["sensitivity"],
         }
     ).to_csv(sensitivity_path, index=False)
     with pytest.raises(ValueError, match="primary_technical_valid_count"):
+        module.reconcile_below_2_um_sensitivity(
+            sensitivity_path, {"S1": tracks_path}
+        )
+
+
+def test_below_2_um_sensitivity_uses_exact_stored_value_boundary(tmp_path):
+    module = load_module()
+    tracks_path = tmp_path / "tracks.csv"
+    pd.DataFrame(
+        {
+            "technical_valid": [True, True],
+            "projection_z_extent_um": [1.999, 2.0],
+            "representative_body_width_um": [1.0, float("nan")],
+        }
+    ).to_csv(tracks_path, index=False)
+    sensitivity_path = tmp_path / "below_2.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["S1"],
+            "primary_technical_valid_count": [2],
+            "below_2_um_count": [1],
+            "sensitivity_count_without_below_2_um": [1],
+            "below_2_um_fraction": [0.5],
+            "primary_median_length_um": [1.9995],
+            "sensitivity_median_length_um": [2.0],
+            "primary_median_body_width_um": [1.0],
+            "sensitivity_median_body_width_um": [float("nan")],
+            "primary_width_available_n": [1],
+            "primary_width_missing_fraction": [0.5],
+            "sensitivity_width_available_n": [0],
+            "sensitivity_width_missing_fraction": [1.0],
+            "interpretation": ["sensitivity"],
+        }
+    ).to_csv(sensitivity_path, index=False)
+    records = module.reconcile_below_2_um_sensitivity(
+        sensitivity_path, {"S1": tracks_path}
+    )
+    assert records[0]["below_2_um_count"] == 1
+    assert records[0]["sensitivity_count_without_below_2_um"] == 1
+
+
+def test_below_2_um_sensitivity_rejects_nonfinite_valid_length(tmp_path):
+    module = load_module()
+    tracks_path = tmp_path / "tracks.csv"
+    pd.DataFrame(
+        {
+            "technical_valid": [True],
+            "projection_z_extent_um": [float("nan")],
+            "representative_body_width_um": [1.0],
+        }
+    ).to_csv(tracks_path, index=False)
+    sensitivity_path = tmp_path / "below_2.csv"
+    pd.DataFrame({"sample_id": ["S1"]}).to_csv(sensitivity_path, index=False)
+    with pytest.raises(ValueError, match="projection_z_extent_um"):
         module.reconcile_below_2_um_sensitivity(
             sensitivity_path, {"S1": tracks_path}
         )

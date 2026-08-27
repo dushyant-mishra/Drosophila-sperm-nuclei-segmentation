@@ -132,6 +132,7 @@ QC_METRICS = tuple(metric for metric in METRICS if metric not in BIOLOGICAL_METR
 
 
 def reference_group(groups):
+    """Frozen v5.7 compatibility for callers without study-role metadata."""
     groups = sorted(str(group) for group in groups)
     for group in groups:
         label = group.lower()
@@ -140,6 +141,27 @@ def reference_group(groups):
         if label in {"wt", "ctrl"}:
             return group
     return groups[0]
+
+
+def resolve_group_pair(groups, reference, comparison=""):
+    """Validate explicit study direction without interpreting genotype labels."""
+    groups = sorted(str(group) for group in groups)
+    reference = str(reference).strip()
+    comparison = str(comparison).strip()
+    if len(groups) != 2:
+        raise ValueError(f"Pairwise reporting requires exactly two groups; found {groups}")
+    if not reference:
+        raise ValueError("An explicit reference group is required")
+    if reference not in groups:
+        raise ValueError(f"Reference group {reference!r} is not present in {groups}")
+    if comparison:
+        if comparison not in groups:
+            raise ValueError(f"Comparison group {comparison!r} is not present in {groups}")
+        if comparison == reference:
+            raise ValueError("Reference and comparison groups must differ")
+    else:
+        comparison = next(group for group in groups if group != reference)
+    return reference, comparison
 
 
 def bh_qvalues(values):
@@ -1118,6 +1140,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--study-output", required=True)
     parser.add_argument("--output-folder", default="")
+    parser.add_argument("--reference-group", default="")
+    parser.add_argument("--comparison-group", default="")
     args = parser.parse_args()
 
     study_root = Path(args.study_output).resolve()
@@ -1166,8 +1190,17 @@ def main():
         raise ValueError(
             f"This pairwise report requires exactly two groups; found {groups}"
         )
-    reference = reference_group(groups)
-    comparison = next(group for group in groups if group != reference)
+    if args.reference_group:
+        reference, comparison = resolve_group_pair(
+            groups,
+            args.reference_group,
+            args.comparison_group,
+        )
+        group_direction_source = "explicit command arguments"
+    else:
+        reference = reference_group(groups)
+        comparison = next(group for group in groups if group != reference)
+        group_direction_source = "frozen v5.7 legacy label inference"
     groups = [reference, comparison]
 
     all_statistics = compute_statistics(specimens, reference, comparison)
@@ -1640,6 +1673,7 @@ def main():
         "study_output": str(study_root),
         "reference_group": reference,
         "comparison_group": comparison,
+        "group_direction_source": group_direction_source,
         "specimen_counts": specimens.groupby("group").size().to_dict(),
         "analysis_unit": "biological specimen",
         "inference_status": (

@@ -643,6 +643,7 @@ def test_v571_group_comparison_uses_explicit_projection_metric():
         {
             "sample_id": ["A1", "A2", "A3", "B1", "B2", "B3"],
             "group": ["A", "A", "A", "B", "B", "B"],
+            "group_role": ["reference"] * 3 + ["comparison"] * 3,
             "status": ["complete"] * 6,
             "median_projection_z_extent_um": [8, 9, 10, 10, 11, 12],
             "median_3d_length_um_legacy_alias": [8, 9, 10, 10, 11, 12],
@@ -653,3 +654,40 @@ def test_v571_group_comparison_uses_explicit_projection_metric():
     )
     assert "median_projection_z_extent_um" in set(comparisons["metric"])
     assert "median_3d_length_um_legacy_alias" not in set(comparisons["metric"])
+
+
+def test_v571_group_direction_uses_manifest_roles_not_label_tokens():
+    saturn = load_saturn()
+    specimens = pd.DataFrame(
+        {
+            "group": ["Mutant named control", "Arbitrary baseline"],
+            "group_role": ["comparison", "reference"],
+        }
+    )
+    assert saturn._study_explicit_group_pair(specimens) == (
+        "Arbitrary baseline", "Mutant named control"
+    )
+
+
+def test_v571_short_track_sensitivity_is_fail_closed_at_two_um():
+    saturn = load_saturn()
+    frame = pd.DataFrame(
+        {
+            "group": ["Any genotype"] * 3,
+            "technical_valid": [True, True, False],
+            "projection_z_extent_um": [1.999, 2.0, np.nan],
+            "representative_body_width_um": [1.0, np.nan, 9.0],
+        }
+    )
+    row = saturn._study_below_2_um_sensitivity_row("S1", frame)
+    assert row["primary_technical_valid_count"] == 2
+    assert row["below_2_um_count"] == 1
+    assert row["sensitivity_count_without_below_2_um"] == 1
+    assert row["primary_width_available_n"] == 1
+    assert row["primary_width_missing_fraction"] == pytest.approx(0.5)
+    assert row["sensitivity_width_available_n"] == 0
+    assert row["sensitivity_width_missing_fraction"] == pytest.approx(1.0)
+
+    frame.loc[1, "projection_z_extent_um"] = np.nan
+    with pytest.raises(ValueError, match="finite nonnegative"):
+        saturn._study_below_2_um_sensitivity_row("S1", frame)
