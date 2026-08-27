@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc7",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "statistics_reporting",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "RC6 blockers are resolved in the reviewed committed evidence. Reporting uses biological specimens as the inferential unit, explicitly prevents inference at n=1 per group, reconciles replay and technical-valid counts, and records report consistency validation as passing.",
+  "checks": [
+    {
+      "check_id": "report_metadata_rc5_paths",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:15-36 references only v571_rc6_candidate report artifacts.",
+        "Read-only command `rg -n -i 'v571_rc5_candidate|rc5' audits/evidence/v571_rc6_candidate/report` returned no matches."
+      ]
+    },
+    {
+      "check_id": "retained_replay_archive_binding",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:12-20 binds the report to the retained replay archive and its member hashes.",
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:42-46 asserts replay-track usage, count reconciliation, and archive verification.",
+        "Read-only SHA-256 and ZIP-member verification command confirmed archive hash `11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9` and all six retained member hashes."
+      ]
+    },
+    {
+      "check_id": "count_reconciliation",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:24-39 records KJ 5766 reconstructed and 5517 technical-valid, and WT 3541 reconstructed and 3423 technical-valid.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:24-47 and :475-492 independently record the same KJ and WT counts.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_technical_qc.csv:2 and :20 contain the same counts."
+      ]
+    },
+    {
+      "check_id": "specimen_level_statistics",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 declares one KJ and one WT specimen, biological specimen as analysis unit, minimum three specimens per group, unavailable primary test, and insufficient inference status.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/biological_statistical_tests.csv:2-8 records analysis_unit=biological specimen, reference_n=1, comparison_n=1, inference_status=insufficient_specimens, and empty inferential test fields.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:2-21 declares specimen-level descriptive sensitivity and no group inference."
+      ]
+    },
+    {
+      "check_id": "biological_qc_separation_and_denominators",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:10-21 separates technical-valid and all-reconstructed formulas, area and sampled-volume denominators, and states sampled ROI volume is not anatomical organ volume.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/source_files/specimen_group_comparisons.csv:2-12 labels comparisons as biological specimen and insufficient_specimens."
+      ]
+    },
+    {
+      "check_id": "pdf_excel_csv_consistency",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json:2-10 records status=pass, source_csv_matches_contract=true, excel_matches_contract=true, and pdf_contains_contract_tokens=true.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:20-30 records the same consistency status and artifact hashes for source CSV, Excel, and PDF."
+      ]
+    }
+  ],
+  "findings": [],
+  "limitations": [
+    "The retained package contains one specimen per group; this supports descriptive reporting and technical reconciliation only, not biological group inference.",
+    "No full image-stack execution was performed, consistent with the requested read-only acceptance review.",
+    "The repository has no committed audits/runs/20260827-v571-remediation-acceptance-rc7 directory; this review therefore evaluates the specified commit and retained RC6 candidate evidence directly."
+  ],
+  "recommended_follow_up": [
+    "Record this independent statistics_reporting verdict in the superseding rc7 audit run and run the repository audit validator before release gating."
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc7",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "biological_validity",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "RC6 biological-validity blockers are resolved in the reviewed evidence. Counts reconcile across retained replay, QC, biological reporting, and sensitivity artifacts; reporting is specimen-level and explicitly non-inferential for one specimen per group.",
+  "checks": [
+    {
+      "check_id": "rc5_paths_removed",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:2-36 contains only rc6 report paths; command `rg -n -i 'rc5' audits/evidence/v571_rc6_candidate/report/report_metadata.json` returned no matches."
+      ]
+    },
+    {
+      "check_id": "retained_replay_binding",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:12-22 binds the retained replay archive and member hashes; archive contains both specimens' source_2d_detections.csv, tracked_detections.csv, and track_summary.csv.",
+        "Command `python` ZIP inspection independently reconstructed 5766/5517 KJ and 3541/3423 WT from retained track_summary.csv members."
+      ]
+    },
+    {
+      "check_id": "count_consistency",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:24-37 records KJ 5766 reconstructed/5517 technical-valid and WT 3541/3423.",
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_summary.csv:2-3 records 5766 and 3541 replay tracks.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:25-32,476-482 records the same counts.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/specimen_technical_qc.csv:2 contains KJ 5766/5517; the WT complete row contains 3541/3423.",
+        "Command `python` ZIP inspection returned `kj_sv_40xx0.75-1 5766 5517` and `w1118_sv_feb_40xx0.75-1 3541 3423`."
+      ]
+    },
+    {
+      "check_id": "specimen_level_non_inference",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 declares one specimen per group and `inference_status: insufficient_specimens`.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/source_files/specimen_group_comparisons.csv:2-12 labels every comparison `insufficient_specimens`.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:2-7 states biological-specimen analysis and no inference."
+      ]
+    },
+    {
+      "check_id": "technical_validity_vs_morphology_warning",
+      "status": "pass",
+      "evidence": [
+        "audits/V5_7_1_DESIGN_DECISIONS.md:9-16 preserves unusual morphology and states length alone is not a technical veto.",
+        "sperm_segmentation_saturnv5.7.1.py:6997-7018 separates technical-failure masks from morphology-warning masks.",
+        "sperm_segmentation_saturnv5.7.1.py:9259-9265 states short, long, wide, thin, curved, tortuous, and single-slice observations remain in the estimated-nuclei population."
+      ]
+    },
+    {
+      "check_id": "single_slice_and_short_nuclei_preserved",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_summary.csv:2-3 reports 2065 KJ and 1239 WT single-slice tracks with zero duplicate-Z tracks.",
+        "audits/V5_7_1_DESIGN_DECISIONS.md:28-40 explicitly retains short observations and single-slice tracks for tracking."
+      ]
+    },
+    {
+      "check_id": "no_wt_target_optimization",
+      "status": "pass",
+      "evidence": [
+        "audits/V5_7_1_DESIGN_DECISIONS.md:12-16 prohibits WT-like morphology as an optimization or acceptance target.",
+        "sperm_segmentation_saturnv5.7.1.py:9940-9946 states tuning penalizes technical errors without rewarding WT-like morphology."
+      ]
+    },
+    {
+      "check_id": "no_anatomical_volume_overclaim",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:20-21 identifies sampled ROI volume as not anatomical organ volume.",
+        "audits/V5_7_1_DESIGN_DECISIONS.md:64-66 limits repeated 2D ROI normalization to sampled area and requires slice-specific 3D masks for anatomical volume."
+      ]
+    }
+  ],
+  "findings": [],
+  "limitations": [
+    "Review was read-only and did not run full image-processing stacks.",
+    "The retained report binding references an external replay workspace path, but the committed retained archive and its member contents were independently inspected.",
+    "No biological conclusion beyond descriptive specimen-level reporting is supported with one specimen per group."
+  ],
+  "recommended_follow_up": [
+    "Retain this review as the biological_validity component of the RC7 audit gate and obtain the remaining required independent role verdicts before acceptance."
+  ]
+}

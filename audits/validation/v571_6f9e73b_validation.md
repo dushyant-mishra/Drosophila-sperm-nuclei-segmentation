@@ -94,3 +94,9 @@ The independent RC6 audit is retained at
 the original report package referenced RC5 paths and disagreed with the
 corrected KJ tracking replay. This receipt documents the remediation; acceptance
 requires a new superseding audit and does not rewrite the RC6 verdict.
+
+The superseding independent RC7 audit reviewed clean commit
+`7a4c7d13a88f441e490b330ffe5206b418633c1e`. All seven required roles passed,
+and `scripts/validate_agent_audit.py` reported `gate_passed: true` with no
+blocking findings. The append-only run and acceptance decision are retained at
+`audits/runs/20260827-v571-remediation-acceptance-rc7`.

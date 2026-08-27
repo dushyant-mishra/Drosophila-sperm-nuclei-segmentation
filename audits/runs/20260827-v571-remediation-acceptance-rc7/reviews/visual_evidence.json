@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc7",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "visual_evidence",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "pass",
+  "confidence": "medium",
+  "summary": "The corrected RC6 evidence package satisfies the visual-evidence acceptance checks. Report paths are RC6-local, replay binding and counts are consistent, specimen-level insufficiency is explicit, and retained stage/tracking visuals show readable legends, consistent framing, aligned overlays and centerlines, and no apparent clipping or presentation of the one-per-group pilot as biological proof.",
+  "checks": [
+    {
+      "check_id": "report_metadata_paths",
+      "status": "pass",
+      "evidence": [
+        "Command `rg -n -i 'rc5|v571_rc5' audits/evidence/v571_rc6_candidate/report/report_metadata.json` returned no matches.",
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-19 and :34-36 point to v571_rc6_candidate artifacts."
+      ]
+    },
+    {
+      "check_id": "retained_replay_binding",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:12 identifies the retained replay archive.",
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:44-45 records all_counts_reconciled=true and retained_replay_archive_verified=true."
+      ]
+    },
+    {
+      "check_id": "count_consistency",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:26-27 and :35-36 report KJ 5766 reconstructed/5517 technical-valid and WT 3541/3423.",
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_summary.csv:2-3 reports reconstructed counts 5766 and 3541.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:29-31 and :479-481 reports the same reconstructed and technical-valid counts."
+      ]
+    },
+    {
+      "check_id": "specimen_level_inference_label",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 records one specimen per group and inference_status=insufficient_specimens.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/biological_statistical_tests.csv:2-8 labels biological specimen analysis with n=1 per group and insufficient_specimens."
+      ]
+    },
+    {
+      "check_id": "stage_visual_truthfulness",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/stages/KJ-01_z035_stages.png and WT-01_z035_stages.png show labeled raw, probability, mask, instance-boundary, centerline, and final-overlay stages with consistent ROI framing and no apparent clipping.",
+        "audits/evidence/v571_rc6_candidate/end_to_end/end_to_end_visual_evidence_manifest.json records the retained stage artifacts and their repository paths."
+      ]
+    },
+    {
+      "check_id": "tracking_overlay_truthfulness",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/tracking/KJ-01_stratified_tracking.png and WT-01_stratified_tracking.png explicitly label raw data, U-Net support, neighboring boundaries, target masks, boundaries, and centerlines; inspected panels show overlays following target objects and consistent crop framing.",
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_evidence_manifest.json records both tracking artifacts and source dimensions with crop_touches_source_edge=false for displayed examples."
+      ]
+    },
+    {
+      "check_id": "pilot_not_biological_proof",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 marks inference insufficient with one specimen per group.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json:5 and :19 state sensitivity rows are descriptive and not biological results."
+      ]
+    }
+  ],
+  "findings": [],
+  "limitations": [
+    "The PDF rendering itself was not independently rasterized in this environment; PDF integrity and numeric-token validation are recorded in audits/evidence/v571_rc6_candidate/report/report_metadata.json:20-31, while visual inspection covered the retained PNG stage and tracking evidence."
+  ],
+  "recommended_follow_up": []
+}

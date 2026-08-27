@@ -4,7 +4,7 @@
     {
       "claim_id": "PIPELINE-V571-PRODUCTION-001",
       "title": "Saturn v5.7.1 is a technically defensible production candidate",
-      "status": "implemented",
+      "status": "accepted",
       "risk": "high",
       "implementation_owner": "primary_implementation_agent",
       "statement": "The v5.7.1 dual-head U-Net-primary pipeline, calibrated measurement path, morphology-neutral global tracking, and biologist-facing reporting operate consistently across GUI, batch, tuner, and study workflows without using WT morphology as a technical acceptance target.",
@@ -64,9 +64,9 @@
       ],
       "supersedes": [],
       "latest_audit": {
-        "run_id": "20260827-v571-remediation-acceptance-rc6",
-        "gate_passed": false,
-        "decision": "blocked_by_report_provenance_and_count_mismatch; superseding remediation pending audit"
+        "run_id": "20260827-v571-remediation-acceptance-rc7",
+        "gate_passed": true,
+        "decision": "accepted"
       }
     },
     {

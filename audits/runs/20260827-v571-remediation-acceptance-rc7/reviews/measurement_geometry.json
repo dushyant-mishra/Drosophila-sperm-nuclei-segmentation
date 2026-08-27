@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc7",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "role": "measurement_geometry",
+  "reviewed_commit": "7a4c7d13a88f441e490b330ffe5206b418633c1e",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "Body-width geometry, calibration handling, legacy-field preservation, representative-plane selection, tracking reconciliation, and report field selection are supported by implementation, focused synthetic/adversarial tests, and retained RC6 evidence. RC6 report-path and count blockers are resolved in the reviewed evidence.",
+  "checks": [
+    {
+      "check_id": "body_width_geometry",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3387-3458 measures perpendicular contour chords on a smoothed centerline, trims endpoints, rejects insufficient samples, and reports median/P90/IQR widths.",
+        "tests/test_saturn_v571_body_width.py:58-73 verifies known-width rotated rectangles across five angles.",
+        "tests/test_saturn_v571_body_width.py:76-99 verifies endpoint trimming on a tapered synthetic mask."
+      ]
+    },
+    {
+      "check_id": "units_and_calibration",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3515-3517 converts geodesic length using UM_PER_PX_XY.",
+        "sperm_segmentation_saturnv5.7.1.py:4787-4815 converts primary and legacy width fields from pixels using the resolved XY calibration.",
+        "sperm_segmentation_saturnv5.7.1.py:5429-5458 applies separate XY and Z calibration for 3D quantities."
+      ]
+    },
+    {
+      "check_id": "legacy_fields_preserved",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3564-3574 retains width_px_dt_median_legacy and length_width_ratio_dt_legacy alongside new body-width fields.",
+        "sperm_segmentation_saturnv5.7.1.py:4747-4749 explicitly labels body_width_um as primary and width_um_dt_median_legacy as historical.",
+        "tests/test_saturn_v571_body_width.py:102-136 verifies both new and legacy exports."
+      ]
+    },
+    {
+      "check_id": "representative_plane_width",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:5116-5195 selects the representative plane by filled-mask area, support, then lowest Z and computes the body-width ratio from that plane.",
+        "tests/test_saturn_v571_body_width.py:153-180 verifies the largest-area plane is selected instead of the widest plane.",
+        "tests/test_saturn_v571_body_width.py:183-200 verifies deterministic support and Z tie-breaking."
+      ]
+    },
+    {
+      "check_id": "tracking_count_reconciliation",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_manifest.json:29-49 records KJ 5766 reconstructed and 5517 technical-valid tracks, and WT 3541 reconstructed and 3423 technical-valid tracks.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.csv:2 and 20 contain the same KJ and WT counts.",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_technical_qc.csv:2 and 20 contain the same KJ and WT counts.",
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_manifest.json:51-56 asserts report/sensitivity replay-track use and all-count reconciliation."
+      ]
+    },
+    {
+      "check_id": "report_provenance_and_field_selection",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:16-36 contains only v571_rc6_candidate report paths and no v571_rc5_candidate references.",
+        "audits/evidence/v571_rc6_candidate/report/report_source_binding.json:19-22 records the retained replay archive and SHA-256; lines 30-49 bind both specimens and all replay members by hash.",
+        "sperm_segmentation_saturnv5.7.1.py:5491-5513 orders report-facing track fields with representative_body_width_um as the primary width field and retains explicitly named legacy-compatible fields.",
+        "tests/test_saturn_v571_body_width.py:203-226 verifies analysis summaries use body width as primary and label the legacy width separately."
+      ]
+    },
+    {
+      "check_id": "insufficient_inference_label",
+      "status": "pass",
+      "evidence": [
+        "audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 declares one specimen per group, a minimum of three specimens per group, and inference_status=insufficient_specimens.",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/biological_statistical_tests.csv:2-8 labels each reported measure with analysis_unit=biological specimen and inference_status=insufficient_specimens."
+      ]
+    },
+    {
+      "check_id": "failure_and_adversarial_behavior",
+      "status": "pass",
+      "evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:3412-3413 and 3443-3447 return unavailable width values when geometry or chord support is insufficient.",
+        "tests/test_saturn_v571_body_width.py:139-150 verifies short-centerline failure behavior without fabricated width.",
+        "tests/test_v571_acceptance_report_replay.py:43-60 verifies mismatched track counts fail; lines 63-115 verify retained replay archive content binding and changed-content rejection."
+      ]
+    }
+  ],
+  "findings": [],
+  "limitations": [
+    "The retained report package documents deterministic replay from frozen 2D detections; audits/evidence/v571_rc6_candidate/report/report_source_binding.json:23 states U-Net inference was not rerun.",
+    "Body width remains apparent segmented-mask width and is not PSF-corrected physical chromatin width, as recorded in audits/claims_registry.json:55-59.",
+    "The evidence represents one specimen per group and therefore does not establish a biological KJ-versus-WT effect; audits/evidence/v571_rc6_candidate/report/report_metadata.json:5-14 records the inference limitation."
+  ],
+  "recommended_follow_up": [
+    "Retain this review as the measurement_geometry output for the RC7 audit run and complete the remaining independent role reviews before production acceptance."
+  ]
+}
