@@ -1,0 +1,10 @@
+source_file,copied_to,purpose
+group_summary.csv,02_quality_control\source_files\group_summary.csv,Study-level QC or provenance source
+normalization_qc.json,02_quality_control\source_files\normalization_qc.json,Study-level QC or provenance source
+runtime_parameters.json,02_quality_control\source_files\runtime_parameters.json,Study-level QC or provenance source
+specimen_group_comparison.pdf,02_quality_control\source_files\legacy_specimen_group_comparison.pdf,Superseded source report retained for provenance; its useful biological content is incorporated in the primary report.
+specimen_group_comparisons.csv,02_quality_control\source_files\specimen_group_comparisons.csv,Study-level QC or provenance source
+specimen_group_comparison_qc.json,02_quality_control\source_files\specimen_group_comparison_qc.json,Study-level QC or provenance source
+study_manifest.csv,02_quality_control\source_files\study_manifest.csv,Study-level QC or provenance source
+study_run_state.json,02_quality_control\source_files\study_run_state.json,Study-level QC or provenance source
+study_track_records.csv,,Large track-level audit remains in the study root to avoid a 104 MB duplicate; derived QC tables are included here.

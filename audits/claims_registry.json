@@ -24,12 +24,13 @@
         "tests/test_saturn_v571_body_width.py",
         "V5_7_1_VALIDATION_REPORT.md",
         "audits/V5_7_1_DESIGN_DECISIONS.md",
-        "audits/evidence/v571_rc5_candidate/stages/visual_evidence_manifest.json",
-        "audits/evidence/v571_rc5_candidate/tracking/tracking_replay_manifest.json",
-        "audits/evidence/v571_rc5_candidate/end_to_end/end_to_end_visual_evidence_manifest.json",
-        "audits/evidence/v571_rc5_candidate/provenance/acceptance_provenance_manifest.json",
-        "audits/evidence/v571_rc5_candidate/report/01_biological_results/data/report_consistency_validation.json",
-        "audits/validation/v571_35396b0_validation.md"
+        "audits/evidence/v571_rc6_candidate/stages/visual_evidence_manifest.json",
+        "audits/evidence/v571_rc6_candidate/tracking/tracking_replay_manifest.json",
+        "audits/evidence/v571_rc6_candidate/end_to_end/end_to_end_visual_evidence_manifest.json",
+        "audits/evidence/v571_rc6_candidate/provenance/acceptance_provenance_manifest.json",
+        "audits/evidence/v571_rc6_candidate/report/01_biological_results/data/report_consistency_validation.json",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json",
+        "audits/validation/v571_6f9e73b_validation.md"
       ],
       "acceptance_criteria": [
         "Calibration is resolved before physical thresholds and measurements",
@@ -150,7 +151,10 @@
       "implementation_evidence": [
         "sperm_segmentation_saturnv5.7.1.py",
         "tests/test_saturn_v571_dual_head.py",
-        "V5_7_1_VALIDATION_REPORT.md"
+        "scripts/generate_specimen_sensitivity_artifact.py",
+        "tests/test_specimen_sensitivity_artifact.py",
+        "audits/evidence/v571_rc6_candidate/report/02_quality_control/data/specimen_sensitivity_artifact.json",
+        "audits/validation/v571_6f9e73b_validation.md"
       ],
       "acceptance_criteria": [
         "Primary technical-valid population is preserved",

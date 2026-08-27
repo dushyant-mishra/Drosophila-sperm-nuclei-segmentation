@@ -1,0 +1,9 @@
+{
+  "requested_unet_device": "auto",
+  "deterministic_unet_inference": true,
+  "resolved_unet_device": "cpu",
+  "torch_version": "2.13.0+cpu",
+  "cuda_available": false,
+  "cuda_version": "",
+  "cudnn_version": null
+}

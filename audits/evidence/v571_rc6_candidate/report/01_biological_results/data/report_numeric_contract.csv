@@ -1,0 +1,8 @@
+metric,display_name,reference_group,comparison_group,reference_median,comparison_median,reference_display,comparison_display,pdf_token
+median_2d_length_um,Specimen median 2D length (um),WT,KJ,8.952,10.52,8.952,10.52,SOURCE_VALUE median_2d_length_um REF=8.952 COMP=10.52
+median_body_width_um,Specimen median apparent body width (um),WT,KJ,1.692,1.558,1.692,1.558,SOURCE_VALUE median_body_width_um REF=1.692 COMP=1.558
+median_length_body_width_ratio,Specimen median length / apparent body width,WT,KJ,5.931504677342636,7.398548942449581,5.9315,7.39855,SOURCE_VALUE median_length_body_width_ratio REF=5.9315 COMP=7.39855
+median_projection_z_extent_um,Specimen median projection + Z extent (um),WT,KJ,9.291831344991367,10.916883321384908,9.29183,10.9169,SOURCE_VALUE median_projection_z_extent_um REF=9.29183 COMP=10.9169
+median_3d_tortuosity,Specimen median 3D tortuosity,WT,KJ,1.1799289075165784,1.2195027569457249,1.17993,1.2195,SOURCE_VALUE median_3d_tortuosity REF=1.17993 COMP=1.2195
+median_observed_slab_effective_thickness_um,Specimen median observed-slab effective thickness (um),WT,KJ,1.4375745315470598,1.4105613540018584,1.43757,1.41056,SOURCE_VALUE median_observed_slab_effective_thickness_um REF=1.43757 COMP=1.41056
+median_observed_slice_mask_volume_um3,Specimen median observed-slice mask slab sum (um3),WT,KJ,14.723364899798138,17.15247224016886,14.7234,17.1525,SOURCE_VALUE median_observed_slice_mask_volume_um3 REF=14.7234 COMP=17.1525

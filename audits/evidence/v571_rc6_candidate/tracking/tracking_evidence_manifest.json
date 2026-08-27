@@ -1,0 +1,576 @@
+{
+  "generated_at_utc": "2026-08-27T20:41:24.697012+00:00",
+  "git_commit_at_generation": "6f9e73b170db121460ab82f28542d1ed1e8f96bb",
+  "pipeline_working_copy_sha256": "21f94b24ecdfd3f19de4f108255e2ef559299a1f60a67a9a4eecce322742f8cf",
+  "pipeline_git_blob_sha256": "1f56404b2bd683065bb229e3aa5b3579fbf3470d58563967c9db0efc12f572a1",
+  "profile_working_copy_sha256": "87888e18b3bcf341828319b9c58791c8dc81c766241e0d78fb24453a71abbd19",
+  "profile_git_blob_sha256": "1fcc10c2199295d57210283255ead78cbe9ab51071121552a3668e5d3887d902",
+  "generator_working_copy_sha256": "15a9a9479a9217f8ed54c1a38971e9b0e567651a764c802a76e249478b1dd850",
+  "generator_git_blob_sha256": "d770df885b27fabd31b93e2c72d8ffd1693f0f7c3b55a41090e434d709602d50",
+  "study_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "analysis_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001",
+      "artifact": "C:\\tmp\\saturn-v571-acceptance-rc6\\audits\\evidence\\v571_rc6_candidate\\tracking\\KJ-01_stratified_tracking.png",
+      "artifact_repository_path": "audits/evidence/v571_rc6_candidate/tracking/KJ-01_stratified_tracking.png",
+      "artifact_sha256": "c85bc68ea5579c75788f379f3827e6890ab966947bfc1a98b80e2bf67cc89335",
+      "records": [
+        {
+          "specimen": "KJ-01",
+          "category": "faint",
+          "track_id": 1169,
+          "displayed_consecutive_z_indices": [
+            18,
+            19,
+            20,
+            21
+          ],
+          "observed_z_indices": [
+            20
+          ],
+          "projection_z_extent_um": 0.757,
+          "body_width_um": NaN,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 1.624995671780031,
+          "mean_unet_probability": 0.6043,
+          "crop_bounds_y0_y1_x0_x1": [
+            180,
+            271,
+            767,
+            858
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic faint metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "bright",
+          "track_id": 168,
+          "displayed_consecutive_z_indices": [
+            2,
+            3,
+            4,
+            5
+          ],
+          "observed_z_indices": [
+            4
+          ],
+          "projection_z_extent_um": 5.233,
+          "body_width_um": 1.5138,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 2.217571282041565,
+          "mean_unet_probability": 0.9857,
+          "crop_bounds_y0_y1_x0_x1": [
+            437,
+            529,
+            432,
+            524
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic bright metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "short",
+          "track_id": 2080,
+          "displayed_consecutive_z_indices": [
+            33,
+            34,
+            35,
+            36
+          ],
+          "observed_z_indices": [
+            34,
+            35
+          ],
+          "projection_z_extent_um": 0.34618410700236,
+          "body_width_um": NaN,
+          "tortuosity": 1.0,
+          "nearest_neighbor_um": 1.2116443745082588,
+          "mean_unet_probability": 0.8216,
+          "crop_bounds_y0_y1_x0_x1": [
+            761,
+            852,
+            445,
+            537
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic short metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "long",
+          "track_id": 5206,
+          "displayed_consecutive_z_indices": [
+            77,
+            78,
+            79,
+            80
+          ],
+          "observed_z_indices": [
+            78,
+            79
+          ],
+          "projection_z_extent_um": 40.12349346001593,
+          "body_width_um": 1.6377,
+          "tortuosity": 1.0,
+          "nearest_neighbor_um": 3.2424052165979265,
+          "mean_unet_probability": 0.9595499999999999,
+          "crop_bounds_y0_y1_x0_x1": [
+            473,
+            565,
+            495,
+            587
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic long metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "wide",
+          "track_id": 2176,
+          "displayed_consecutive_z_indices": [
+            39,
+            40,
+            41,
+            42
+          ],
+          "observed_z_indices": [
+            36,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44
+          ],
+          "projection_z_extent_um": 16.675584424547925,
+          "body_width_um": 5.6573,
+          "tortuosity": 1.3475764839565327,
+          "nearest_neighbor_um": 2.7338307182531394,
+          "mean_unet_probability": 0.944625,
+          "crop_bounds_y0_y1_x0_x1": [
+            478,
+            575,
+            457,
+            553
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic wide metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "curved",
+          "track_id": 2663,
+          "displayed_consecutive_z_indices": [
+            41,
+            42,
+            43,
+            44
+          ],
+          "observed_z_indices": [
+            42,
+            43,
+            44
+          ],
+          "projection_z_extent_um": 11.336163316738345,
+          "body_width_um": 1.6159,
+          "tortuosity": 4.092674685339125,
+          "nearest_neighbor_um": 2.9933983821327206,
+          "mean_unet_probability": 0.9365,
+          "crop_bounds_y0_y1_x0_x1": [
+            692,
+            785,
+            420,
+            516
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic curved metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "touching",
+          "track_id": 4627,
+          "displayed_consecutive_z_indices": [
+            68,
+            69,
+            70,
+            71
+          ],
+          "observed_z_indices": [
+            70
+          ],
+          "projection_z_extent_um": 14.85,
+          "body_width_um": 1.8921,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 0.348246231180969,
+          "mean_unet_probability": 0.9503,
+          "crop_bounds_y0_y1_x0_x1": [
+            299,
+            391,
+            697,
+            789
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic touching metric extremum"
+        },
+        {
+          "specimen": "KJ-01",
+          "category": "irregular",
+          "track_id": 413,
+          "displayed_consecutive_z_indices": [
+            8,
+            9,
+            10,
+            11
+          ],
+          "observed_z_indices": [
+            8,
+            9,
+            10,
+            11,
+            13,
+            14
+          ],
+          "projection_z_extent_um": 19.23249239422381,
+          "body_width_um": 1.578,
+          "tortuosity": 3.948822828746216,
+          "nearest_neighbor_um": 4.17147135425058,
+          "mean_unet_probability": 0.9136666666666667,
+          "crop_bounds_y0_y1_x0_x1": [
+            196,
+            297,
+            498,
+            595
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 5766,
+          "selection_rationale": "deterministic irregular metric extremum"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "analysis_output": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001",
+      "artifact": "C:\\tmp\\saturn-v571-acceptance-rc6\\audits\\evidence\\v571_rc6_candidate\\tracking\\WT-01_stratified_tracking.png",
+      "artifact_repository_path": "audits/evidence/v571_rc6_candidate/tracking/WT-01_stratified_tracking.png",
+      "artifact_sha256": "28094c3e036576ae6cc35de5df724fc73da44163c04432b808864ebe7bba9acc",
+      "records": [
+        {
+          "specimen": "WT-01",
+          "category": "faint",
+          "track_id": 1586,
+          "displayed_consecutive_z_indices": [
+            25,
+            26,
+            27,
+            28
+          ],
+          "observed_z_indices": [
+            27
+          ],
+          "projection_z_extent_um": 0.378,
+          "body_width_um": NaN,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 2.540135627354416,
+          "mean_unet_probability": 0.6331,
+          "crop_bounds_y0_y1_x0_x1": [
+            554,
+            646,
+            459,
+            551
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic faint metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "bright",
+          "track_id": 2482,
+          "displayed_consecutive_z_indices": [
+            45,
+            46,
+            47,
+            48
+          ],
+          "observed_z_indices": [
+            46,
+            47,
+            48
+          ],
+          "projection_z_extent_um": 1.0258765733576758,
+          "body_width_um": NaN,
+          "tortuosity": 1.0,
+          "nearest_neighbor_um": 1.196662688784421,
+          "mean_unet_probability": 0.9823,
+          "crop_bounds_y0_y1_x0_x1": [
+            538,
+            629,
+            159,
+            250
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic bright metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "short",
+          "track_id": 3527,
+          "displayed_consecutive_z_indices": [
+            63,
+            64,
+            65,
+            66
+          ],
+          "observed_z_indices": [
+            66
+          ],
+          "projection_z_extent_um": 0.378,
+          "body_width_um": NaN,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 1.4695095776547256,
+          "mean_unet_probability": 0.7755,
+          "crop_bounds_y0_y1_x0_x1": [
+            644,
+            736,
+            335,
+            427
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic short metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "long",
+          "track_id": 2161,
+          "displayed_consecutive_z_indices": [
+            38,
+            39,
+            40,
+            41
+          ],
+          "observed_z_indices": [
+            40
+          ],
+          "projection_z_extent_um": 33.214,
+          "body_width_um": 1.8921,
+          "tortuosity": NaN,
+          "nearest_neighbor_um": 2.407117987720917,
+          "mean_unet_probability": 0.9569,
+          "crop_bounds_y0_y1_x0_x1": [
+            619,
+            711,
+            261,
+            353
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic long metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "wide",
+          "track_id": 2627,
+          "displayed_consecutive_z_indices": [
+            49,
+            50,
+            51,
+            52
+          ],
+          "observed_z_indices": [
+            50,
+            51,
+            52
+          ],
+          "projection_z_extent_um": 18.258132400214546,
+          "body_width_um": 5.4461,
+          "tortuosity": 1.0535801602861046,
+          "nearest_neighbor_um": 2.2408314388575867,
+          "mean_unet_probability": 0.9554,
+          "crop_bounds_y0_y1_x0_x1": [
+            474,
+            568,
+            351,
+            443
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic wide metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "curved",
+          "track_id": 1546,
+          "displayed_consecutive_z_indices": [
+            26,
+            27,
+            28,
+            29
+          ],
+          "observed_z_indices": [
+            27,
+            28,
+            29
+          ],
+          "projection_z_extent_um": 14.201887154310308,
+          "body_width_um": 1.8957,
+          "tortuosity": 4.662834506800353,
+          "nearest_neighbor_um": 3.5890297809276706,
+          "mean_unet_probability": 0.9433666666666666,
+          "crop_bounds_y0_y1_x0_x1": [
+            416,
+            513,
+            281,
+            373
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic curved metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "touching",
+          "track_id": 3063,
+          "displayed_consecutive_z_indices": [
+            58,
+            59,
+            60,
+            61
+          ],
+          "observed_z_indices": [
+            58,
+            60
+          ],
+          "projection_z_extent_um": 9.539159802821423,
+          "body_width_um": 1.6976,
+          "tortuosity": 1.0,
+          "nearest_neighbor_um": 0.3231484824398074,
+          "mean_unet_probability": 0.86295,
+          "crop_bounds_y0_y1_x0_x1": [
+            599,
+            696,
+            604,
+            704
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic touching metric extremum"
+        },
+        {
+          "specimen": "WT-01",
+          "category": "irregular",
+          "track_id": 655,
+          "displayed_consecutive_z_indices": [
+            12,
+            13,
+            14,
+            15
+          ],
+          "observed_z_indices": [
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "projection_z_extent_um": 16.715410631931906,
+          "body_width_um": 4.4695,
+          "tortuosity": 1.950217845263431,
+          "nearest_neighbor_um": 3.430614697528722,
+          "mean_unet_probability": 0.9201454545454546,
+          "crop_bounds_y0_y1_x0_x1": [
+            540,
+            638,
+            566,
+            664
+          ],
+          "source_shape": [
+            1024,
+            1024
+          ],
+          "crop_touches_source_edge": false,
+          "selection_pool_size": 3541,
+          "selection_rationale": "deterministic irregular metric extremum"
+        }
+      ]
+    }
+  ]
+}
