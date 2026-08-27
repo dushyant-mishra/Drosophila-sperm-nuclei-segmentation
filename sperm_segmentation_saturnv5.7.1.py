@@ -11019,6 +11019,9 @@ def _study_parse_source_name(filename):
             "project": project,
             "series": series,
             "z": int(match.group("z")),
+            "channel": 0,
+            "channel_resolution_source": "filename:_ch00",
+            "channel_selection_rule": "accepted source filename channel is ch00",
             "file_pattern": f"{project_token}_Series{series:03d}_z*_ch00.tif",
             "label": f"{project_token}_Series{series:03d}",
         }
@@ -11040,6 +11043,17 @@ def _study_parse_source_name(filename):
             "project": "",
             "series": None,
             "z": int(match.group("z")),
+            "channel": int(channel) if channel is not None else 0,
+            "channel_resolution_source": (
+                "filename:explicit_channel"
+                if channel is not None
+                else "default:single-channel source selection"
+            ),
+            "channel_selection_rule": (
+                "accepted explicit filename channel must be 0"
+                if channel is not None
+                else "source without channel tag resolves to channel 0"
+            ),
             "file_pattern": (
                 f"{prefix}{z_sep}{z_token}[0-9]*{channel_part}.{extension}"
             ),
@@ -11057,6 +11071,9 @@ def _study_parse_source_name(filename):
             "project": "",
             "series": None,
             "z": int(match.group("z")),
+            "channel": 0,
+            "channel_resolution_source": "default:single-channel source selection",
+            "channel_selection_rule": "source without channel tag resolves to channel 0",
             "file_pattern": f"{prefix}{separator}[0-9]*.{extension}",
             "label": prefix.rstrip("_ .-") or "Indexed_stack",
         }
@@ -11812,6 +11829,9 @@ def save_analysis_settings_bundle(output_dir, cfg, strict=True):
             files.append(mask_record)
 
     source_records = []
+    channel_selection_rule = (
+        "resolve from accepted source filename channel; otherwise default to channel 0"
+    )
     for position, source_path in enumerate(cfg.get("_SOURCE_IMAGE_FILES", []) or []):
         source = pl.Path(source_path).expanduser().resolve()
         if not source.is_file():
@@ -11829,7 +11849,13 @@ def save_analysis_settings_bundle(output_dir, cfg, strict=True):
                 "size_bytes": int(source.stat().st_size),
                 "sha256": _sha256_file(source),
                 "z_index": parsed.get("z"),
-                "channel": parsed.get("channel"),
+                "channel": int(parsed.get("channel", 0)),
+                "channel_resolution_source": parsed.get(
+                    "channel_resolution_source", "default:single-channel source selection"
+                ),
+                "channel_selection_rule": parsed.get(
+                    "channel_selection_rule", "source without channel tag resolves to channel 0"
+                ),
                 "stack_key": parsed.get("stack_key"),
                 "shape": list(ensure_2d_image(
                     robust_imread(str(source)), source.name
@@ -11837,7 +11863,14 @@ def save_analysis_settings_bundle(output_dir, cfg, strict=True):
             }
         )
     source_manifest_path = settings_dir / "source_image_manifest.json"
-    _study_atomic_json(source_manifest_path, {"ordered_source_images": source_records})
+    _study_atomic_json(
+        source_manifest_path,
+        {
+            "channel_selection_rule": channel_selection_rule,
+            "channel_selection_source": "v5.7.1 accepted source filename parser",
+            "ordered_source_images": source_records,
+        },
+    )
     files.append(
         {
             "role": "source_image_manifest",

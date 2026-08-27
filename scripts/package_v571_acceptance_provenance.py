@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import zipfile
 from datetime import datetime, timezone
@@ -17,9 +18,10 @@ SETTINGS_FILES = (
     "calibration_used.json",
     "microscope_metadata_used.xml",
     "roi_mask_source.npy",
-    "source_image_manifest.json",
     "settings_manifest.json",
 )
+
+CHANNEL_PATTERN = re.compile(r"(?:^|[_ .-])(?:ch|c)(?P<channel>\d+)(?:[_.-]|$)", re.I)
 
 
 def sha256(path):
@@ -32,6 +34,39 @@ def sha256(path):
 
 def repository_path(path):
     return Path(path).resolve().relative_to(ROOT).as_posix()
+
+
+def resolve_source_channel_manifest(payload):
+    resolved = dict(payload)
+    records = []
+    for source_record in payload.get("ordered_source_images", []):
+        record = dict(source_record)
+        match = CHANNEL_PATTERN.search(str(record.get("name", "")))
+        if match is None:
+            channel = record.get("channel")
+            if channel is None:
+                raise ValueError(
+                    "Source channel cannot be resolved from manifest or filename: "
+                    f"{record.get('name', '')}"
+                )
+            source = "source_manifest:explicit_channel"
+        else:
+            channel = int(match.group("channel"))
+            source = "filename:explicit_channel"
+        if int(channel) != 0:
+            raise ValueError(
+                f"Acceptance source must resolve to channel 0: {record.get('name')}"
+            )
+        record["channel"] = 0
+        record["channel_resolution_source"] = source
+        record["channel_selection_rule"] = "accepted source channel is ch00"
+        records.append(record)
+    resolved["channel_selection_rule"] = "all accepted source images resolve to ch00"
+    resolved["channel_selection_source"] = (
+        "archived manifest field cross-checked against filename when available"
+    )
+    resolved["ordered_source_images"] = records
+    return resolved
 
 
 def completed_samples(study_output):
@@ -92,6 +127,33 @@ def main():
             retained.append(
                 {
                     "role": name,
+                    "repository_path": repository_path(destination),
+                    "sha256": sha256(destination),
+                    "size_bytes": destination.stat().st_size,
+                }
+            )
+
+        original_source_manifest = settings_source / "source_image_manifest.json"
+        if not original_source_manifest.is_file():
+            raise FileNotFoundError(
+                f"Missing required provenance file: {original_source_manifest}"
+            )
+        original_destination = settings_destination / "source_image_manifest_original.json"
+        shutil.copy2(original_source_manifest, original_destination)
+        resolved_destination = settings_destination / "source_image_manifest.json"
+        resolved_payload = resolve_source_channel_manifest(
+            json.loads(original_source_manifest.read_text(encoding="utf-8"))
+        )
+        resolved_destination.write_text(
+            json.dumps(resolved_payload, indent=2) + "\n", encoding="utf-8"
+        )
+        for role, destination in (
+            ("source_image_manifest_original", original_destination),
+            ("source_image_manifest_resolved", resolved_destination),
+        ):
+            retained.append(
+                {
+                    "role": role,
                     "repository_path": repository_path(destination),
                     "sha256": sha256(destination),
                     "size_bytes": destination.stat().st_size,

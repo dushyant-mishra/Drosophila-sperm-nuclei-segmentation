@@ -23,17 +23,32 @@ def git_blob_sha256(path, commit):
     return hashlib.sha256(content).hexdigest()
 
 
-def bind_manifest(path, commit, generator, profile=None):
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["git_commit_at_generation"] = commit
-    payload["generator_git_blob_sha256"] = git_blob_sha256(generator, commit)
-    if profile is not None:
-        payload["pipeline_git_blob_sha256"] = git_blob_sha256(PIPELINE, commit)
-        payload["profile_git_blob_sha256"] = git_blob_sha256(profile, commit)
-        for record in payload.get("records", []):
-            if isinstance(record, dict) and "profile_git_blob_sha256" in record:
-                record["profile_git_blob_sha256"] = payload["profile_git_blob_sha256"]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def require_ancestor(ancestor, descendant):
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=ROOT,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"Evidence generation commit {ancestor} is not an ancestor of "
+            f"reviewed commit {descendant}"
+        )
+
+
+def validate_blob_continuity(path, recorded_hash, generation_commit, reviewed_commit):
+    generated_hash = git_blob_sha256(path, generation_commit)
+    reviewed_hash = git_blob_sha256(path, reviewed_commit)
+    if recorded_hash != generated_hash:
+        raise ValueError(
+            f"Recorded Git-blob hash mismatch for {path}: "
+            f"{recorded_hash} != {generated_hash}"
+        )
+    if reviewed_hash != generated_hash:
+        raise ValueError(
+            f"Git-blob changed after evidence generation for {path}: "
+            f"{generated_hash} != {reviewed_hash}"
+        )
 
 
 def validate_artifact(repository_path, expected_hash):
@@ -46,19 +61,39 @@ def validate_artifact(repository_path, expected_hash):
 
 
 def validate(stage_manifest, tracking_manifest, end_to_end_manifest, profile):
-    commit = subprocess.check_output(
+    reviewed_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
-    expected_pipeline = git_blob_sha256(PIPELINE, commit)
-    expected_profile = git_blob_sha256(profile, commit)
-    for path in (stage_manifest, tracking_manifest):
+    generators = {
+        stage_manifest: ROOT / "scripts" / "generate_v571_stage_evidence.py",
+        tracking_manifest: ROOT / "scripts" / "evaluate_v571_tracking_replay.py",
+    }
+    generation_commits = set()
+    for path, generator in generators.items():
         payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("git_commit_at_generation") != commit:
-            raise ValueError(f"Commit mismatch in {path}")
-        if payload.get("pipeline_git_blob_sha256") != expected_pipeline:
-            raise ValueError(f"Pipeline Git-blob hash mismatch in {path}")
-        if payload.get("profile_git_blob_sha256") != expected_profile:
-            raise ValueError(f"Profile Git-blob hash mismatch in {path}")
+        generation_commit = payload.get("git_commit_at_generation")
+        if not generation_commit:
+            raise ValueError(f"Missing generation commit in {path}")
+        require_ancestor(generation_commit, reviewed_commit)
+        generation_commits.add(generation_commit)
+        validate_blob_continuity(
+            PIPELINE,
+            payload.get("pipeline_git_blob_sha256"),
+            generation_commit,
+            reviewed_commit,
+        )
+        validate_blob_continuity(
+            profile,
+            payload.get("profile_git_blob_sha256"),
+            generation_commit,
+            reviewed_commit,
+        )
+        validate_blob_continuity(
+            generator,
+            payload.get("generator_git_blob_sha256"),
+            generation_commit,
+            reviewed_commit,
+        )
         for record in payload.get("records", []):
             if "artifact_repository_path" in record:
                 validate_artifact(
@@ -69,8 +104,17 @@ def validate(stage_manifest, tracking_manifest, end_to_end_manifest, profile):
                 if sha256(calibration) != record["calibration_metadata_sha256"]:
                     raise ValueError(f"Calibration XML hash mismatch: {calibration}")
     end_payload = json.loads(end_to_end_manifest.read_text(encoding="utf-8"))
-    if end_payload.get("git_commit_at_generation") != commit:
-        raise ValueError(f"Commit mismatch in {end_to_end_manifest}")
+    end_generation_commit = end_payload.get("git_commit_at_generation")
+    if not end_generation_commit:
+        raise ValueError(f"Missing generation commit in {end_to_end_manifest}")
+    require_ancestor(end_generation_commit, reviewed_commit)
+    generation_commits.add(end_generation_commit)
+    validate_blob_continuity(
+        ROOT / "scripts" / "generate_v571_end_to_end_evidence.py",
+        end_payload.get("generator_git_blob_sha256"),
+        end_generation_commit,
+        reviewed_commit,
+    )
     validate_artifact(
         end_payload["pdf_repository_path"], end_payload["pdf_sha256"]
     )
@@ -79,7 +123,7 @@ def validate(stage_manifest, tracking_manifest, end_to_end_manifest, profile):
             record["source_artifact_repository_path"],
             record["source_artifact_sha256"],
         )
-    return commit
+    return reviewed_commit, sorted(generation_commits)
 
 
 def main():
@@ -94,30 +138,22 @@ def main():
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
     if args.bind_current_commit:
-        bind_manifest(
-            args.stage_manifest.resolve(),
-            commit,
-            ROOT / "scripts" / "generate_v571_stage_evidence.py",
-            args.profile.resolve(),
+        print(
+            "NOTE: --bind-current-commit is retained for CLI compatibility but "
+            "does not rewrite generation provenance. Content continuity is "
+            "validated instead."
         )
-        bind_manifest(
-            args.tracking_manifest.resolve(),
-            commit,
-            ROOT / "scripts" / "generate_v571_stratified_tracking_evidence.py",
-            args.profile.resolve(),
-        )
-        bind_manifest(
-            args.end_to_end_manifest.resolve(),
-            commit,
-            ROOT / "scripts" / "generate_v571_end_to_end_evidence.py",
-        )
-    commit = validate(
+    reviewed_commit, generation_commits = validate(
         args.stage_manifest.resolve(),
         args.tracking_manifest.resolve(),
         args.end_to_end_manifest.resolve(),
         args.profile.resolve(),
     )
-    print(f"PASS: evidence provenance matches commit {commit}")
+    print(
+        "PASS: evidence artifacts remain content-identical from generation "
+        f"commit(s) {', '.join(generation_commits)} through reviewed commit "
+        f"{reviewed_commit}"
+    )
 
 
 if __name__ == "__main__":

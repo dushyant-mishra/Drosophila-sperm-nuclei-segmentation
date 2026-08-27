@@ -281,6 +281,10 @@ def test_settings_bundle_hashes_sources_roi_and_metadata(tmp_path):
         )
     )
     source_record = source_manifest["ordered_source_images"][0]
+    assert source_record["channel"] == 0
+    assert source_record["channel_resolution_source"] == "filename:_ch00"
+    assert source_record["channel_selection_rule"] == "accepted source filename channel is ch00"
+    assert source_manifest["channel_selection_source"] == "v5.7.1 accepted source filename parser"
     assert len(source_record["sha256"]) == 64
     assert source_record["shape"] == [2, 2]
     runtime_environment = json.loads(

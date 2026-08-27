@@ -16,6 +16,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE_PATH = ROOT / "sperm_segmentation_saturnv5.7.1.py"
+GENERATOR_PATH = Path(__file__).resolve()
 DEFAULT_PILOT_ROOT = ROOT / "scratch" / "v571_dual_head_full_pilot"
 DEFAULT_PROFILE = ROOT / "production_profiles" / "saturn_v5_7_1_model_c_epoch003.json"
 
@@ -178,6 +179,10 @@ def main():
                 "profile": str(args.profile.resolve()),
                 "profile_working_copy_sha256": sha256(args.profile),
                 "profile_git_blob_sha256": git_blob_sha256(args.profile, commit),
+                "generator_working_copy_sha256": sha256(GENERATOR_PATH),
+                "generator_git_blob_sha256": git_blob_sha256(
+                    GENERATOR_PATH, commit
+                ),
                 "note": (
                     "Deterministic downstream replay from frozen 2D detections; "
                     "U-Net inference was not rerun."
