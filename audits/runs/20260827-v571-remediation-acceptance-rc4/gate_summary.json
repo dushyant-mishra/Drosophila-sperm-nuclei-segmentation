@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260827-v571-remediation-acceptance-rc4",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "366fc22eb53df812dd3f162eb26cdbab46b66b61",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "pass",
+    "calibration_provenance": "fail",
+    "measurement_geometry": "fail",
+    "repository_release": "fail",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "pass",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "measurement_geometry",
+    "calibration_provenance",
+    "software_reproducibility",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "measurement_geometry",
+      "title": "Primary specimen outputs retain misleading unqualified 3D aliases"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "RC4 manifests do not match the reviewed pipeline and profile hashes"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Authoritative Leica mapping is retained without XML hashes"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "RC4 evidence hashes do not match the reviewed production profile or pipeline"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Tracking evidence cannot reveal merge, split, or boundary errors"
+    },
+    {
+      "role": "repository_release",
+      "title": "Reviewed RC4 commits are not synchronized to origin"
+    },
+    {
+      "role": "repository_release",
+      "title": "Commit-bound source and profile hashes are not reproducible"
+    },
+    {
+      "role": "repository_release",
+      "title": "Current audit gate and release decision are incomplete"
+    }
+  ],
+  "validation_errors": []
+}

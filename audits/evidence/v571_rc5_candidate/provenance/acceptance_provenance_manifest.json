@@ -1,0 +1,159 @@
+{
+  "generated_at_utc": "2026-08-27T15:26:20.759620+00:00",
+  "checkpoint_repository_path": "model_checkpoints/v571_model_c_dual_head_epoch003.pt",
+  "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+  "specimens": [
+    {
+      "sample_id": "kj_sv_40xx0.75-1",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.34618410700236,
+      "calibration_status": "leica_xml_manifest_locked",
+      "settings": [
+        {
+          "role": "runtime_parameters.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/runtime_parameters.json",
+          "sha256": "eb79b74316f7997279aa2c46bd41d556ad1793e40eece411faff9a68dd994896",
+          "size_bytes": 8178
+        },
+        {
+          "role": "runtime_environment.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/runtime_environment.json",
+          "sha256": "e7a4df407f3451b694145c85320f9d603376a0a9ffa7623b730fea1b6636fd6e",
+          "size_bytes": 225
+        },
+        {
+          "role": "analysis_profile_used.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/analysis_profile_used.json",
+          "sha256": "96bda6133f1d1b1f6932fad41c2099cf36ff283e22106257e668ee73b7779d46",
+          "size_bytes": 12231
+        },
+        {
+          "role": "calibration_used.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/calibration_used.json",
+          "sha256": "77bda1d61da2fbff86a4f7f6d0bdb0f5313352925307c203e33341be1404c36f",
+          "size_bytes": 725
+        },
+        {
+          "role": "microscope_metadata_used.xml",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/microscope_metadata_used.xml",
+          "sha256": "8d55ff5eb0f4dee801c7ded59f1e2b07cf0feab82edfd489ecb3b34744003e49",
+          "size_bytes": 40384
+        },
+        {
+          "role": "roi_mask_source.npy",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+          "sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+          "size_bytes": 1048704
+        },
+        {
+          "role": "source_image_manifest.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/source_image_manifest.json",
+          "sha256": "021d806b9ba68566d74375d198f42b83a7a4a182534717798e08d70f17b45c72",
+          "size_bytes": 45954
+        },
+        {
+          "role": "settings_manifest.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/settings_manifest.json",
+          "sha256": "f046295fee21222bf09a663ac74232c21bcd69997df549b5343081449f00c2cb",
+          "size_bytes": 3889
+        }
+      ]
+    },
+    {
+      "sample_id": "w1118_sv_feb_40xx0.75-1",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.34618410700236035,
+      "calibration_status": "leica_xml_manifest_locked",
+      "settings": [
+        {
+          "role": "runtime_parameters.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/runtime_parameters.json",
+          "sha256": "0c772551ce62afd4eb3d7fb5ccb50cd88cd3bca070e2eb0aa256029c613102d2",
+          "size_bytes": 8218
+        },
+        {
+          "role": "runtime_environment.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/runtime_environment.json",
+          "sha256": "e7a4df407f3451b694145c85320f9d603376a0a9ffa7623b730fea1b6636fd6e",
+          "size_bytes": 225
+        },
+        {
+          "role": "analysis_profile_used.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/analysis_profile_used.json",
+          "sha256": "96bda6133f1d1b1f6932fad41c2099cf36ff283e22106257e668ee73b7779d46",
+          "size_bytes": 12231
+        },
+        {
+          "role": "calibration_used.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/calibration_used.json",
+          "sha256": "59ec70a092bdb442f851932998ca857372c929e11989066be766913164dfacaa",
+          "size_bytes": 748
+        },
+        {
+          "role": "microscope_metadata_used.xml",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/microscope_metadata_used.xml",
+          "sha256": "848f6ab4d43b6138cba22d821925e04315763755fba0517adb7e2f191af0b691",
+          "size_bytes": 40045
+        },
+        {
+          "role": "roi_mask_source.npy",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+          "sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+          "size_bytes": 1048704
+        },
+        {
+          "role": "source_image_manifest.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/source_image_manifest.json",
+          "sha256": "5e1cb76e2c5cf0bd1fe89b390e6beb8442c1cce8ce34812b353182966e0aef66",
+          "size_bytes": 35662
+        },
+        {
+          "role": "settings_manifest.json",
+          "repository_path": "audits/evidence/v571_rc5_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/settings_manifest.json",
+          "sha256": "c873f531790c670abf202564708e141dbbbe594ea65ce6ed0e7231fb4b449e5a",
+          "size_bytes": 3972
+        }
+      ]
+    }
+  ],
+  "replay_archive_repository_path": "audits/evidence/v571_rc5_candidate/provenance/tracking_replay_inputs_outputs.zip",
+  "replay_archive_sha256": "11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9",
+  "replay_members": [
+    {
+      "archive_name": "kj_sv_40xx0.75-1/source_2d_detections.csv",
+      "source_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\spermatid_measurements_v5.7.1-body-width.csv",
+      "size_bytes": 10192833,
+      "sha256": "c8586941d475d3e057730cd3f2b321e5402e0f40e39af4a3831b7f9be47597b7"
+    },
+    {
+      "archive_name": "kj_sv_40xx0.75-1/tracked_detections.csv",
+      "source_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\kj_sv_40xx0.75-1_production_morphology_neutral_tracked.csv",
+      "size_bytes": 11733619,
+      "sha256": "bd5866ed72caec7246a0bb7e265bd9b423544536939d041ef8c6103f1cc5fd30"
+    },
+    {
+      "archive_name": "kj_sv_40xx0.75-1/track_summary.csv",
+      "source_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\kj_sv_40xx0.75-1_production_morphology_neutral_tracks.csv",
+      "size_bytes": 5223230,
+      "sha256": "de3d448d0bdac466d24c32b661e249063d77516cb449ce3612f7d3daa92ae9e2"
+    },
+    {
+      "archive_name": "w1118_sv_feb_40xx0.75-1/source_2d_detections.csv",
+      "source_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001\\spermatid_measurements_v5.7.1-body-width.csv",
+      "size_bytes": 6274195,
+      "sha256": "845ab542fda59a70876e3bbf3a0677c14811e125d268e54321544b19ab086ed5"
+    },
+    {
+      "archive_name": "w1118_sv_feb_40xx0.75-1/tracked_detections.csv",
+      "source_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\w1118_sv_feb_40xx0.75-1_production_morphology_neutral_tracked.csv",
+      "size_bytes": 7218397,
+      "sha256": "35867ec335f2d925cc76cfcc0b910a6361b85431d8a19396c090a1e51e697f8f"
+    },
+    {
+      "archive_name": "w1118_sv_feb_40xx0.75-1/track_summary.csv",
+      "source_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\w1118_sv_feb_40xx0.75-1_production_morphology_neutral_tracks.csv",
+      "size_bytes": 3213397,
+      "sha256": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
+    }
+  ]
+}

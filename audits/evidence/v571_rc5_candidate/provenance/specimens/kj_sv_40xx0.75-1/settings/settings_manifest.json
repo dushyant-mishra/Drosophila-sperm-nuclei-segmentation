@@ -1,0 +1,64 @@
+{
+  "pipeline_version": "v5.7.1-body-width",
+  "created_at": "2026-08-21T16:00:19",
+  "segmentation_engine": "unet_primary",
+  "active_profile_name": "saturn_v5_7_1_model_c_epoch003.json",
+  "files": [
+    {
+      "role": "runtime_parameters",
+      "original_path": "",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\runtime_parameters.json",
+      "size_bytes": 8178,
+      "sha256": "eb79b74316f7997279aa2c46bd41d556ad1793e40eece411faff9a68dd994896"
+    },
+    {
+      "role": "runtime_environment",
+      "original_path": "",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\runtime_environment.json",
+      "size_bytes": 225,
+      "sha256": "e7a4df407f3451b694145c85320f9d603376a0a9ffa7623b730fea1b6636fd6e"
+    },
+    {
+      "original_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\analysis_profile_used.json",
+      "size_bytes": 12231,
+      "sha256": "96bda6133f1d1b1f6932fad41c2099cf36ff283e22106257e668ee73b7779d46",
+      "role": "loaded_analysis_profile"
+    },
+    {
+      "original_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\model_checkpoints\\v571_model_c_dual_head_epoch003.pt",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\v571_model_c_dual_head_epoch003.pt",
+      "size_bytes": 4634914,
+      "sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+      "role": "unet_checkpoint"
+    },
+    {
+      "original_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\calibration_used.json",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\calibration_used.json",
+      "size_bytes": 725,
+      "sha256": "77bda1d61da2fbff86a4f7f6d0bdb0f5313352925307c203e33341be1404c36f",
+      "role": "resolved_calibration"
+    },
+    {
+      "original_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\MetaData\\Project001_Series002.xml",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\microscope_metadata_used.xml",
+      "size_bytes": 40384,
+      "sha256": "8d55ff5eb0f4dee801c7ded59f1e2b07cf0feab82edfd489ecb3b34744003e49",
+      "role": "microscope_metadata_xml"
+    },
+    {
+      "original_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\analysis_roi_v5_7.npy",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\roi_mask_source.npy",
+      "size_bytes": 1048704,
+      "sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "role": "roi_mask_source"
+    },
+    {
+      "role": "source_image_manifest",
+      "original_path": "",
+      "copied_path": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\settings\\source_image_manifest.json",
+      "size_bytes": 45954,
+      "sha256": "021d806b9ba68566d74375d198f42b83a7a4a182534717798e08d70f17b45c72"
+    }
+  ]
+}

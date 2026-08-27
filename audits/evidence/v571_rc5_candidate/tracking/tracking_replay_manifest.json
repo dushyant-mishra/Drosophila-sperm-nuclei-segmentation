@@ -1,0 +1,32 @@
+{
+  "generated_at_utc": "2026-08-27T15:26:03.863886+00:00",
+  "git_commit_at_generation": "35396b0e42f9d1afb9a2991c41bf31330a4c89aa",
+  "pipeline_working_copy_sha256": "2f17a41e162e8c2e41f3093d97bbecd676105b856a88705a48a6f09844295fb0",
+  "pipeline_git_blob_sha256": "b1183da136146a6e48dc9ffafcde11244768c5fe565bf4a2ba7c6486fec2b808",
+  "profile": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+  "profile_working_copy_sha256": "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8",
+  "profile_git_blob_sha256": "1fcc10c2199295d57210283255ead78cbe9ab51071121552a3668e5d3887d902",
+  "note": "Deterministic downstream replay from frozen 2D detections; U-Net inference was not rerun.",
+  "artifacts": [
+    {
+      "specimen": "kj_sv_40xx0.75-1",
+      "candidate": "production_morphology_neutral",
+      "source_2d_detections": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\kj_sv_40xx0.75-1\\attempt_001\\spermatid_measurements_v5.7.1-body-width.csv",
+      "source_2d_detections_sha256": "c8586941d475d3e057730cd3f2b321e5402e0f40e39af4a3831b7f9be47597b7",
+      "tracked_csv": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\kj_sv_40xx0.75-1_production_morphology_neutral_tracked.csv",
+      "tracked_csv_sha256": "bd5866ed72caec7246a0bb7e265bd9b423544536939d041ef8c6103f1cc5fd30",
+      "tracks_csv": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\kj_sv_40xx0.75-1_production_morphology_neutral_tracks.csv",
+      "tracks_csv_sha256": "de3d448d0bdac466d24c32b661e249063d77516cb449ce3612f7d3daa92ae9e2"
+    },
+    {
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "candidate": "production_morphology_neutral",
+      "source_2d_detections": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_post_audit_remediation_pilot_run3\\samples\\w1118_sv_feb_40xx0.75-1\\attempt_001\\spermatid_measurements_v5.7.1-body-width.csv",
+      "source_2d_detections_sha256": "845ab542fda59a70876e3bbf3a0677c14811e125d268e54321544b19ab086ed5",
+      "tracked_csv": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\w1118_sv_feb_40xx0.75-1_production_morphology_neutral_tracked.csv",
+      "tracked_csv_sha256": "35867ec335f2d925cc76cfcc0b910a6361b85431d8a19396c090a1e51e697f8f",
+      "tracks_csv": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scratch\\v571_rc5_commit_tracking_replay\\w1118_sv_feb_40xx0.75-1_production_morphology_neutral_tracks.csv",
+      "tracks_csv_sha256": "a75c4d03edb05e0a897e4a1260e3d5d0ed489d2aecd4b3d66fca33e8375b101c"
+    }
+  ]
+}

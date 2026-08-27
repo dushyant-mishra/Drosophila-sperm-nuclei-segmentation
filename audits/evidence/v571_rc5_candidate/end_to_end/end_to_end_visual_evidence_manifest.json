@@ -1,0 +1,67 @@
+{
+  "generated_at_utc": "2026-08-27T15:21:30.629945+00:00",
+  "git_commit_at_generation": "35396b0e42f9d1afb9a2991c41bf31330a4c89aa",
+  "generator_working_copy_sha256": "5ce45211601d89d4b89eeb859c16a020477151c6b970715e08781451489cf32e",
+  "generator_git_blob_sha256": "5ce45211601d89d4b89eeb859c16a020477151c6b970715e08781451489cf32e",
+  "pdf": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\end_to_end\\v571_end_to_end_visual_evidence.pdf",
+  "pdf_repository_path": "audits/evidence/v571_rc5_candidate/end_to_end/v571_end_to_end_visual_evidence.pdf",
+  "pdf_sha256": "aa169058ad50d2ecd56aece9cea80a33409483447306c9c6b09937dd018b5679",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\stages\\KJ-01_z005_stages.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/stages/KJ-01_z005_stages.png",
+      "source_artifact_sha256": "e5d11c3b0d2ff4584419691b7c4201b315eeca6c7687291e1015e6fb520600dd"
+    },
+    {
+      "specimen": "KJ-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\stages\\KJ-01_z035_stages.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/stages/KJ-01_z035_stages.png",
+      "source_artifact_sha256": "0c6a3a0e7607e654b3febaccdb8c5ff32c9a953a5a2998b3f17c0d2b68ed6a55"
+    },
+    {
+      "specimen": "KJ-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\stages\\KJ-01_z060_stages.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/stages/KJ-01_z060_stages.png",
+      "source_artifact_sha256": "13aa5b9d61b9c30f333c37be3a5d46a34324f704586fa3dd2c2a33b62243f9cb"
+    },
+    {
+      "specimen": "KJ-01",
+      "role": "cross_slice_tracking",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\tracking\\KJ-01_stratified_tracking.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/tracking/KJ-01_stratified_tracking.png",
+      "source_artifact_sha256": "c85bc68ea5579c75788f379f3827e6890ab966947bfc1a98b80e2bf67cc89335"
+    },
+    {
+      "specimen": "WT-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\stages\\WT-01_z005_stages.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/stages/WT-01_z005_stages.png",
+      "source_artifact_sha256": "359b07201ccbc408b927d564e229a4757afa657292f33176b8379b0a3aa9daa5"
+    },
+    {
+      "specimen": "WT-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\stages\\WT-01_z035_stages.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/stages/WT-01_z035_stages.png",
+      "source_artifact_sha256": "5d01de68c1328f8476132cc8463be08c02c3f482476cdcf4178297b3cf3f4c04"
+    },
+    {
+      "specimen": "WT-01",
+      "role": "segmentation_stages",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\stages\\WT-01_z060_stages.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/stages/WT-01_z060_stages.png",
+      "source_artifact_sha256": "a444d9ada7ba0929f9ef7e7d2e35840f4052faf3321e191fab45de17d0effc94"
+    },
+    {
+      "specimen": "WT-01",
+      "role": "cross_slice_tracking",
+      "source_artifact": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc5_candidate\\tracking\\WT-01_stratified_tracking.png",
+      "source_artifact_repository_path": "audits/evidence/v571_rc5_candidate/tracking/WT-01_stratified_tracking.png",
+      "source_artifact_sha256": "28094c3e036576ae6cc35de5df724fc73da44163c04432b808864ebe7bba9acc"
+    }
+  ]
+}

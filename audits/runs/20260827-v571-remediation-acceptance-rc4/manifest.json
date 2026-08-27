@@ -1,0 +1,32 @@
+﻿{
+    "schema_version":  "1.0",
+    "audit_run_id":  "20260827-v571-remediation-acceptance-rc4",
+    "claim_id":  "PIPELINE-V571-PRODUCTION-001",
+    "reviewed_commit":  "366fc22eb53df812dd3f162eb26cdbab46b66b61",
+    "branch":  "DETACHED",
+    "dirty_worktree":  false,
+    "working_tree_status":  [
+
+                            ],
+    "mode":  "acceptance_candidate",
+    "roles":  [
+                  "measurement_geometry",
+                  "biological_validity",
+                  "calibration_provenance",
+                  "software_reproducibility",
+                  "statistics_reporting",
+                  "visual_evidence",
+                  "repository_release"
+              ],
+    "started_at_utc":  "2026-08-27T14:41:33.3970905Z",
+    "completed_at_utc":  "2026-08-27T14:48:48.9088072Z",
+    "role_exit_codes":  {
+                            "measurement_geometry":  0,
+                            "biological_validity":  0,
+                            "calibration_provenance":  0,
+                            "software_reproducibility":  0,
+                            "statistics_reporting":  0,
+                            "visual_evidence":  0,
+                            "repository_release":  0
+                        }
+}

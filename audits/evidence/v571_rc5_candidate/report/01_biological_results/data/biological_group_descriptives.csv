@@ -1,0 +1,3 @@
+group,specimen_count,median_2d_length_um_median,median_body_width_um_median,median_length_body_width_ratio_median,median_projection_z_extent_um_median,median_3d_tortuosity_median,median_observed_slab_effective_thickness_um_median,median_observed_slice_mask_volume_um3_median
+KJ,1,10.52,1.558,7.398548942449581,10.916883321384908,1.2195027569457249,1.4105613540018584,17.15247224016886
+WT,1,8.952,1.692,5.931504677342636,9.291831344991367,1.1799289075165784,1.4375745315470598,14.723364899798138

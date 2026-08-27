@@ -1,0 +1,22 @@
+{
+  "analysis_unit": "biological specimen",
+  "nested_nucleus_records_role": "descriptive and audit only; not independent replicates",
+  "random_seed": 57057,
+  "bootstrap_resamples": 5000,
+  "permutation_resamples": 9999,
+  "groups": [
+    "KJ",
+    "WT"
+  ],
+  "specimen_counts": {
+    "KJ": 1,
+    "WT": 1
+  },
+  "comparison_status": "exploratory",
+  "warnings": [
+    "At least one group has fewer than three specimens; inferential estimates are not reported."
+  ],
+  "reference_group": "WT",
+  "comparison_group": "KJ",
+  "effect_direction": "KJ minus WT"
+}

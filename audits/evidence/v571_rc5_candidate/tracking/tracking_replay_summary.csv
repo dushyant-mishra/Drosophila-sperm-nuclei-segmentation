@@ -1,0 +1,3 @@
+specimen,candidate,detections_2d,tracks,single_slice_tracks,single_slice_fraction,median_slices_per_track,mean_slices_per_track,median_projection_z_extent_um,tracks_15_to_20_um,tracks_over_20_um,duplicate_z_tracks,median_link_distance_um,p95_link_distance_um,max_link_distance_um
+kj_sv_40xx0.75-1,production_morphology_neutral,26651,5766,2065,0.35813388831078735,3.0,4.622095039889005,10.211782601043154,704,263,0,0.474,1.671,4.271
+w1118_sv_feb_40xx0.75-1,production_morphology_neutral,16421,3541,1239,0.34990115786500986,3.0,4.637390567636261,8.900311143125293,388,97,0,0.46,1.63,4.276
