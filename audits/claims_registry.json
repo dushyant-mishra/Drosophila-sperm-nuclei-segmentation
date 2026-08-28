@@ -106,10 +106,16 @@
       ],
       "known_limitations": [
         "Affected by segmentation boundary, focus, annotation thickness, and lateral PSF",
+        "An over-thick learned foreground mask can overestimate apparent width because every chord terminates at that mask boundary",
         "Not an optical deconvolution or PSF-corrected chromatin diameter"
       ],
       "non_claims": ["Does not establish true molecular-scale nucleus width"],
-      "supersedes": ["width_um_dt_median_legacy"]
+      "supersedes": ["width_um_dt_median_legacy"],
+      "latest_audit": {
+        "run_id": "20260828-v571-body-width-acceptance-rc2",
+        "gate_passed": false,
+        "decision": "not_accepted"
+      }
     },
     {
       "claim_id": "VOL-3DROI-001",

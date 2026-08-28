@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-acceptance-rc2",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "reviewed_commit": "fc3aed7b4646fcef1e1e0aaf65fd981ed48db4ef",
+  "gate_result": "failed",
+  "decision": "not_accepted",
+  "decided_by": "audit-gate-coordinator",
+  "decision_date": "2026-08-28",
+  "review_files": [
+    "reviews/measurement_geometry.json",
+    "reviews/biological_validity.json",
+    "reviews/software_reproducibility.json",
+    "reviews/statistics_reporting.json",
+    "reviews/visual_evidence.json"
+  ],
+  "accepted_limitations": [],
+  "blocking_findings": [
+    "Legacy EDT width still drives unqualified batch and raw-output fields",
+    "Primary report retains a frozen v5.7 genotype-label direction fallback",
+    "Visual evidence excludes difficult masks and width failure cases",
+    "Mask-boundary chord width may overestimate the visible nucleus when the learned mask is too thick"
+  ],
+  "required_follow_up": [
+    "Preserve this failed audit without rewriting its verdict",
+    "Keep the current chord field labelled apparent mask width",
+    "Evaluate a raw-intensity normal-profile width that does not terminate at the learned mask boundary",
+    "Resolve unqualified legacy output fields and report-direction fallback before any superseding audit"
+  ],
+  "supersedes_decision": null
+}

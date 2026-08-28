@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-acceptance-rc2",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "reviewed_commit": "fc3aed7b4646fcef1e1e0aaf65fd981ed48db4ef",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "measurement_geometry",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "pass",
+    "measurement_geometry": "pass",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "fail",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "blocking_findings": [
+    {
+      "role": "software_reproducibility",
+      "title": "Legacy EDT width still drives unqualified batch and raw-output fields"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "Primary report can infer group direction from hard-coded genotype labels"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Visual evidence is intentionally restricted to clean, morphology-normal examples"
+    }
+  ],
+  "validation_errors": []
+}
