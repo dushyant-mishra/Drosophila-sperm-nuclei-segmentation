@@ -147,7 +147,7 @@ Author
 Dushyant Mishra  |  Findlay Lab  |  Saturn Dataset Branch
 """
 
-import os, sys, glob, re, time, warnings, heapq, argparse, math, pathlib as pl
+import os, sys, glob, re, time, warnings, heapq, argparse, math, pathlib as pl, copy
 import fnmatch
 import time as _t
 import json, webbrowser, threading, subprocess, shutil
@@ -180,6 +180,18 @@ from scipy.spatial import cKDTree
 from scipy.optimize import linear_sum_assignment
 from scipy.signal import find_peaks
 from matplotlib.backends.backend_pdf import PdfPages
+
+from utils.saturn_v571_gui_services import (
+    active_correction_events,
+    PreflightIssue,
+    PreflightReport,
+    production_audit_gate_state as _service_production_audit_gate_state,
+    reduce_study_progress,
+)
+from utils.saturn_v571_correction_materializer import (
+    create_correction_base_manifest,
+    materialize_false_detection_revision as _materialize_false_detection_revision,
+)
 
 try:
     import cv2 as _cv2
@@ -443,6 +455,52 @@ CONFIG = {
     "SHOW_PREVIEW_WINDOW": True,
     "SHOW_DEBUG_PREVIEW":  True,
 }
+
+# Immutable analysis baseline used when resolving a reviewed profile. GUI state
+# such as the selected input, output, and ROI is copied explicitly; stale manual
+# parameter edits are never inherited into a newly loaded profile.
+ANALYSIS_CONFIG_DEFAULTS = copy.deepcopy(CONFIG)
+_PROFILE_OPERATIONAL_KEYS = frozenset(
+    {
+        "INPUT_DIR",
+        "OUTPUT_DIR",
+        "ROI_MASK_PATH",
+        "EXCLUSION_MASK_PATH",
+        "RUN_MODE",
+        "SINGLE_IMAGE_SELECTION_MODE",
+        "SINGLE_TEST_IMAGE",
+        "SINGLE_Z_INDEX",
+    }
+)
+_PROFILE_RUNTIME_RESOLVED_KEYS = frozenset(
+    {
+        "UM_PER_PX_XY",
+        "UM_PER_SLICE_Z",
+        "CALIBRATION_SOURCE",
+        "CALIBRATION_METADATA_FILE",
+        "RESOLVED_PREPROCESSING_PROFILE",
+    }
+)
+
+# Accepted by PIPELINE-V571-PRODUCTION-001. Adding or changing an entry requires
+# a superseding audit; loading an arbitrary tuned JSON never grants this status.
+_REVIEWED_PRODUCTION_PROFILE_SHA256 = {
+    "saturn_v5_7_1_model_c_epoch003.json": (
+        "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8"
+    ),
+}
+_PRODUCTION_REQUIRED_CLAIM_IDS = (
+    "PIPELINE-V571-PRODUCTION-001",
+    "MEAS-BODY-WIDTH-001",
+    "WORKFLOW-GUI-PRIMARY-001",
+)
+
+
+def production_audit_gate_state():
+    """Read the durable registry and report whether required claims are accepted."""
+    return _service_production_audit_gate_state(
+        PROJECT_ROOT, _PRODUCTION_REQUIRED_CLAIM_IDS
+    )
 
 
 # =============================================================================
@@ -763,7 +821,11 @@ def load_analysis_profile(profile_path, base_cfg=None, checkpoint_override=None)
     profile_path = pl.Path(profile_path).expanduser().resolve()
     with profile_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
-    cfg = CONFIG.copy() if base_cfg is None else dict(base_cfg)
+    runtime_context = {} if base_cfg is None else dict(base_cfg)
+    cfg = copy.deepcopy(ANALYSIS_CONFIG_DEFAULTS)
+    for key in _PROFILE_OPERATIONAL_KEYS:
+        if key in runtime_context:
+            cfg[key] = runtime_context[key]
     selected = _profile_parameter_mapping(payload, set(cfg))
     applied = {key: value for key, value in selected.items() if key in cfg}
     cfg.update(applied)
@@ -784,7 +846,44 @@ def load_analysis_profile(profile_path, base_cfg=None, checkpoint_override=None)
     cfg["_ACTIVE_PROFILE_PATH"] = str(profile_path)
     cfg["_ACTIVE_PROFILE_NAME"] = profile_path.name
     cfg["_ACTIVE_PROFILE_APPLIED_KEY_COUNT"] = len(applied)
+    profile_file_sha256 = _sha256_file(profile_path)
+    expected_profile_sha256 = _REVIEWED_PRODUCTION_PROFILE_SHA256.get(
+        profile_path.name, ""
+    )
+    canonical_profile = (
+        pl.Path(PROJECT_ROOT) / "production_profiles" / profile_path.name
+    ).resolve()
+    profile_is_reviewed = (
+        profile_path == canonical_profile
+        and bool(expected_profile_sha256)
+        and profile_file_sha256 == expected_profile_sha256
+    )
+    cfg["_ACTIVE_PROFILE_FILE_SHA256"] = profile_file_sha256
+    cfg["_ACTIVE_PROFILE_REVIEW_STATE"] = (
+        "reviewed" if profile_is_reviewed else "custom"
+    )
+    cfg["_ACTIVE_PROFILE_DIRTY_REASON"] = (
+        ""
+        if profile_is_reviewed
+        else "This JSON is not an audit-accepted repository production profile."
+    )
+    cfg["_ACTIVE_PROFILE_RESOLVED_SHA256"] = _resolved_analysis_profile_sha256(cfg)
     return cfg, applied
+
+
+def _resolved_analysis_profile_sha256(cfg):
+    """Hash resolved analysis settings while excluding run-specific file paths."""
+    import hashlib
+
+    payload = {
+        str(key): _json_scalar(value)
+        for key, value in cfg.items()
+        if key not in _PROFILE_OPERATIONAL_KEYS
+        and key not in _PROFILE_RUNTIME_RESOLVED_KEYS
+        and not str(key).startswith("_")
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def validate_analysis_runtime_config(cfg):
@@ -845,10 +944,235 @@ def analysis_profile_summary(cfg):
     output_mode = str(cfg.get("UNET_OUTPUT_MODE", "single_head")).strip()
     role = str(cfg.get("UNET_CHECKPOINT_ROLE", "")).strip()
     role_text = f" ({role})" if role else ""
-    return (
-        f"Profile: {profile_name} | Engine: {engine}/{output_mode} | "
-        f"Model: {model_name}{role_text}"
+    review_state = analysis_profile_review_state(cfg)
+    state_text = {
+        "reviewed": "Reviewed",
+        "custom": "Custom - review required",
+        "manual": "No reviewed profile",
+    }[review_state]
+    profile_hash = str(
+        cfg.get("_ACTIVE_PROFILE_RESOLVED_SHA256", "")
+    ).strip()
+    checkpoint_hash = str(cfg.get("UNET_CHECKPOINT_SHA256", "")).strip()
+    calibration = dict(cfg.get("_CALIBRATION_PROVENANCE", {}) or {})
+    calibration_source = str(
+        calibration.get("status", cfg.get("CALIBRATION_SOURCE", "unresolved"))
+    ).strip() or "unresolved"
+    provenance_bits = [f"Saturn {_VERSION}"]
+    if profile_hash:
+        provenance_bits.append(f"profile SHA {profile_hash[:12]}")
+    if checkpoint_hash:
+        provenance_bits.append(f"model SHA {checkpoint_hash[:12]}")
+    provenance_bits.append(f"calibration {calibration_source}")
+    audit_ready, _audit_detail = production_audit_gate_state()
+    provenance_bits.append(
+        "scientific audit accepted" if audit_ready else "scientific audit BLOCKED"
     )
+    return (
+        f"Profile: {profile_name} [{state_text}] | Engine: {engine}/{output_mode} | "
+        f"Model: {model_name}{role_text}\n" + " | ".join(provenance_bits)
+    )
+
+
+def analysis_profile_review_state(cfg):
+    """Classify GUI profile provenance without changing runtime parameters."""
+    profile_path = str(cfg.get("_ACTIVE_PROFILE_PATH", "")).strip()
+    review_state = str(
+        cfg.get("_ACTIVE_PROFILE_REVIEW_STATE", "")
+    ).strip().lower()
+    if not profile_path:
+        return "manual"
+    if review_state == "reviewed":
+        recorded = str(cfg.get("_ACTIVE_PROFILE_RESOLVED_SHA256", "")).strip()
+        recorded_file_hash = str(
+            cfg.get("_ACTIVE_PROFILE_FILE_SHA256", "")
+        ).strip().lower()
+        try:
+            current_file_hash = _sha256_file(profile_path)
+        except (OSError, IOError):
+            current_file_hash = ""
+        if (
+            recorded
+            and recorded == _resolved_analysis_profile_sha256(cfg)
+            and recorded_file_hash
+            and recorded_file_hash == current_file_hash
+            and _REVIEWED_PRODUCTION_PROFILE_SHA256.get(
+                pl.Path(profile_path).name, ""
+            ) == current_file_hash
+        ):
+            return "reviewed"
+    return "custom"
+
+
+def mark_analysis_profile_custom(cfg, reason):
+    """Mark GUI-edited settings as custom while preserving their source profile."""
+    if str(cfg.get("_ACTIVE_PROFILE_PATH", "")).strip():
+        cfg["_ACTIVE_PROFILE_REVIEW_STATE"] = "custom"
+        cfg["_ACTIVE_PROFILE_DIRTY_REASON"] = str(reason).strip()
+
+
+def build_gui_preflight_report(
+    cfg,
+    *,
+    operation,
+    image_count=None,
+    roi_ready=None,
+    calibration_ready=None,
+    calibration_detail="",
+    output_safe=None,
+    output_detail="",
+    require_reviewed_profile=True,
+):
+    """Build a structured, testable readiness report for GUI run modes."""
+    issues = []
+    if image_count is not None:
+        if int(image_count) <= 0:
+            issues.append(
+                PreflightIssue(
+                    "IMAGES_MISSING",
+                    "block",
+                    "No source images",
+                    f"{operation} has no source TIFF images to process.",
+                    "Load an image directory or discover a study first.",
+                )
+            )
+        else:
+            issues.append(
+                PreflightIssue(
+                    "IMAGES_READY",
+                    "info",
+                    "Source images ready",
+                    f"{int(image_count)} image plane(s) are selected.",
+                    "Continue with the remaining checks.",
+                )
+            )
+    if roi_ready is not None:
+        issues.append(
+            PreflightIssue(
+                "ROI_READY" if roi_ready else "ROI_MISSING",
+                "info" if roi_ready else "block",
+                "ROI ready" if roi_ready else "ROI missing",
+                (
+                    "A non-empty ROI is available for this run."
+                    if roi_ready
+                    else "No non-empty ROI is available for this run."
+                ),
+                (
+                    "Continue with the remaining checks."
+                    if roi_ready
+                    else "Draw or load the specimen ROI before running analysis."
+                ),
+            )
+        )
+
+    review_state = analysis_profile_review_state(cfg)
+    if require_reviewed_profile and review_state != "reviewed":
+        reason = str(cfg.get("_ACTIVE_PROFILE_DIRTY_REASON", "")).strip()
+        detail = (
+            reason
+            if reason
+            else "No reviewed analysis-profile JSON is active."
+        )
+        issues.append(
+            PreflightIssue(
+                "PROFILE_NOT_REVIEWED",
+                "block",
+                "Reviewed analysis profile required",
+                detail,
+                "Load the reviewed v5.7.1 analysis profile before running.",
+            )
+        )
+    else:
+        issues.append(
+            PreflightIssue(
+                "PROFILE_READY",
+                "info",
+                "Analysis profile ready",
+                analysis_profile_summary(cfg),
+                "Continue with the remaining checks.",
+            )
+        )
+
+    audit_ready, audit_detail = production_audit_gate_state()
+    issues.append(
+        PreflightIssue(
+            "AUDIT_GATE_READY" if audit_ready else "AUDIT_GATE_BLOCKED",
+            "info" if audit_ready else "block",
+            "Scientific audit gate ready" if audit_ready else "Scientific audit gate blocked",
+            audit_detail,
+            (
+                "Continue with the remaining checks."
+                if audit_ready
+                else "Resolve the failed claims and complete a superseding independent audit before production use."
+            ),
+        )
+    )
+
+    try:
+        runtime = validate_analysis_runtime_config(cfg)
+        checkpoint_name = os.path.basename(runtime.get("checkpoint_path", ""))
+        detail = (
+            f"Checkpoint identity verified: {checkpoint_name}."
+            if runtime.get("unet_required")
+            else "The selected engine does not require a U-Net checkpoint."
+        )
+        issues.append(
+            PreflightIssue(
+                "RUNTIME_READY",
+                "info",
+                "Runtime inputs ready",
+                detail,
+                "Continue with the remaining checks.",
+            )
+        )
+    except Exception as exc:
+        issues.append(
+            PreflightIssue(
+                "RUNTIME_INVALID",
+                "block",
+                "Analysis inputs are incomplete",
+                str(exc),
+                "Load the matching profile and checkpoint, then validate again.",
+            )
+        )
+
+    if calibration_ready is not None:
+        issues.append(
+            PreflightIssue(
+                "CALIBRATION_READY" if calibration_ready else "CALIBRATION_MISSING",
+                "info" if calibration_ready else "block",
+                "Calibration ready" if calibration_ready else "Calibration unresolved",
+                calibration_detail or (
+                    "Physical calibration is resolved."
+                    if calibration_ready
+                    else "Physical calibration has not been resolved from specimen metadata."
+                ),
+                (
+                    "Continue with the remaining checks."
+                    if calibration_ready
+                    else "Select valid microscope metadata or correct the specimen manifest."
+                ),
+            )
+        )
+    if output_safe is not None:
+        issues.append(
+            PreflightIssue(
+                "OUTPUT_READY" if output_safe else "OUTPUT_UNSAFE",
+                "info" if output_safe else "block",
+                "Output location ready" if output_safe else "Output location is unsafe",
+                output_detail or (
+                    "The output location is separate from the source data."
+                    if output_safe
+                    else "The output location could overwrite or mix with source data."
+                ),
+                (
+                    "Continue to analysis."
+                    if output_safe
+                    else "Select a separate output folder."
+                ),
+            )
+        )
+    return PreflightReport(tuple(issues))
 
 
 # =============================================================================
@@ -884,6 +1208,35 @@ def get_unique_batch_dir(base_dir):
         if not os.path.exists(candidate):
             return candidate
         counter += 1
+
+
+def get_unique_named_dir(base_dir, stem):
+    """Return a non-existing output directory without touching prior runs."""
+    base_dir = pl.Path(base_dir)
+    candidate = base_dir / str(stem)
+    counter = 1
+    while candidate.exists():
+        candidate = base_dir / f"{stem}_{counter}"
+        counter += 1
+    return str(candidate)
+
+
+def output_path_is_separate_from_source(source_dir, output_dir):
+    """Return True only when source and output trees do not overlap."""
+    source = pl.Path(source_dir).expanduser().resolve()
+    output = pl.Path(output_dir).expanduser().resolve()
+    if output == source:
+        return False
+    try:
+        output.relative_to(source)
+        return False
+    except ValueError:
+        pass
+    try:
+        source.relative_to(output)
+        return False
+    except ValueError:
+        return True
 
 
 def natural_sort_key(s):
@@ -4765,10 +5118,30 @@ def rows_from_results(results, z_idx, um):
     """
     out_rows = []
     for i, r in enumerate(results, start=1):
+        sperm_id = int(r.get("label", i))
+        source_instance_key = str(r.get("source_instance_key", "")).strip()
+        if not source_instance_key:
+            source_instance_key = f"z{int(z_idx):04d}:instance:{sperm_id}"
         historical_area = round(float(r.get("area_px", 0.0)), 1)
         estimated_slender_area = round(float(r["length_px_geodesic"]) * float(r["width_px"]), 1)
         instance_mask_area = round(r.get("instance_mask_area_px", np.nan), 1) if np.isfinite(r.get("instance_mask_area_px", np.nan)) else np.nan
         detection_source = r.get("detection_source", "saturn_classical")
+        body_width_px = float(r.get("body_width_px", np.nan))
+        body_width_available = np.isfinite(body_width_px) and body_width_px > 0
+        unet_instance = detection_source in {
+            "unet_primary",
+            "saturn_only_addition",
+        }
+        primary_width_px = (
+            body_width_px
+            if body_width_available
+            else (np.nan if unet_instance else float(r["width_px"]))
+        )
+        primary_ratio = (
+            float(r["length_px_geodesic"]) / primary_width_px
+            if np.isfinite(primary_width_px) and primary_width_px > 0
+            else np.nan
+        )
 
         if detection_source == "unet_primary" and np.isfinite(instance_mask_area) and instance_mask_area > 0:
             final_area = instance_mask_area
@@ -4778,15 +5151,20 @@ def rows_from_results(results, z_idx, um):
         out_rows.append({
             "pipeline_version":    _VERSION,
             "z_slice":             z_idx,
-            "sperm_id":            int(r.get("label", i)),
-            "source_instance_key": r.get("source_instance_key", ""),
+            "sperm_id":            sperm_id,
+            "source_instance_key": source_instance_key,
             "length_px_geodesic":  round(r["length_px_geodesic"], 3),
             "length_um_geodesic":  round(r["length_px_geodesic"] * um, 3),
             "length_px_count":     round(r["length_px_count"], 1),
             "length_um_count":     round(r["length_px_count"]  * um, 3),
-            "width_px":            round(r["width_px"], 2),
-            "width_um":            round(r["width_px"]          * um, 3),
-            "length_width_ratio":  round(r["length_width_ratio"], 3),
+            "width_px": round(primary_width_px, 4) if np.isfinite(primary_width_px) else np.nan,
+            "width_um": round(primary_width_px * um, 4) if np.isfinite(primary_width_px) else np.nan,
+            "width_measurement_method": (
+                r.get("body_width_method", "subpixel_central_body_chord")
+                if body_width_available
+                else ("unavailable" if unet_instance else "classical_dt_median")
+            ),
+            "length_width_ratio": round(primary_ratio, 4) if np.isfinite(primary_ratio) else np.nan,
             "width_px_dt_median_legacy": round(
                 r.get("width_px_dt_median_legacy", r["width_px"]), 3
             ),
@@ -4801,12 +5179,10 @@ def rows_from_results(results, z_idx, um):
                 ),
                 4,
             ),
-            "body_width_px": round(
-                float(r.get("body_width_px", np.nan)), 4
-            ) if np.isfinite(r.get("body_width_px", np.nan)) else np.nan,
+            "body_width_px": round(body_width_px, 4) if body_width_available else np.nan,
             "body_width_um": round(
-                float(r.get("body_width_px", np.nan)) * um, 4
-            ) if np.isfinite(r.get("body_width_px", np.nan)) else np.nan,
+                body_width_px * um, 4
+            ) if body_width_available else np.nan,
             "body_width_p90_um": round(
                 float(r.get("body_width_p90_px", np.nan)) * um, 4
             ) if np.isfinite(r.get("body_width_p90_px", np.nan)) else np.nan,
@@ -4868,7 +5244,71 @@ def rows_from_results(results, z_idx, um):
                 r.get("parent_hysteresis_component_id", 0)
             ),
         })
+    source_keys = [row["source_instance_key"] for row in out_rows]
+    if len(set(source_keys)) != len(source_keys):
+        duplicates = sorted(
+            key for key in set(source_keys) if source_keys.count(key) > 1
+        )
+        raise ValueError(
+            "Duplicate source_instance_key values in one Z plane: "
+            + ", ".join(duplicates)
+        )
     return out_rows
+
+
+def save_authoritative_instance_evidence(output_dir, z_idx, seg, cfg):
+    """Save immutable filled-instance and centerline labels for later correction."""
+    instance_labels = seg.get("unet_primary_instance_labels")
+    centerline_labels = seg.get("unet_primary_centerline_labels")
+    if instance_labels is None or centerline_labels is None:
+        return None
+    instance_labels = np.asarray(instance_labels, dtype=np.uint32)
+    centerline_labels = np.asarray(centerline_labels, dtype=np.uint32)
+    if instance_labels.shape != centerline_labels.shape:
+        raise ValueError(
+            "Authoritative instance and centerline label images must have the same shape"
+        )
+    evidence_root = pl.Path(output_dir) / "raw_evidence" / "instance_labels"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    final_dir = evidence_root / f"z{int(z_idx):04d}"
+    if final_dir.exists():
+        raise FileExistsError(
+            "Authoritative correction evidence already exists and will not be "
+            f"overwritten: {final_dir}"
+        )
+    temp_dir = evidence_root / (
+        f".z{int(z_idx):04d}.tmp-{os.getpid()}-{time.time_ns()}"
+    )
+    temp_dir.mkdir()
+    try:
+        temp_instance_path = temp_dir / "instance_labels.tif"
+        temp_centerline_path = temp_dir / "centerline_labels.tif"
+        tifffile.imwrite(temp_instance_path, instance_labels)
+        tifffile.imwrite(temp_centerline_path, centerline_labels)
+        metadata = {
+            "schema_version": "1.0",
+            "pipeline_version": _VERSION,
+            "z_index": int(z_idx),
+            "shape": [int(value) for value in instance_labels.shape],
+            "instance_count": int(np.count_nonzero(np.unique(instance_labels))),
+            "instance_labels_path": str((final_dir / "instance_labels.tif").resolve()),
+            "instance_labels_sha256": _sha256_file(temp_instance_path),
+            "centerline_labels_path": str((final_dir / "centerline_labels.tif").resolve()),
+            "centerline_labels_sha256": _sha256_file(temp_centerline_path),
+            "analysis_profile": str(cfg.get("_ACTIVE_PROFILE_NAME", "")),
+            "analysis_profile_path": str(cfg.get("_ACTIVE_PROFILE_PATH", "")),
+            "checkpoint_sha256": str(cfg.get("UNET_CHECKPOINT_SHA256", "")),
+            "xy_um_per_pixel": float(cfg["UM_PER_PX_XY"]),
+            "z_um_per_slice": float(cfg["UM_PER_SLICE_Z"]),
+            "calibration_source": str(cfg.get("CALIBRATION_SOURCE", "")),
+        }
+        _study_atomic_json(temp_dir / "evidence.json", metadata)
+        temp_dir.rename(final_dir)
+    except Exception:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        raise
+    return metadata
 
 
 # =============================================================================
@@ -5117,7 +5557,9 @@ def _attach_representative_body_width(df, track_summary):
     """Select one body-width plane per track by area, support, then Z index."""
     track_summary = track_summary.copy()
     defaults = {
+        "representative_body_length_um": np.nan,
         "representative_body_width_um": np.nan,
+        "representative_section_tortuosity": np.nan,
         "representative_body_width_p90_um": np.nan,
         "representative_body_width_iqr_um": np.nan,
         "representative_area_length_width_um": np.nan,
@@ -5128,6 +5570,7 @@ def _attach_representative_body_width(df, track_summary):
             "largest_filled_mask_area_then_unet_support_then_lowest_z"
         ),
         "length_body_width_ratio": np.nan,
+        "length_body_width_ratio_cross_plane_legacy": np.nan,
     }
     for column, default in defaults.items():
         if column not in track_summary.columns:
@@ -5193,7 +5636,9 @@ def _attach_representative_body_width(df, track_summary):
         "track_id"
     )
     mappings = {
+        "representative_body_length_um": "length_um_geodesic",
         "representative_body_width_um": "body_width_um",
+        "representative_section_tortuosity": "tortuosity",
         "representative_body_width_p90_um": "body_width_p90_um",
         "representative_body_width_iqr_um": "body_width_iqr_um",
         "representative_area_length_width_um": "area_length_width_um",
@@ -5209,8 +5654,18 @@ def _attach_representative_body_width(df, track_summary):
     track_summary["representative_width_selection"] = (
         "largest_filled_mask_area_then_unet_support_then_lowest_z"
     )
-    track_summary["length_body_width_ratio"] = (
+    track_summary["length_body_width_ratio_cross_plane_legacy"] = (
         pd.to_numeric(track_summary["max_length_2d"], errors="coerce")
+        / pd.to_numeric(
+            track_summary.get("representative_body_width_um"),
+            errors="coerce",
+        ).clip(lower=1e-9)
+    )
+    track_summary["length_body_width_ratio"] = (
+        pd.to_numeric(
+            track_summary.get("representative_body_length_um"),
+            errors="coerce",
+        )
         / pd.to_numeric(
             track_summary.get("representative_body_width_um"),
             errors="coerce",
@@ -5411,6 +5866,17 @@ def track_across_slices_legacy(detections_df, cfg):
         width = pd.to_numeric(df.get("width_um"), errors="coerce")
         length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
         df["length_width_ratio"] = length / width.clip(lower=1e-9)
+    # Older tracking inputs predate the explicit v5.7.1 legacy names. Treat
+    # their historical width fields as legacy values without redefining the
+    # unqualified body-width fields emitted by native v5.7.1 segmentation.
+    if "width_um_dt_median_legacy" not in df.columns:
+        df["width_um_dt_median_legacy"] = pd.to_numeric(
+            df.get("width_um"), errors="coerce"
+        )
+    if "length_width_ratio_dt_legacy" not in df.columns:
+        df["length_width_ratio_dt_legacy"] = pd.to_numeric(
+            df.get("length_width_ratio"), errors="coerce"
+        )
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
 
@@ -5427,8 +5893,8 @@ def track_across_slices_legacy(detections_df, cfg):
         z_start         = ("z_slice",            "min"),
         z_end           = ("z_slice",            "max"),
         max_length_2d   = ("length_um_geodesic", "max"),
-        median_width_2d = ("width_um",            "median"),
-        median_length_width_ratio_2d = ("length_width_ratio", "median"),
+        median_width_um_dt_legacy = ("width_um_dt_median_legacy", "median"),
+        median_length_width_ratio_dt_legacy = ("length_width_ratio_dt_legacy", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
         sum_volume_area_px = ("volume_area_px", "sum"),
@@ -5516,11 +5982,12 @@ def track_across_slices_legacy(detections_df, cfg):
         "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
         "observed_slab_effective_thickness_um", "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
-        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px", "sum_volume_area_px",
+        "median_width_um_dt_legacy", "median_length_width_ratio_dt_legacy", "sum_area_px", "sum_volume_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end"
     ] + [
         column
         for column in (
+            "representative_body_length_um",
             "representative_body_width_um",
             "representative_body_width_p90_um",
             "representative_body_width_iqr_um",
@@ -5530,6 +5997,7 @@ def track_across_slices_legacy(detections_df, cfg):
             "representative_width_method",
             "representative_width_selection",
             "length_body_width_ratio",
+            "length_body_width_ratio_cross_plane_legacy",
         )
         if column in ts.columns
     ]
@@ -5693,6 +6161,16 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         width = pd.to_numeric(df.get("width_um"), errors="coerce")
         length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
         df["length_width_ratio"] = length / width.clip(lower=1e-9)
+    # Compatibility for historical/external tracking tables. Native v5.7.1
+    # segmentation already supplies both explicit legacy and body-width fields.
+    if "width_um_dt_median_legacy" not in df.columns:
+        df["width_um_dt_median_legacy"] = pd.to_numeric(
+            df.get("width_um"), errors="coerce"
+        )
+    if "length_width_ratio_dt_legacy" not in df.columns:
+        df["length_width_ratio_dt_legacy"] = pd.to_numeric(
+            df.get("length_width_ratio"), errors="coerce"
+        )
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
     filled_area = pd.to_numeric(
@@ -5708,8 +6186,8 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         z_start         = ("z_slice",            "min"),
         z_end           = ("z_slice",            "max"),
         max_length_2d   = ("length_um_geodesic", "max"),
-        median_width_2d = ("width_um",            "median"),
-        median_length_width_ratio_2d = ("length_width_ratio", "median"),
+        median_width_um_dt_legacy = ("width_um_dt_median_legacy", "median"),
+        median_length_width_ratio_dt_legacy = ("length_width_ratio_dt_legacy", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
         sum_volume_area_px = ("volume_area_px", "sum"),
@@ -5797,12 +6275,13 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
         "observed_slab_effective_thickness_um", "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
-        "median_width_2d", "median_length_width_ratio_2d", "sum_area_px", "sum_volume_area_px",
+        "median_width_um_dt_legacy", "median_length_width_ratio_dt_legacy", "sum_area_px", "sum_volume_area_px",
         "min_area_px", "max_area_px", "area_start", "area_end",
         "suspected_multi_object_merge",
     ] + [
         column
         for column in (
+            "representative_body_length_um",
             "representative_body_width_um",
             "representative_body_width_p90_um",
             "representative_body_width_iqr_um",
@@ -5812,6 +6291,7 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
             "representative_width_method",
             "representative_width_selection",
             "length_body_width_ratio",
+            "length_body_width_ratio_cross_plane_legacy",
         )
         if column in ts.columns
     ] + unet_summary_cols
@@ -6996,6 +7476,240 @@ def track_across_slices(detections_df, cfg):
     return track_across_slices_legacy(detections_df, cfg)
 
 
+def retrack_false_detection_corrections(
+    detections_df,
+    correction_events,
+    cfg,
+    *,
+    specimen_id,
+    tracking_callable=None,
+):
+    """Remove confirmed technical false detections and retrack a specimen.
+
+    This first correction subset changes no surviving mask geometry. It consumes
+    stable ``source_instance_key`` values, preserves the input table, and runs
+    the complete tracking backend again so track IDs are never patched in place.
+    """
+    if detections_df is None or not isinstance(detections_df, pd.DataFrame):
+        raise TypeError("detections_df must be a pandas DataFrame")
+    required = {"source_instance_key", "z_slice"}
+    missing = required - set(detections_df.columns)
+    if missing:
+        raise ValueError(f"correction retracking is missing columns: {sorted(missing)}")
+    working = detections_df.copy(deep=True)
+    source_keys = working["source_instance_key"].fillna("").astype(str)
+    if (source_keys.str.strip() == "").any() or source_keys.duplicated().any():
+        raise ValueError("correction retracking requires unique non-empty source_instance_key values")
+    events = tuple(correction_events)
+    revisions = [int(event.revision) for event in events]
+    if revisions != list(range(1, len(events) + 1)):
+        raise ValueError("correction revisions must be ordered and contiguous from 1")
+    expected_specimen = str(specimen_id).strip()
+    if not expected_specimen:
+        raise ValueError("specimen_id must not be blank")
+
+    excluded = []
+    for event in active_correction_events(events):
+        if event.action != "exclude_false_detection":
+            raise ValueError(
+                f"correction action {event.action!r} is not executable by this retracking version"
+            )
+        if event.specimen_id != expected_specimen:
+            raise ValueError("correction event belongs to a different specimen")
+        source_id = str(event.source_instance_ids[0])
+        matches = working.index[working["source_instance_key"].astype(str) == source_id]
+        if len(matches) != 1:
+            raise ValueError(
+                f"correction source instance must match exactly one detection: {source_id}"
+            )
+        row_index = matches[0]
+        if int(working.at[row_index, "z_slice"]) != int(event.z_index):
+            raise ValueError("correction Z plane does not match the source detection")
+        excluded.append(source_id)
+        working = working.drop(index=row_index)
+
+    working = working.reset_index(drop=True)
+    tracker = tracking_callable or track_across_slices
+    corrected_detections, corrected_tracks = tracker(working.copy(deep=True), cfg)
+    repeated_detections, repeated_tracks = tracker(working.copy(deep=True), cfg)
+    if not isinstance(corrected_detections, pd.DataFrame) or not isinstance(
+        corrected_tracks, pd.DataFrame
+    ):
+        raise TypeError("tracking must return detection and track-summary DataFrames")
+    if not isinstance(repeated_detections, pd.DataFrame) or not isinstance(
+        repeated_tracks, pd.DataFrame
+    ):
+        raise TypeError("repeated tracking must return detection and track-summary DataFrames")
+
+    def deterministic_frame(frame, key_columns):
+        available = [column for column in key_columns if column in frame.columns]
+        ordered = frame.sort_values(available).reset_index(drop=True) if available else frame.reset_index(drop=True)
+        return ordered.reindex(sorted(ordered.columns), axis=1)
+
+    try:
+        pd.testing.assert_frame_equal(
+            deterministic_frame(corrected_detections, ["source_instance_key"]),
+            deterministic_frame(repeated_detections, ["source_instance_key"]),
+            check_dtype=True,
+            check_exact=True,
+        )
+        pd.testing.assert_frame_equal(
+            deterministic_frame(corrected_tracks, ["track_id"]),
+            deterministic_frame(repeated_tracks, ["track_id"]),
+            check_dtype=True,
+            check_exact=True,
+        )
+    except AssertionError as exc:
+        raise ValueError("correction retracking is not deterministic") from exc
+    corrected_detections = corrected_detections.copy()
+    # Correction replay must pass through the same technical-valid versus
+    # morphology-warning annotation used by an ordinary batch. In comparative
+    # mode, unusual length/width/curvature remains measurable and cannot become
+    # a technical veto merely because a correction was applied elsewhere.
+    corrected_tracks = flag_quality_tracks(corrected_tracks.copy(), cfg)
+    revision = revisions[-1] if revisions else 0
+    corrected_detections["correction_revision"] = revision
+    corrected_tracks["correction_revision"] = revision
+    required_tracking_columns = {"source_instance_key", "track_id", "z_slice"}
+    missing_tracking = required_tracking_columns - set(corrected_detections.columns)
+    if missing_tracking:
+        raise ValueError(f"corrected tracking is missing identity columns: {sorted(missing_tracking)}")
+    if "track_id" not in corrected_tracks.columns:
+        raise ValueError("corrected track summary is missing track_id")
+    corrected_sources = corrected_detections["source_instance_key"].astype(str)
+    if corrected_sources.duplicated().any():
+        raise ValueError("corrected tracking produced duplicate source instances")
+    expected_sources = set(working["source_instance_key"].astype(str))
+    if set(corrected_sources) != expected_sources:
+        raise ValueError("corrected tracking did not conserve every surviving source detection")
+    if set(excluded) & set(corrected_sources):
+        raise ValueError("excluded source instances remain in corrected tracking")
+    if corrected_detections["track_id"].isna().any() or (
+        pd.to_numeric(corrected_detections["track_id"], errors="coerce") < 0
+    ).any():
+        raise ValueError("corrected tracking produced missing or invalid track IDs")
+    if corrected_detections.duplicated(["track_id", "z_slice"]).any():
+        raise ValueError("corrected tracking produced multiple observations in one Z plane")
+    detection_track_ids = set(corrected_detections["track_id"].tolist())
+    summary_track_ids = set(corrected_tracks["track_id"].tolist())
+    if detection_track_ids != summary_track_ids:
+        raise ValueError("corrected track summary does not match detection track IDs")
+    manifest = {
+        "schema_version": "1.0",
+        "specimen_id": expected_specimen,
+        "correction_revision": revision,
+        "action_subset": "exclude_false_detection",
+        "input_detection_count": int(len(detections_df)),
+        "excluded_detection_count": int(len(excluded)),
+        "corrected_detection_count": int(len(corrected_detections)),
+        "excluded_source_instance_ids": excluded,
+        "full_specimen_retracking": True,
+    }
+    return corrected_detections, corrected_tracks, manifest
+
+
+def _corrected_revision_overlays(base_output_dir, revision_dir):
+    """Render equal-thickness review overlays from corrected filled labels."""
+    base_output = pl.Path(base_output_dir).resolve()
+    revision = pl.Path(revision_dir).resolve()
+    source_manifest = json.loads(
+        (base_output / "settings" / "source_image_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sources = {
+        int(record["z_index"]): pl.Path(record["path"])
+        for record in source_manifest.get("ordered_source_images", [])
+        if record.get("z_index") is not None
+    }
+    overlay_dir = revision / "analysis_overlays"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for plane_dir in sorted((revision / "instance_labels").glob("z[0-9][0-9][0-9][0-9]")):
+        z_index = int(plane_dir.name[1:])
+        source = sources.get(z_index)
+        if source is None or not source.is_file():
+            raise FileNotFoundError(f"source image is unavailable for corrected Z {z_index}")
+        raw = ensure_2d_image(robust_imread(str(source)), source.name)
+        display = (normalize_display(raw) * 255).astype(np.uint8)
+        rgb = np.stack([display, display, display], axis=-1)
+        labels = tifffile.imread(plane_dir / "instance_labels.tif")
+        if labels.shape != display.shape:
+            raise ValueError(f"corrected labels do not align with source Z {z_index}")
+        boundary = skseg.find_boundaries(labels, mode="inner")
+        rgb[boundary] = np.array([34, 197, 94], dtype=np.uint8)
+        path = overlay_dir / f"z{z_index:04d}_corrected_overlay.png"
+        _imwrite(str(path), rgb)
+        paths.append(path)
+    return paths
+
+
+def materialize_reviewed_false_detection_revision(
+    completed_output_dir,
+    correction_log_path,
+    *,
+    specimen_id=None,
+):
+    """Regenerate one complete, immutable exclusion-only correction revision."""
+    base_output = pl.Path(completed_output_dir).resolve()
+    if specimen_id is not None:
+        create_correction_base_manifest(base_output, specimen_id=specimen_id)
+
+    slice_summary_path = base_output / f"slice_summary_{_VERSION}.csv"
+    slice_summary = (
+        pd.read_csv(slice_summary_path)
+        if slice_summary_path.is_file()
+        else pd.DataFrame()
+    )
+
+    def regenerate(temp_dir, corrected_2d, tracked, tracks, manifest):
+        revision = int(manifest["correction_revision"])
+        tracks = tracks.copy()
+        tracked = tracked.copy()
+        tracks["correction_revision"] = revision
+        tracked["correction_revision"] = revision
+        outputs = []
+        outputs.extend(_corrected_revision_overlays(base_output, temp_dir))
+        outputs.extend(export_comparative_track_tables(temp_dir, tracks, _VERSION))
+        biological = export_biologist_results(temp_dir, tracks, _VERSION)
+        outputs.extend(pl.Path(path) for path in biological.values())
+        summary = export_analysis_summary(
+            temp_dir,
+            df=corrected_2d,
+            track_summary=tracks,
+            run_scope="corrected_full_stack_3d",
+            cfg={"SEGMENTATION_ENGINE": "unet_primary"},
+        )
+        summary["correction_revision"] = revision
+        summary["base_run_manifest_sha256"] = manifest["base_run_manifest_sha256"]
+        _study_atomic_json(pl.Path(temp_dir) / "correction_summary.json", summary)
+        outputs.append(pl.Path(temp_dir) / "correction_summary.json")
+        outputs.append(pl.Path(generate_concise_biologist_pdf(temp_dir, tracks)))
+        outputs.append(pl.Path(generate_concise_biologist_pptx(temp_dir)))
+        generate_batch_report(
+            temp_dir,
+            corrected_2d,
+            slice_summary,
+            float(json.loads((base_output / "settings" / "runtime_parameters.json").read_text(encoding="utf-8"))["UM_PER_PX_XY"]),
+            tracks,
+            df_tracked=tracked,
+        )
+        generate_excel_report(temp_dir, corrected_2d, slice_summary, tracks)
+        outputs.extend(
+            path
+            for pattern in ("*.pdf", "*.xlsx")
+            for path in pl.Path(temp_dir).glob(pattern)
+        )
+        return outputs
+
+    return _materialize_false_detection_revision(
+        base_output,
+        correction_log_path,
+        retrack_callable=retrack_false_detection_corrections,
+        artifact_callback=regenerate,
+    )
+
+
 # =============================================================================
 # QUALITY AUDIT & OUTLIER FLAGGING
 # =============================================================================
@@ -7318,24 +8032,10 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
 
     column_map = {
         "track_id": "estimated_nucleus_id",
-        "projection_z_extent_um": "projection_z_extent_um",
-        "total_3d_length_um": "projection_z_extent_um_legacy_alias",
-        "max_length_2d": "maximum_2d_length_um",
+        "representative_body_length_um": "representative_section_length_um",
         "representative_body_width_um": "body_width_um",
-        "representative_body_width_p90_um": "body_width_p90_um",
-        "representative_body_width_iqr_um": "body_width_iqr_um",
-        "representative_area_length_width_um": "area_length_width_um",
-        "representative_width_z": "representative_width_z",
-        "representative_width_sample_count": "body_width_sample_count",
-        "representative_width_method": "body_width_method",
         "length_body_width_ratio": "length_body_width_ratio",
-        "median_width_2d": "width_um_dt_median_legacy",
-        "median_length_width_ratio_2d": "length_width_ratio_dt_legacy",
-        "thickness_um": "effective_thickness_um_psf_sensitive",
-        "tortuosity_3d": "tortuosity_3d",
-        "z_span_um": "z_span_um",
-        "n_slices": "slices_detected",
-        "morphology_warning": "morphology_warning_for_review",
+        "representative_section_tortuosity": "representative_section_tortuosity",
     }
     available = [column for column in column_map if column in primary.columns]
     nuclei = primary[available].rename(columns=column_map)
@@ -7350,22 +8050,14 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
     summary = pd.DataFrame([{
         "analysis_population": "included estimated nuclei",
         "estimated_unique_nuclei": int(len(primary)),
-        "median_projection_z_extent_um": median("projection_z_extent_um"),
-        "median_3d_length_um_legacy_alias": median("projection_z_extent_um"),
-        "median_maximum_2d_length_um": median("max_length_2d"),
+        "median_representative_section_length_um": median(
+            "representative_body_length_um"
+        ),
         "median_body_width_um": median("representative_body_width_um"),
-        "median_body_width_p90_um": median(
-            "representative_body_width_p90_um"
-        ),
         "median_length_body_width_ratio": median("length_body_width_ratio"),
-        "median_width_um_dt_legacy": median("median_width_2d"),
-        "median_length_width_ratio_dt_legacy": median(
-            "median_length_width_ratio_2d"
+        "median_representative_section_tortuosity": median(
+            "representative_section_tortuosity"
         ),
-        "median_effective_thickness_um_psf_sensitive": median("thickness_um"),
-        "median_3d_tortuosity": median("tortuosity_3d"),
-        "median_z_span_um": median("z_span_um"),
-        "median_slices_detected": median("n_slices"),
     }])
     summary_path = os.path.join(result_dir, f"sample_summary{suffix}.csv")
     summary.to_csv(summary_path, index=False)
@@ -7378,13 +8070,16 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
             "Use sample_summary*.csv for sample-level comparisons.\n"
             "Use nuclei_for_analysis*.csv for nucleus-level statistics.\n\n"
             "Primary population: included estimated nuclei reconstructed in 3D.\n"
+            "The estimated nucleus count is acquisition-coverage-sensitive: compare it only\n"
+            "across specimens with reviewed ROI coverage, stack depth, and boundaries.\n"
             "Morphology-warning tracks remain included because they may represent real biology.\n"
             "Primary width is the apparent central-body mask chord from the\n"
             "largest-area technically valid Z plane. Legacy distance-transform width\n"
             "is retained in explicitly named *_dt_legacy columns.\n"
             "Mask width can inherit annotation-boundary, model-threshold, focus, and PSF bias;\n"
             "it is not a mathematically PSF-corrected physical diameter.\n"
-            "Effective thickness is PSF-sensitive and should be compared only between matched acquisitions.\n\n"
+            "PSF-sensitive thickness, slab-volume proxies, legacy widths, and engineering\n"
+            "diagnostics are intentionally kept outside this biological results folder.\n\n"
             "Do not use raw 2D detections, U-Net contribution counts, warning-free counts,\n"
             "reference-morphology counts, or rejected-extension counts as the biological nucleus count.\n"
         )
@@ -7479,10 +8174,12 @@ def build_analysis_summary(
                 detections,
                 "length_body_width_ratio",
             ),
-            "median_width_um_dt_legacy": median(detections, "width_um"),
+            "median_width_um_dt_legacy": median(
+                detections, "width_um_dt_median_legacy"
+            ),
             "median_length_width_ratio_dt_legacy": median(
                 detections,
-                "length_width_ratio",
+                "length_width_ratio_dt_legacy",
             ),
             "segmentation_engine": engine,
             "unet_checkpoint": checkpoint,
@@ -7514,6 +8211,10 @@ def build_analysis_summary(
             primary, "projection_z_extent_um"
         ),
         "median_maximum_2d_length_um": median(primary, "max_length_2d"),
+        "median_representative_section_length_um": median(
+            primary,
+            "representative_body_length_um",
+        ),
         "median_body_width_um": median(
             primary,
             "representative_body_width_um",
@@ -7526,13 +8227,16 @@ def build_analysis_summary(
             primary,
             "length_body_width_ratio",
         ),
-        "median_width_um_dt_legacy": median(primary, "median_width_2d"),
+        "median_width_um_dt_legacy": median(primary, "median_width_um_dt_legacy"),
         "median_length_width_ratio_dt_legacy": median(
             primary,
-            "median_length_width_ratio_2d",
+            "median_length_width_ratio_dt_legacy",
         ),
         "median_effective_thickness_um_psf_sensitive": median(primary, "thickness_um"),
-        "median_3d_tortuosity": median(primary, "tortuosity_3d"),
+        "median_representative_section_tortuosity": median(
+            primary, "representative_section_tortuosity"
+        ),
+        "median_3d_tortuosity_qc": median(primary, "tortuosity_3d"),
         "median_z_span_um": median(primary, "z_span_um"),
         "raw_2d_detection_count_qc": int(len(detections)),
         "reconstructed_track_count_qc": int(len(tracks)),
@@ -7542,9 +8246,10 @@ def build_analysis_summary(
         "unet_checkpoint": checkpoint,
         **unet_accounting,
         "interpretation": (
-            "Use estimated_unique_nuclei and the technical-valid morphology medians "
-            "for specimen summaries. Fields ending in _qc are technical diagnostics, "
-            "not alternative biological populations."
+            "Use the technical-valid morphology medians for specimen summaries. "
+            "Estimated_unique_nuclei is acquisition-coverage-sensitive and must be "
+            "interpreted with ROI coverage, stack depth, and boundaries. Fields ending "
+            "in _qc are technical diagnostics, not alternative biological populations."
             if tracking_completed
             else "Run with 3D tracking before interpreting a biological nucleus count."
         ),
@@ -7598,14 +8303,10 @@ def export_analysis_summary(
     else:
         primary_keys.extend(
             [
-                "median_projection_z_extent_um",
-                "median_maximum_2d_length_um",
+                "median_representative_section_length_um",
                 "median_body_width_um",
-                "median_body_width_p90_um",
                 "median_length_body_width_ratio",
-                "median_effective_thickness_um_psf_sensitive",
-                "median_3d_tortuosity",
-                "median_z_span_um",
+                "median_representative_section_tortuosity",
             ]
         )
     primary_keys.append("interpretation")
@@ -8137,6 +8838,7 @@ def process_one_image(image_path, cfg, output_dir):
                             unet_context_stack=unet_context)
     meas    = measure_spermatids(seg, cfg)
     results = meas["results"]
+    save_authoritative_instance_evidence(output_dir, z_idx, seg, cfg)
     elapsed = time.time() - t0
 
     um = cfg["UM_PER_PX_XY"]
@@ -8209,7 +8911,21 @@ def process_one_image(image_path, cfg, output_dir):
 # PROCESS BATCH
 # =============================================================================
 
-def process_batch(cfg):
+
+class AnalysisStopRequested(RuntimeError):
+    """Cooperative stop raised between completed image slices."""
+
+
+def _analysis_stop_requested(stop_requested):
+    if stop_requested is None:
+        return False
+    if callable(stop_requested):
+        return bool(stop_requested())
+    is_set = getattr(stop_requested, "is_set", None)
+    return bool(is_set()) if callable(is_set) else bool(stop_requested)
+
+
+def _process_batch_impl(cfg, progress_callback=None, stop_requested=None):
     """
     Orchestrates the entire end-to-end biological data processing engine for batch image iterations.
 
@@ -8232,7 +8948,28 @@ def process_batch(cfg):
     if cfg["SAVE_DEBUG_IMAGES"]:
         ensure_dir(debug_dir)
 
-    files, z_indices = load_batch_files(cfg["INPUT_DIR"], cfg["FILE_PATTERN"])
+    explicit_files = [
+        str(pl.Path(path).resolve())
+        for path in cfg.get("_SOURCE_IMAGE_FILES", [])
+    ]
+    if explicit_files:
+        missing = [path for path in explicit_files if not pl.Path(path).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                "Configured source images are missing: " + "; ".join(missing[:5])
+            )
+        files = explicit_files
+        z_indices = [
+            int(extract_z_index(path, sequence_idx=index))
+            for index, path in enumerate(files)
+        ]
+        if len(set(z_indices)) != len(z_indices):
+            raise ValueError("Configured source images contain duplicate Z indices")
+        ordered = sorted(zip(files, z_indices), key=lambda item: item[1])
+        files = [item[0] for item in ordered]
+        z_indices = [item[1] for item in ordered]
+    else:
+        files, z_indices = load_batch_files(cfg["INPUT_DIR"], cfg["FILE_PATTERN"])
     files_by_z = {int(z): f for f, z in zip(files, z_indices)}
     cfg["_SOURCE_IMAGE_FILES"] = [str(pl.Path(path).resolve()) for path in files]
     calibration = resolve_stack_microscope_calibration(
@@ -8276,7 +9013,31 @@ def process_batch(cfg):
     max_proj_ov = None
     slice_cache = {}
 
+    def stop_before(stage):
+        if _analysis_stop_requested(stop_requested):
+            raise AnalysisStopRequested(
+                f"Analysis stopped before {stage}. The incomplete attempt remains "
+                "separate and will not be used as a completed specimen."
+            )
+
+    def postprocess_progress(stage, position, total_stages=5):
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "postprocess_progress",
+                    "stage": stage,
+                    "stage_position": int(position),
+                    "stage_total": int(total_stages),
+                    "message": stage,
+                }
+            )
+
     for idx_i, (fpath, z_idx) in enumerate(zip(files, z_indices)):
+        if _analysis_stop_requested(stop_requested):
+            raise AnalysisStopRequested(
+                "Analysis stopped before the next image slice. The incomplete "
+                "attempt remains separate and will not be used as a completed specimen."
+            )
         t0 = time.time()
         print(f"\n[{idx_i+1}/{len(files)}]  Z={z_idx:02d}  {os.path.basename(fpath)}")
         img_raw = robust_imread(fpath)
@@ -8291,8 +9052,19 @@ def process_batch(cfg):
         meas    = measure_spermatids(seg, cfg)
         results = meas["results"]
         skel_label = meas["skel_label"]
+        save_authoritative_instance_evidence(
+            cfg["OUTPUT_DIR"],
+            z_idx,
+            seg,
+            cfg,
+        )
         ls_um   = [r["length_px_geodesic"]*um for r in results]
-        ws_um   = [r["width_px"]*um for r in results]
+        body_ws_um = [
+            float(r.get("body_width_px", np.nan)) * um
+            for r in results
+            if np.isfinite(r.get("body_width_px", np.nan))
+        ]
+        legacy_ws_um = [r["width_px"] * um for r in results]
 
         t_s = time.time() - t0
         t_slices.append(t_s)
@@ -8301,6 +9073,21 @@ def process_batch(cfg):
         if ls_um:
             print(f"  med_len={np.median(ls_um):.2f}um", end="")
         print(f"  {t_s:.1f}s  ETA {eta:.0f}s")
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "slice_progress",
+                    "slice_position": idx_i + 1,
+                    "slice_total": len(files),
+                    "z_index": int(z_idx),
+                    "elapsed_seconds": float(sum(t_slices)),
+                    "eta_seconds": float(eta),
+                    "message": (
+                        f"slice {idx_i + 1}/{len(files)} (z={int(z_idx)}), "
+                        f"ETA {max(float(eta), 0.0):.0f}s"
+                    ),
+                }
+            )
 
         all_rows.extend(rows_from_results(results, z_idx, um))
         summaries.append({
@@ -8308,7 +9095,9 @@ def process_batch(cfg):
             "n_spermatids":     len(results),
             "mean_length_um":   round(float(np.mean(ls_um)),   3) if ls_um else 0,
             "median_length_um": round(float(np.median(ls_um)), 3) if ls_um else 0,
-            "mean_width_um":    round(float(np.mean(ws_um)),   3) if ws_um  else 0,
+            "mean_body_width_um": round(float(np.mean(body_ws_um)), 3) if body_ws_um else np.nan,
+            "body_width_available_fraction": round(len(body_ws_um) / max(len(results), 1), 4),
+            "mean_width_um_dt_median_legacy": round(float(np.mean(legacy_ws_um)), 3) if legacy_ws_um else np.nan,
         })
 
         overlay_rgb = make_overlay(img_2d, skel_label)
@@ -8365,6 +9154,11 @@ def process_batch(cfg):
             tifffile.imwrite(os.path.join(cfg["OUTPUT_DIR"], f"z{z_idx:02d}_skel_labels.tif"),
                              skel_label.astype(np.uint16))
 
+        # Catch a stop requested by the GUI callback after the final slice too.
+        stop_before("post-processing")
+
+    postprocess_progress("Writing 2D measurement tables", 1)
+    stop_before("2D table export")
     df     = pd.DataFrame(all_rows)
     df_sum = pd.DataFrame(summaries)
     if cfg["SAVE_OVERLAYS"] and max_proj_raw is not None and max_proj_ov is not None:
@@ -8383,7 +9177,10 @@ def process_batch(cfg):
     ts = None
 
     if cfg["DO_TRACKING"] and not df.empty:
+        postprocess_progress("Linking detections across Z slices", 2)
+        stop_before("cross-slice tracking")
         df_trk, ts = track_across_slices(df, cfg)
+        stop_before("track measurement export")
         df_trk.to_csv(
             os.path.join(cfg["OUTPUT_DIR"], f"measurements_with_tracks_{_VERSION}.csv"),
             index=False)
@@ -8411,6 +9208,8 @@ def process_batch(cfg):
         export_outlier_audit(cfg["OUTPUT_DIR"], ts, cfg)
         export_post_detection_qc(cfg["OUTPUT_DIR"], df_trk, ts)
 
+    postprocess_progress("Building the concise biological summary", 3)
+    stop_before("biological summary export")
     analysis_summary = export_analysis_summary(
         cfg["OUTPUT_DIR"],
         df=df,
@@ -8420,6 +9219,8 @@ def process_batch(cfg):
     )
 
     # --- Reporting Phase (CLI/Batch) ---
+    postprocess_progress("Generating the PDF report", 4)
+    stop_before("PDF report generation")
     print(f"\nGenerating final reports in {cfg['OUTPUT_DIR']}...")
     generate_batch_report(
         cfg["OUTPUT_DIR"],
@@ -8430,7 +9231,10 @@ def process_batch(cfg):
         df_tracked=df_trk,
         max_slice_pages=cfg.get("REPORT_MAX_SLICE_PAGES", 6),
     )
+    stop_before("Excel report generation")
+    postprocess_progress("Generating the Excel report", 5)
     generate_excel_report(cfg["OUTPUT_DIR"], df, df_sum, ts)
+    stop_before("completion marking")
 
     total = time.time() - t_batch
     print(f"\n{'='*55}")
@@ -8439,14 +9243,77 @@ def process_batch(cfg):
         print(
             "Primary result | estimated unique nuclei: "
             f"{analysis_summary['estimated_unique_nuclei']} | "
-            "median projection + Z extent: "
-            f"{analysis_summary['median_projection_z_extent_um']:.3f} um"
+            "median representative-section length: "
+            f"{analysis_summary['median_representative_section_length_um']:.3f} um"
         )
     else:
         print("No biological nucleus count was produced because 3D tracking was unavailable.")
     print(f"Saved to: {cfg['OUTPUT_DIR']}")
     print("Concise result: analysis_summary.csv")
     print("Technical diagnostics: technical_qc_summary.csv")
+    return {
+        "measurements": df,
+        "slice_summary": df_sum,
+        "tracked_measurements": df_trk,
+        "track_summary": ts,
+        "analysis_summary": analysis_summary,
+        "output_dir": str(cfg["OUTPUT_DIR"]),
+        "elapsed_seconds": float(total),
+    }
+
+
+def process_batch(cfg, progress_callback=None, stop_requested=None):
+    """Run one batch with an atomic machine-readable lifecycle marker."""
+    output_dir = pl.Path(cfg["OUTPUT_DIR"]).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    status_path = output_dir / "run_status.json"
+    identity = _pipeline_runtime_identity()
+    started = {
+        "schema_version": "1.0",
+        "pipeline_version": _VERSION,
+        "status": "running",
+        "runtime_identity": identity,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    _study_atomic_json(status_path, started)
+    try:
+        result = _process_batch_impl(
+            cfg,
+            progress_callback=progress_callback,
+            stop_requested=stop_requested,
+        )
+    except AnalysisStopRequested as exc:
+        _study_atomic_json(
+            status_path,
+            {
+                **started,
+                "status": "stopped",
+                "message": str(exc),
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        )
+        raise
+    except Exception as exc:
+        _study_atomic_json(
+            status_path,
+            {
+                **started,
+                "status": "failed",
+                "message": f"{type(exc).__name__}: {exc}",
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        )
+        raise
+    _study_atomic_json(
+        status_path,
+        {
+            **started,
+            "status": "complete",
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "elapsed_seconds": float(result.get("elapsed_seconds", 0.0)),
+        },
+    )
+    return result
 
 
 def write_error_log(out_dir, component, message):
@@ -8626,15 +9493,10 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 biologist_metrics = [
                     ("Analysis population", "Included estimated nuclei"),
                     ("Estimated unique nuclei", int(len(primary))),
-                    ("Median projection + Z extent (um)", primary_median("projection_z_extent_um")),
-                    ("Median maximum 2D length (um)", primary_median("max_length_2d")),
+                    ("Median representative-section length (um)", primary_median("representative_body_length_um")),
                     ("Median apparent body-mask width (um)", primary_median("representative_body_width_um")),
-                    ("Median body-width P90 (um)", primary_median("representative_body_width_p90_um")),
                     ("Median length / body width", primary_median("length_body_width_ratio")),
-                    ("Median observed-slab effective thickness (um; PSF-sensitive)", primary_median("observed_slab_effective_thickness_um")),
                     ("Median 3D tortuosity", primary_median("tortuosity_3d")),
-                    ("Median Z-span (um)", primary_median("z_span_um")),
-                    ("Median slices detected", primary_median("n_slices")),
                 ]
                 for row_index, (label, value) in enumerate(biologist_metrics, start=2):
                     ws_bio.write(row_index, 0, label)
@@ -8814,7 +9676,132 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
             messagebox.showwarning("Reporting Warning", f"Excel Report failed to generate completely.\n{e}")
         except Exception:
             pass
+        raise RuntimeError("Excel report generation failed") from e
 
+
+
+def _concise_biologist_population(df_tracks):
+    if df_tracks is None or df_tracks.empty:
+        return pd.DataFrame()
+    if "technical_valid" in df_tracks.columns:
+        return df_tracks[_study_series_bool(df_tracks["technical_valid"])].copy()
+    return df_tracks.copy()
+
+
+def generate_concise_biologist_pdf(out_dir, df_tracks):
+    """Write the five-outcome biological report; engineering metrics stay in QC."""
+    primary = _concise_biologist_population(df_tracks)
+    result_dir = pl.Path(out_dir) / "biologist_results"
+    figure_dir = result_dir / "figures"
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = result_dir / f"Biologist_Report_{_VERSION}.pdf"
+    required = (
+        "representative_body_length_um",
+        "representative_body_width_um",
+        "length_body_width_ratio",
+        "representative_section_tortuosity",
+    )
+    missing = [column for column in required if column not in primary.columns]
+    if missing and not primary.empty:
+        raise ValueError(f"concise biological report is missing columns: {missing}")
+
+    with PdfPages(pdf_path) as pdf:
+        overview = plt.figure(figsize=(11, 8.5))
+        overview.suptitle("Biologist Results: Included Estimated Nuclei", fontsize=17, fontweight="bold")
+        text_ax = overview.add_subplot(1, 2, 1)
+        text_ax.axis("off")
+        if primary.empty:
+            text_ax.text(0.05, 0.8, "No technical-valid reconstructed nuclei", fontsize=14)
+        else:
+            metrics = (
+                ("Estimated unique nuclei (coverage-sensitive)", f"{len(primary):,}"),
+                ("Median representative-section length", f"{primary['representative_body_length_um'].median():.2f} um"),
+                ("Median apparent body-mask width", f"{primary['representative_body_width_um'].median():.2f} um"),
+                ("Median length / body width", f"{primary['length_body_width_ratio'].median():.2f}"),
+                ("Median representative-section tortuosity", f"{primary['representative_section_tortuosity'].median():.3f}"),
+            )
+            y = 0.92
+            for label, value in metrics:
+                text_ax.text(0.03, y, label, fontsize=10, color="#374151", va="top")
+                text_ax.text(0.03, y - 0.045, value, fontsize=18, fontweight="bold", color="#166534", va="top")
+                y -= 0.17
+        length_ax = overview.add_subplot(1, 2, 2)
+        if not primary.empty:
+            length_ax.hist(primary["representative_body_length_um"].dropna(), bins=25, color="#16a34a", edgecolor="black")
+            length_ax.set_xlabel("Representative-section length (um)")
+            length_ax.set_ylabel("Estimated nuclei")
+            length_ax.set_title("Length Distribution")
+        else:
+            length_ax.axis("off")
+        overview.text(
+            0.5,
+            0.03,
+            "Primary population: technical-valid reconstructed nuclei. Morphology warnings remain included. "
+            "Count depends on reviewed ROI coverage, stack depth, and acquisition boundaries. "
+            "Additional engineering measurements are stored separately in technical QC.",
+            ha="center",
+            fontsize=9,
+            wrap=True,
+        )
+        overview.tight_layout(rect=[0, 0.07, 1, 0.94])
+        overview.savefig(figure_dir / "primary_overview.png", dpi=250, bbox_inches="tight")
+        pdf.savefig(overview, dpi=250, bbox_inches="tight")
+        plt.close(overview)
+
+        morphology = plt.figure(figsize=(11, 8.5))
+        morphology.suptitle("Primary Morphology Measurements", fontsize=17, fontweight="bold")
+        fields = (
+            ("representative_body_length_um", "Representative-section length (um)", "#16a34a"),
+            ("representative_body_width_um", "Apparent body-mask width (um)", "#0284c7"),
+            ("length_body_width_ratio", "Length / body width", "#7c3aed"),
+            ("representative_section_tortuosity", "Representative-section centerline tortuosity", "#ca8a04"),
+        )
+        for index, (column, title, color) in enumerate(fields, start=1):
+            axis = morphology.add_subplot(2, 2, index)
+            values = primary[column].dropna() if not primary.empty else pd.Series(dtype=float)
+            if values.empty:
+                axis.text(0.5, 0.5, "No values", ha="center", va="center")
+                axis.axis("off")
+                continue
+            axis.hist(values, bins=25, color=color, edgecolor="black", alpha=0.8)
+            axis.axvline(values.median(), color="black", linestyle="--", label=f"Median {values.median():.2f}")
+            axis.set_title(title)
+            axis.set_ylabel("Estimated nuclei")
+            axis.legend(fontsize=8)
+        morphology.tight_layout(rect=[0, 0.03, 1, 0.94])
+        morphology.savefig(figure_dir / "primary_morphology.png", dpi=250, bbox_inches="tight")
+        pdf.savefig(morphology, dpi=250, bbox_inches="tight")
+        plt.close(morphology)
+    return str(pdf_path)
+
+
+def generate_concise_biologist_pptx(out_dir):
+    """Create a short presentation from the concise biological report figures."""
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    result_dir = pl.Path(out_dir) / "biologist_results"
+    figure_dir = result_dir / "figures"
+    paths = (
+        ("Biologist Results", figure_dir / "primary_overview.png"),
+        ("Primary Morphology Measurements", figure_dir / "primary_morphology.png"),
+    )
+    presentation = Presentation()
+    presentation.slide_width = Inches(13.333)
+    presentation.slide_height = Inches(7.5)
+    blank = presentation.slide_layouts[6]
+    for title, image_path in paths:
+        if not image_path.exists():
+            raise FileNotFoundError(f"concise report figure is missing: {image_path}")
+        slide = presentation.slides.add_slide(blank)
+        title_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.15), Inches(12.4), Inches(0.45))
+        title_box.text_frame.text = title
+        title_box.text_frame.paragraphs[0].font.size = Pt(22)
+        title_box.text_frame.paragraphs[0].font.bold = True
+        slide.shapes.add_picture(str(image_path), Inches(0.65), Inches(0.75), width=Inches(12.0))
+    output_path = result_dir / f"Biologist_Report_{_VERSION}.pptx"
+    presentation.save(output_path)
+    return str(output_path)
 
 
 def generate_batch_report(
@@ -8838,8 +9825,10 @@ def generate_batch_report(
     Returns:
         None (Saves directly to absolute path PDF)
     """
-    pdf_path = os.path.join(out_dir, f"batch_report_{_VERSION}.pdf")
-    print(f"Generating high-res PDF report: {pdf_path} ...")
+    technical_dir = os.path.join(out_dir, "technical_qc")
+    os.makedirs(technical_dir, exist_ok=True)
+    pdf_path = os.path.join(technical_dir, f"batch_technical_qc_report_{_VERSION}.pdf")
+    print(f"Generating technical-QC PDF report: {pdf_path} ...")
 
     # Create directory for high-res standalone plots (for easy copy-pasting into papers/presentations)
     plot_dir = os.path.join(out_dir, "summary_plots")
@@ -8977,44 +9966,33 @@ def generate_batch_report(
                 ax_metrics.axis("off")
                 metric_lines = [
                     ("Estimated unique nuclei", f"{len(primary):,}"),
-                    ("Median projection + Z extent", f"{report_median('projection_z_extent_um'):.2f} um"),
-                    ("Median maximum 2D length", f"{report_median('max_length_2d'):.2f} um"),
+                    ("Median representative-section length", f"{report_median('representative_body_length_um'):.2f} um"),
                     ("Median apparent body-mask width", f"{report_median('representative_body_width_um'):.2f} um"),
-                    ("Median body-width P90", f"{report_median('representative_body_width_p90_um'):.2f} um"),
                     ("Median length/body width", f"{report_median('length_body_width_ratio'):.2f}"),
-                    ("Median effective thickness*", f"{report_median('thickness_um'):.2f} um"),
+                    ("Median 3D tortuosity", f"{report_median('tortuosity_3d'):.3f}"),
                 ]
                 y = 0.88
                 for label, value in metric_lines:
                     ax_metrics.text(0.02, y, label, fontsize=10, color="#444444", va="top")
                     ax_metrics.text(0.02, y - 0.045, value, fontsize=18, fontweight="bold", color="#145a32", va="top")
                     y -= 0.135
-                ax_metrics.text(
-                    0.02,
-                    0.02,
-                    "*PSF-sensitive; compare only between samples acquired with matched microscope settings.",
-                    fontsize=8.5,
-                    color="#555555",
-                    wrap=True,
-                )
-
                 ax_length = fig_dyn.add_subplot(1, 2, 2)
                 ax_length.hist(
-                    primary["projection_z_extent_um"].dropna(),
+                    primary["representative_body_length_um"].dropna(),
                     bins=25,
                     color="#2ca02c",
                     edgecolor="black",
                     alpha=0.8,
                 )
                 ax_length.axvline(
-                    primary["projection_z_extent_um"].median(),
+                    primary["representative_body_length_um"].median(),
                     color="black",
                     linestyle="--",
                     linewidth=1.5,
-                    label=f"Median {primary['projection_z_extent_um'].median():.2f} um",
+                    label=f"Median {primary['representative_body_length_um'].median():.2f} um",
                 )
-                ax_length.set_title("Primary Population: 3D Length")
-                ax_length.set_xlabel("3D length (um)")
+                ax_length.set_title("Representative-Section Length")
+                ax_length.set_xlabel("Representative-section length (um)")
                 ax_length.set_ylabel("Estimated unique nuclei")
                 ax_length.legend(fontsize=9)
                 ax_length.grid(True, alpha=0.2)
@@ -9319,9 +10297,6 @@ def generate_batch_report(
                 if "representative_body_width_um" in primary.columns:
                     width_2d = pd.to_numeric(primary["representative_body_width_um"], errors="coerce")
                     stats_rows.append(["Apparent Body-mask Width (um)", f"{width_2d.mean():.2f}", f"{width_2d.median():.2f}", f"{width_2d.std():.2f}"])
-                if "representative_body_width_p90_um" in primary.columns:
-                    width_p90 = pd.to_numeric(primary["representative_body_width_p90_um"], errors="coerce")
-                    stats_rows.append(["Body Width P90 (um)", f"{width_p90.mean():.2f}", f"{width_p90.median():.2f}", f"{width_p90.std():.2f}"])
                 if "length_body_width_ratio" in primary.columns:
                     ratio_2d = pd.to_numeric(primary["length_body_width_ratio"], errors="coerce")
                     stats_rows.append(["Length / Body Width", f"{ratio_2d.mean():.2f}", f"{ratio_2d.median():.2f}", f"{ratio_2d.std():.2f}"])
@@ -9484,12 +10459,14 @@ def generate_batch_report(
                         80 + (20 * (idx_p + 1) / len(summary_rows))
                     ))
 
-        print(f"Report successfully saved to {pdf_path}")
+        print(f"Technical-QC report successfully saved to {pdf_path}")
+        generate_concise_biologist_pdf(out_dir, df_tracks)
 
         # --- GENERATE POWERPOINT REPORT ---
         try:
             if generate_pptx:
                 generate_pptx_report(out_dir, df, df_summary, um, df_tracks)
+                generate_concise_biologist_pptx(out_dir)
         except Exception as e:
             import traceback
             err_msg = traceback.format_exc()
@@ -9506,6 +10483,7 @@ def generate_batch_report(
             messagebox.showwarning("Reporting Warning", f"PDF Report failed to generate completely.\n{e}")
         except Exception:
             pass
+        raise RuntimeError("PDF report generation failed") from e
 
 
 
@@ -9684,25 +10662,25 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             metrics_frame = metrics_box.text_frame
             metrics_frame.text = (
                 f"Estimated unique nuclei\n{len(primary):,}\n\n"
-                f"Median projection + Z extent\n{primary['projection_z_extent_um'].median():.2f} um\n\n"
-                f"Median maximum 2D length\n{primary['max_length_2d'].median():.2f} um\n\n"
-                f"Median observed-slab thickness*\n{primary['observed_slab_effective_thickness_um'].median():.2f} um\n\n"
+                f"Median representative-section length\n{primary['representative_body_length_um'].median():.2f} um\n\n"
+                f"Median apparent body-mask width\n{primary['representative_body_width_um'].median():.2f} um\n\n"
+                f"Median length/body width\n{primary['length_body_width_ratio'].median():.2f}\n\n"
                 f"Median 3D tortuosity\n{primary['tortuosity_3d'].median():.3f}"
             )
             metrics_frame.paragraphs[0].font.size = Pt(16)
             add_histogram(
                 slide1,
-                primary['projection_z_extent_um'],
+                primary['representative_body_length_um'],
                 Inches(4.8),
                 Inches(1.0),
                 Inches(4.8),
                 Inches(5.2),
-                "Primary Population 3D Length",
+                "Representative-Section Length",
             )
             note_box = slide1.shapes.add_textbox(Inches(0.5), Inches(6.7), Inches(9.0), Inches(0.5))
             note_box.text_frame.text = (
-                "Primary population: technical-valid 3D tracks. "
-                "*Thickness is PSF-sensitive; compare only matched acquisitions."
+                "Primary population: technical-valid reconstructed nuclei. "
+                "Engineering and PSF-sensitive measurements are stored in technical QC."
             )
             note_box.text_frame.paragraphs[0].font.size = Pt(9)
 
@@ -10008,8 +10986,10 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
         add_hyperlink(slide5, "Population_Summary")
 
         # Save the presentation matching Batch Name
-        final_pptx_name = f"batch_analysis_results_{_VERSION}.pptx"
-        output_path = os.path.join(out_dir, final_pptx_name)
+        final_pptx_name = f"batch_technical_qc_results_{_VERSION}.pptx"
+        technical_dir = os.path.join(out_dir, "technical_qc")
+        os.makedirs(technical_dir, exist_ok=True)
+        output_path = os.path.join(technical_dir, final_pptx_name)
         try:
             print(f"PPTX: Saving to {output_path}...")
             prs.save(output_path)
@@ -11477,7 +12457,9 @@ def resolve_stack_microscope_calibration(
     cfg["CALIBRATION_METADATA_FILE"] = str(
         cfg.get("CALIBRATION_METADATA_FILE", "")
     )
-    if bool(cfg.get("_CALIBRATION_LOCKED_FROM_MANIFEST", False)):
+    if bool(cfg.get("_CALIBRATION_LOCKED_FROM_MANIFEST", False)) or bool(
+        cfg.get("_CALIBRATION_LOCKED_FROM_GUI", False)
+    ):
         metadata_path = pl.Path(cfg["CALIBRATION_METADATA_FILE"]).expanduser().resolve()
         if not metadata_path.is_file():
             raise FileNotFoundError(
@@ -12580,8 +13562,132 @@ def _study_config_fingerprint(cfg):
         for key, value in cfg.items()
         if key not in excluded and not str(key).startswith("_")
     }
+    serializable["_pipeline_runtime_identity"] = _pipeline_runtime_identity()
     payload = json.dumps(serializable, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _pipeline_runtime_identity():
+    """Identify the exact executing code and repository state for resume safety."""
+    import hashlib
+
+    source_paths = [
+        pl.Path(__file__).resolve(),
+        pl.Path(PROJECT_ROOT) / "utils" / "saturn_v571_gui_services.py",
+        pl.Path(PROJECT_ROOT) / "utils" / "saturn_unet25d_bridge.py",
+        pl.Path(PROJECT_ROOT) / "scripts" / "generate_v571_biological_comparison.py",
+        pl.Path(PROJECT_ROOT) / "scripts" / "generate_v57_biological_comparison.py",
+    ]
+    source_hashes = {
+        str(path.relative_to(PROJECT_ROOT)).replace("\\", "/"): _sha256_file(path)
+        for path in source_paths
+        if path.is_file()
+    }
+    relative_sources = list(source_hashes)
+
+    def git_output(*args):
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                check=False,
+            )
+            return completed.stdout if completed.returncode == 0 else b""
+        except OSError:
+            return b""
+
+    commit = git_output("rev-parse", "HEAD").decode("ascii", errors="replace").strip()
+    status_bytes = git_output(
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        *relative_sources,
+    )
+    diff_bytes = git_output("diff", "--binary", "HEAD", "--", *relative_sources)
+    dirty_digest = hashlib.sha256(status_bytes + b"\0" + diff_bytes).hexdigest()
+    identity_payload = {
+        "pipeline_version": _VERSION,
+        "git_commit": commit or "unavailable",
+        "git_dirty": bool(status_bytes),
+        "git_dirty_state_sha256": dirty_digest,
+        "source_sha256": source_hashes,
+    }
+    encoded = json.dumps(identity_payload, sort_keys=True).encode("utf-8")
+    identity_payload["runtime_identity_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return identity_payload
+
+
+def _study_specimen_input_fingerprint(row):
+    """Bind resume identity to one manifest row, ROI, metadata, and TIFF bytes."""
+    import hashlib
+
+    folder = pl.Path(str(row.get("input_dir", ""))).resolve()
+    pattern = str(row.get("file_pattern", "")).strip()
+    source_records = []
+    for path in folder.glob(pattern):
+        parsed = _study_parse_source_name(path.name)
+        if parsed:
+            source_records.append(
+                {
+                    "name": path.name,
+                    "z_index": int(parsed["z"]),
+                    "size_bytes": int(path.stat().st_size),
+                    "sha256": _sha256_file(path),
+                }
+            )
+    source_records.sort(key=lambda item: (item["z_index"], item["name"]))
+    if not source_records:
+        raise ValueError(
+            f"Cannot fingerprint specimen {row.get('sample_id', '')}: no source TIFFs"
+        )
+
+    def file_record(value, required=False):
+        text = str(value or "").strip()
+        if not text:
+            if required:
+                raise ValueError("A required specimen provenance file is missing")
+            return None
+        path = pl.Path(text).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"Specimen provenance file is missing: {path}")
+        return {
+            "name": path.name,
+            "size_bytes": int(path.stat().st_size),
+            "sha256": _sha256_file(path),
+        }
+
+    semantic_row = {
+        key: _json_scalar(row.get(key))
+        for key in (
+            "sample_id",
+            "group",
+            "group_role",
+            "file_pattern",
+            "xy_um_per_pixel",
+            "z_um_per_slice",
+            "acquisition_class",
+            "exclusion_mask_path",
+            "include",
+        )
+    }
+    payload = {
+        "manifest_row": semantic_row,
+        "source_images": source_records,
+        "roi": file_record(row.get("roi_path"), required=True),
+        "exclusion_mask": file_record(
+            row.get("exclusion_mask_path"), required=False
+        ),
+        "calibration_metadata": file_record(
+            row.get("calibration_metadata_path"), required=False
+        ),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest(), payload
 
 
 def _study_atomic_json(path, data):
@@ -12600,6 +13706,159 @@ def _study_atomic_json(path, data):
             time.sleep(0.05 * (attempt + 1))
 
 
+def _load_study_resume_state(path, expected_config_hash):
+    """Load resume state fail-closed so stale settings are never reused silently."""
+    path = pl.Path(path)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except Exception as exc:
+        raise ValueError(
+            f"Study resume state is unreadable: {path}. Select a new output "
+            "folder or restore the state file."
+        ) from exc
+    if not isinstance(state, dict) or not isinstance(state.get("samples", {}), dict):
+        raise ValueError(f"Study resume state has an invalid schema: {path}")
+    if str(state.get("pipeline_version", "")) != _VERSION:
+        raise ValueError(
+            "The study resume state was produced by a different pipeline version."
+        )
+    actual_hash = str(state.get("config_hash", "")).strip()
+    if actual_hash != str(expected_config_hash).strip():
+        raise ValueError(
+            "The selected analysis profile or runtime settings differ from the "
+            "existing study state. Resume is blocked; use the original profile "
+            "or choose a new output folder."
+        )
+    return state
+
+
+def _study_completion_artifact_inventory(output_dir, cfg=None):
+    """Return hashes for the minimum biological outputs required for completion."""
+    output_dir = pl.Path(output_dir)
+    required = [
+        output_dir / "analysis_summary.csv",
+        output_dir / "specimen_input_manifest.json",
+        output_dir / "settings" / "settings_manifest.json",
+        output_dir / "settings" / "source_image_manifest.json",
+    ]
+    settings_dir = output_dir / "settings"
+    roi_copies = list(settings_dir.glob("roi_mask_source.*"))
+    if not roi_copies:
+        required.append(settings_dir / "roi_mask_source.<missing>")
+    else:
+        required.extend(roi_copies)
+    if str((cfg or {}).get("CALIBRATION_SOURCE", "")) == "leica_metadata_xml":
+        required.extend(
+            [
+                settings_dir / "calibration_used.json",
+                settings_dir / "microscope_metadata_used.xml",
+            ]
+        )
+    candidates = list(required)
+    sample_summary = output_dir / "biologist_results" / "sample_summary.csv"
+    if sample_summary.is_file():
+        candidates.append(sample_summary)
+    track_summary = _study_find_primary_track_summary(output_dir)
+    if track_summary is not None:
+        candidates.append(pl.Path(track_summary))
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise ValueError(
+            "A specimen cannot be marked complete because required outputs are "
+            "missing: " + "; ".join(missing)
+        )
+    settings_manifest = json.loads(
+        (settings_dir / "settings_manifest.json").read_text(encoding="utf-8")
+    )
+    for record in settings_manifest.get("files", []):
+        copied_path = str(record.get("copied_path", "")).strip()
+        if not copied_path:
+            continue
+        path = pl.Path(copied_path).resolve()
+        try:
+            path.relative_to(output_dir.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                f"Settings manifest artifact escapes the specimen output: {path}"
+            ) from exc
+        if not path.is_file():
+            raise ValueError(f"Settings manifest artifact is missing: {path}")
+        if int(record.get("size_bytes", -1)) != int(path.stat().st_size):
+            raise ValueError(f"Settings manifest artifact size changed: {path}")
+        if str(record.get("sha256", "")).lower() != _sha256_file(path).lower():
+            raise ValueError(f"Settings manifest artifact hash changed: {path}")
+        candidates.append(path)
+    if str((cfg or {}).get("SEGMENTATION_ENGINE", "")).strip().lower() == "unet_primary":
+        evidence_root = output_dir / "raw_evidence" / "instance_labels"
+        source_manifest = json.loads(
+            (settings_dir / "source_image_manifest.json").read_text(encoding="utf-8")
+        )
+        expected_slices = len(source_manifest.get("ordered_source_images", []))
+        evidence_dirs = sorted(path for path in evidence_root.glob("z[0-9][0-9][0-9][0-9]") if path.is_dir())
+        if len(evidence_dirs) != expected_slices:
+            raise ValueError(
+                "A specimen cannot be marked complete because authoritative "
+                f"instance evidence covers {len(evidence_dirs)} of {expected_slices} slices"
+            )
+        for evidence_dir in evidence_dirs:
+            for name in ("instance_labels.tif", "centerline_labels.tif", "evidence.json"):
+                path = evidence_dir / name
+                if not path.is_file():
+                    raise ValueError(f"Authoritative instance evidence is missing: {path}")
+                candidates.append(path)
+    return [
+        {
+            "relative_path": str(path.relative_to(output_dir)).replace("\\", "/"),
+            "size_bytes": int(path.stat().st_size),
+            "sha256": _sha256_file(path),
+        }
+        for path in candidates
+    ]
+
+
+def _validate_study_completion_marker(
+    marker_path, sample_id, config_hash, specimen_input_hash
+):
+    """Validate a completed specimen marker and every recorded required artifact."""
+    marker_path = pl.Path(marker_path)
+    try:
+        with marker_path.open("r", encoding="utf-8") as handle:
+            marker = json.load(handle)
+    except Exception as exc:
+        raise ValueError(f"Completion marker is unreadable: {marker_path}") from exc
+    if not isinstance(marker, dict) or marker.get("schema_version") != "1.0":
+        raise ValueError(f"Completion marker has an invalid schema: {marker_path}")
+    if str(marker.get("sample_id", "")) != str(sample_id):
+        raise ValueError(f"Completion marker sample ID does not match: {marker_path}")
+    if str(marker.get("config_hash", "")) != str(config_hash):
+        raise ValueError(f"Completion marker settings do not match: {marker_path}")
+    if str(marker.get("specimen_input_hash", "")) != str(specimen_input_hash):
+        raise ValueError(f"Completion marker specimen inputs do not match: {marker_path}")
+    if str(marker.get("pipeline_version", "")) != _VERSION:
+        raise ValueError(f"Completion marker pipeline version does not match: {marker_path}")
+    inventory = marker.get("artifact_inventory")
+    if not isinstance(inventory, list) or not inventory:
+        raise ValueError(f"Completion marker has no artifact inventory: {marker_path}")
+    output_dir = marker_path.parent.resolve()
+    for item in inventory:
+        if not isinstance(item, dict):
+            raise ValueError(f"Completion marker inventory is invalid: {marker_path}")
+        relative = pl.Path(str(item.get("relative_path", "")))
+        artifact = (output_dir / relative).resolve()
+        try:
+            artifact.relative_to(output_dir)
+        except ValueError as exc:
+            raise ValueError(f"Completion artifact escapes its output folder: {relative}") from exc
+        if not artifact.is_file():
+            raise ValueError(f"Completion artifact is missing: {artifact}")
+        if int(item.get("size_bytes", -1)) != int(artifact.stat().st_size):
+            raise ValueError(f"Completion artifact size changed: {artifact}")
+        if str(item.get("sha256", "")).lower() != _sha256_file(artifact).lower():
+            raise ValueError(f"Completion artifact hash changed: {artifact}")
+    return marker
+
+
 def _study_next_attempt_dir(sample_root):
     sample_root = pl.Path(sample_root)
     sample_root.mkdir(parents=True, exist_ok=True)
@@ -12611,6 +13870,19 @@ def _study_next_attempt_dir(sample_root):
             continue
     number = max(existing, default=0) + 1
     return sample_root / f"attempt_{number:03d}"
+
+
+def _validated_resume_output_path(output_root, sample_id, output_dir):
+    """Constrain a resumed attempt to its expected specimen output tree."""
+    expected_root = (pl.Path(output_root).resolve() / "samples" / str(sample_id)).resolve()
+    candidate = pl.Path(str(output_dir)).resolve()
+    try:
+        candidate.relative_to(expected_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Resume output for {sample_id} is outside its study specimen folder"
+        ) from exc
+    return candidate
 
 
 def _study_find_output_csv(output_dir, stem, exclude_tokens=()):
@@ -12845,16 +14117,26 @@ def summarize_study_sample(row, output_dir):
         "median_2d_width_um": (
             median(per_track_2d, "median_2d_width_um")
             if "median_2d_width_um" in per_track_2d
-            else median(analysis_tracks, "median_width_2d")
+            else np.nan
         ),
         "median_2d_length_width_ratio": (
             median(per_track_2d, "median_2d_length_width_ratio")
             if "median_2d_length_width_ratio" in per_track_2d
-            else median(analysis_tracks, "median_length_width_ratio_2d")
+            else np.nan
+        ),
+        "median_width_um_dt_legacy": median(
+            analysis_tracks, "median_width_um_dt_legacy"
+        ),
+        "median_length_width_ratio_dt_legacy": median(
+            analysis_tracks, "median_length_width_ratio_dt_legacy"
         ),
         "median_body_width_um": median(
             analysis_tracks,
             "representative_body_width_um",
+        ),
+        "median_representative_section_length_um": median(
+            analysis_tracks,
+            "representative_body_length_um",
         ),
         "median_body_width_p90_um": median(
             analysis_tracks,
@@ -12867,6 +14149,10 @@ def summarize_study_sample(row, output_dir):
         "median_length_body_width_ratio": median(
             analysis_tracks,
             "length_body_width_ratio",
+        ),
+        "median_representative_section_tortuosity": median(
+            analysis_tracks,
+            "representative_section_tortuosity",
         ),
         "body_width_available_fraction": float(
             pd.to_numeric(
@@ -12911,22 +14197,10 @@ def _study_group_summary(specimen_frame):
         return pd.DataFrame()
     metrics = [
         "estimated_unique_nuclei",
-        "estimated_nuclei_per_1000_um2",
-        "estimated_nuclei_per_100000_um3",
-        "median_2d_length_um",
+        "median_representative_section_length_um",
         "median_body_width_um",
-        "median_body_width_p90_um",
-        "median_area_length_width_um",
         "median_length_body_width_ratio",
-        "body_width_available_fraction",
-        "median_projection_z_extent_um",
-        "median_3d_tortuosity",
-        "median_observed_slab_effective_thickness_um",
-        "median_observed_slice_mask_volume_um3",
-        "median_3d_z_span_um",
-        "roi_area_um2",
-        "sampled_roi_volume_um3",
-        "z_boundary_track_fraction",
+        "median_representative_section_tortuosity",
     ]
     records = []
     for group, frame in complete.groupby("group", dropna=False):
@@ -12944,17 +14218,13 @@ def _study_group_summary(specimen_frame):
 
 
 _STUDY_COMPARISON_METRICS = {
-    "estimated_nuclei_per_1000_um2": "Estimated nuclei per 1,000 um2",
-    "estimated_nuclei_per_100000_um3": "Estimated nuclei per 100,000 um3",
-    "median_2d_length_um": "Specimen median 2D length (um)",
+    "estimated_unique_nuclei": "Estimated unique nuclei per specimen",
+    "median_representative_section_length_um": "Specimen median representative-section length (um)",
     "median_body_width_um": "Specimen median apparent central-body mask width (um)",
-    "median_body_width_p90_um": "Specimen median P90 body width (um)",
     "median_length_body_width_ratio": "Specimen median length / body width",
-    "median_projection_z_extent_um": "Specimen median projection + Z extent (um)",
-    "median_3d_tortuosity": "Specimen median 3D tortuosity",
-    "median_observed_slab_effective_thickness_um": "Specimen median observed-slab effective thickness (um)",
-    "median_observed_slice_mask_volume_um3": "Specimen median observed-slice mask slab sum (um3)",
-    "median_3d_z_span_um": "Specimen median Z span (um)",
+    "median_representative_section_tortuosity": (
+        "Specimen median representative-section centerline tortuosity"
+    ),
 }
 
 
@@ -13277,11 +14547,13 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         "Specimen median 2D length\n"
         "For each reconstructed nucleus, take its maximum calibrated centerline "
         "length across observed slices; then take the specimen median.\n\n"
-        "Specimen median 2D width\n"
-        "Median calibrated mask width for each nucleus, summarized by the "
+        "Specimen median apparent central-body mask width\n"
+        "Calibrated central-body mask width from the representative plane for "
+        "each nucleus, summarized by the "
         "specimen median.\n\n"
         "Length / width\n"
-        "Centerline length divided by mask width. Larger values indicate a more "
+        "Centerline length divided by mask width from the same representative "
+        "plane. Larger values indicate a more "
         "elongated, slender object.\n\n"
         "Projection + Z extent\n"
         "sqrt(maximum lateral 2D length^2 + Z span^2). This is a calibrated "
@@ -13613,7 +14885,9 @@ def _study_below_2_um_sensitivity_row(sample_id, frame):
     }
 
 
-def _write_study_aggregates(output_root, rows, state):
+def _write_study_aggregates(
+    output_root, rows, state, allow_group_comparison=False
+):
     output_root = pl.Path(output_root)
     summaries = []
     track_frames = []
@@ -13668,38 +14942,55 @@ def _write_study_aggregates(output_root, rows, state):
         "slice_count",
         "xy_um_per_pixel",
         "z_um_per_slice",
-        "roi_area_um2",
-        "sampled_roi_volume_um3",
         "estimated_unique_nuclei",
-        "estimated_nuclei_per_1000_um2",
-        "estimated_nuclei_per_100000_um3",
-        "median_2d_length_um",
+        "median_representative_section_length_um",
         "median_body_width_um",
-        "median_body_width_p90_um",
-        "median_area_length_width_um",
         "median_length_body_width_ratio",
-        "body_width_available_fraction",
-        "median_projection_z_extent_um",
-        "median_3d_tortuosity",
-        "median_observed_slab_effective_thickness_um",
-        "median_observed_slice_mask_volume_um3",
-        "median_3d_z_span_um",
-        "normalization_warning",
+        "median_representative_section_tortuosity",
     ]
     completed_specimens[
         [column for column in biological_columns if column in completed_specimens.columns]
     ].to_csv(output_root / "specimen_summary.csv", index=False)
     specimen_frame.to_csv(output_root / "specimen_technical_qc.csv", index=False)
-    _study_group_summary(completed_specimens).to_csv(
-        output_root / "group_summary.csv", index=False
-    )
+    group_summary = _study_group_summary(completed_specimens)
+    expected_by_group = {}
+    for row in rows:
+        if _study_bool(row.get("include", True)):
+            group = str(row.get("group", ""))
+            expected_by_group[group] = expected_by_group.get(group, 0) + 1
+    if not group_summary.empty:
+        group_summary["completed_specimens"] = group_summary["group"].map(
+            lambda group: int(
+                completed_specimens["group"].astype(str).eq(str(group)).sum()
+            )
+        )
+        group_summary["expected_specimens"] = group_summary["group"].map(
+            lambda group: int(expected_by_group.get(str(group), 0))
+        )
+        group_summary["cohort_status"] = (
+            "final_complete_cohort"
+            if allow_group_comparison
+            else "partial_descriptive_only_no_inference"
+        )
+    group_summary.to_csv(output_root / "group_summary.csv", index=False)
     _study_atomic_json(
         output_root / "normalization_qc.json",
         _study_normalization_qc(completed_specimens),
     )
-    comparison_frame, comparison_qc = _study_specimen_group_comparisons(
-        completed_specimens
-    )
+    if allow_group_comparison:
+        comparison_frame, comparison_qc = _study_specimen_group_comparisons(
+            completed_specimens
+        )
+    else:
+        comparison_frame = pd.DataFrame()
+        comparison_qc = {
+            "status": "blocked_until_all_included_specimens_complete",
+            "analysis_unit": "biological specimen",
+            "message": (
+                "Inferential group comparisons are not generated from a partial "
+                "or failed cohort. Resolve failures or explicitly exclude specimens."
+            ),
+        }
     comparison_frame.to_csv(
         output_root / "specimen_group_comparisons.csv",
         index=False,
@@ -13708,11 +14999,14 @@ def _write_study_aggregates(output_root, rows, state):
         output_root / "specimen_group_comparison_qc.json",
         comparison_qc,
     )
-    _write_study_specimen_comparison_plot(
-        completed_specimens,
-        comparison_frame,
-        output_root / "specimen_group_comparison.pdf",
-    )
+    if allow_group_comparison:
+        _write_study_specimen_comparison_plot(
+            completed_specimens,
+            comparison_frame,
+            output_root / "specimen_group_comparison.pdf",
+        )
+    else:
+        _invalidate_stale_study_analysis_outputs(output_root)
     if track_frames:
         study_tracks = pd.concat(track_frames, ignore_index=True)
         study_tracks.to_csv(output_root / "study_track_records.csv", index=False)
@@ -13728,6 +15022,37 @@ def _write_study_aggregates(output_root, rows, state):
             index=False,
         )
     return completed_specimens.to_dict(orient="records")
+
+
+def _invalidate_stale_study_analysis_outputs(output_root):
+    """Move prior inferential outputs aside when the current cohort is partial."""
+    from datetime import datetime
+
+    output_root = pl.Path(output_root).resolve()
+    stale_candidates = [
+        output_root / "between_sample_analysis",
+        output_root / "specimen_group_comparison.pdf",
+    ]
+    existing = [path for path in stale_candidates if path.exists()]
+    if not existing:
+        return None
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    destination = output_root / "technical_qc" / "invalidated_outputs" / stamp
+    destination.mkdir(parents=True, exist_ok=False)
+    moved = []
+    for source in existing:
+        target = destination / source.name
+        os.replace(source, target)
+        moved.append(str(target.relative_to(output_root)).replace("\\", "/"))
+    _study_atomic_json(
+        destination / "invalidation.json",
+        {
+            "reason": "current study cohort is incomplete, failed, or stopped",
+            "inference_status": "blocked",
+            "moved_outputs": moved,
+        },
+    )
+    return destination
 
 
 def run_multisample_study(
@@ -13779,17 +15104,31 @@ def run_multisample_study(
     state = {
         "pipeline_version": _VERSION,
         "config_hash": config_hash,
+        "runtime_identity": _pipeline_runtime_identity(),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
         "samples": {},
     }
     if resume and state_path.exists():
-        try:
-            with state_path.open("r", encoding="utf-8") as handle:
-                prior = json.load(handle)
-            if prior.get("config_hash") == config_hash:
-                state = prior
-        except Exception:
-            pass
+        state = _load_study_resume_state(state_path, config_hash)
+    included = [row for row in validated if row["include"]]
+    if resume:
+        for row in included:
+            sample_id = row["sample_id"]
+            prior = state.get("samples", {}).get(sample_id, {})
+            if prior.get("status") != "complete":
+                continue
+            prior_output = _validated_resume_output_path(
+                output_root,
+                sample_id,
+                prior.get("output_dir", ""),
+            )
+            specimen_hash, _manifest = _study_specimen_input_fingerprint(row)
+            _validate_study_completion_marker(
+                prior_output / "sample_complete.json",
+                sample_id,
+                config_hash,
+                specimen_hash,
+            )
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
     state["run_status"] = "running"
     _study_atomic_json(output_root / "runtime_parameters.json", {
@@ -13798,7 +15137,6 @@ def run_multisample_study(
     _study_atomic_json(state_path, state)
 
     runner = process_batch if batch_runner is None else batch_runner
-    included = [row for row in validated if row["include"]]
     total = len(included)
     for position, row in enumerate(included, start=1):
         if should_stop():
@@ -13817,11 +15155,20 @@ def run_multisample_study(
                 )
             break
         sample_id = row["sample_id"]
+        specimen_input_hash, specimen_input_manifest = (
+            _study_specimen_input_fingerprint(row)
+        )
         prior = state.get("samples", {}).get(sample_id, {})
         marker = pl.Path(prior.get("output_dir", "")) / "sample_complete.json" if prior.get("output_dir") else None
-        if resume and prior.get("status") == "complete" and marker is not None and marker.exists():
+        if resume and prior.get("status") == "complete" and marker is not None:
+            _validate_study_completion_marker(
+                marker,
+                sample_id,
+                config_hash,
+                specimen_input_hash,
+            )
             if progress_callback:
-                progress_callback({"event": "skipped", "sample_id": sample_id, "position": position, "total": total, "message": "already complete"})
+                progress_callback({"event": "skipped", "sample_id": sample_id, "position": position, "total": total, "message": "verified complete"})
             continue
 
         attempt_dir = _study_next_attempt_dir(output_root / "samples" / sample_id)
@@ -13832,7 +15179,12 @@ def run_multisample_study(
             "output_dir": str(attempt_dir),
             "message": "",
             "started_at": datetime.now().isoformat(timespec="seconds"),
+            "specimen_input_hash": specimen_input_hash,
         }
+        _study_atomic_json(
+            attempt_dir / "specimen_input_manifest.json",
+            specimen_input_manifest,
+        )
         state["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _study_atomic_json(state_path, state)
         if progress_callback:
@@ -13846,6 +15198,9 @@ def run_multisample_study(
                 "OUTPUT_DIR": str(attempt_dir),
                 "FILE_PATTERN": row["file_pattern"],
                 "ROI_MASK_PATH": row["roi_path"],
+                "EXCLUSION_MASK_PATH": str(
+                    row.get("exclusion_mask_path", "") or ""
+                ),
                 "UM_PER_PX_XY": float(row["xy_um_per_pixel"]),
                 "UM_PER_SLICE_Z": float(row["z_um_per_slice"]),
                 "SHOW_PREVIEW_WINDOW": False,
@@ -13880,16 +15235,43 @@ def run_multisample_study(
                 sample_cfg.get("AUTO_LEICA_CALIBRATION", True)
             ),
         }
+        stopped_during_sample = False
         try:
-            runner(sample_cfg)
+            if production_runner:
+                def sample_progress(slice_event):
+                    if progress_callback:
+                        event_payload = dict(slice_event)
+                        event_payload.update(
+                            {
+                                "sample_id": sample_id,
+                                "position": position,
+                                "total": total,
+                            }
+                        )
+                        progress_callback(event_payload)
+
+                runner(
+                    sample_cfg,
+                    progress_callback=sample_progress,
+                    stop_requested=stop_requested,
+                )
+            else:
+                runner(sample_cfg)
             summary = summarize_study_sample(row, attempt_dir)
             marker_data = {
+                "schema_version": "1.0",
                 "sample_id": sample_id,
                 "group": row.get("group", ""),
                 "pipeline_version": _VERSION,
+                "runtime_identity": _pipeline_runtime_identity(),
                 "config_hash": config_hash,
+                "specimen_input_hash": specimen_input_hash,
                 "completed_at": datetime.now().isoformat(timespec="seconds"),
                 "summary": summary,
+                "artifact_inventory": _study_completion_artifact_inventory(
+                    attempt_dir,
+                    sample_cfg,
+                ),
             }
             _study_atomic_json(attempt_dir / "sample_complete.json", marker_data)
             state["samples"][sample_id].update(
@@ -13901,6 +15283,18 @@ def run_multisample_study(
             )
             event = "complete"
             message = "complete"
+        except AnalysisStopRequested as exc:
+            state["samples"][sample_id].update(
+                {
+                    "status": "stopped",
+                    "message": str(exc),
+                    "completed_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
+            state["run_status"] = "stopped"
+            event = "stopped"
+            message = str(exc)
+            stopped_during_sample = True
         except Exception as exc:
             state["samples"][sample_id].update(
                 {
@@ -13913,9 +15307,16 @@ def run_multisample_study(
             message = state["samples"][sample_id]["message"]
         state["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _study_atomic_json(state_path, state)
-        _write_study_aggregates(output_root, validated, state)
+        _write_study_aggregates(
+            output_root,
+            validated,
+            state,
+            allow_group_comparison=False,
+        )
         if progress_callback:
             progress_callback({"event": event, "sample_id": sample_id, "position": position, "total": total, "message": message})
+        if stopped_during_sample:
+            break
         if should_stop():
             state["run_status"] = "stopped"
             state["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -13933,34 +15334,172 @@ def run_multisample_study(
             break
 
     if state.get("run_status") != "stopped":
-        state["run_status"] = "complete"
+        included_statuses = [
+            state.get("samples", {}).get(row["sample_id"], {}).get("status", "pending")
+            for row in included
+        ]
+        failed_count = sum(status == "failed" for status in included_statuses)
+        all_complete = bool(included_statuses) and all(
+            status == "complete" for status in included_statuses
+        )
+        state["run_status"] = (
+            "complete"
+            if all_complete
+            else ("complete_with_failures" if failed_count else "incomplete")
+        )
         state["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _study_atomic_json(state_path, state)
-    summaries = _write_study_aggregates(output_root, validated, state)
+    summaries = _write_study_aggregates(
+        output_root,
+        validated,
+        state,
+        allow_group_comparison=state.get("run_status") == "complete",
+    )
     return state, pd.DataFrame(summaries)
 
 
-def generate_study_between_sample_analysis(study_output_dir):
+def _validated_complete_study_report_inputs(study_output_dir):
+    """Fail closed unless all currently included specimens are verified complete."""
+    study_output = pl.Path(study_output_dir).resolve()
+    state_path = study_output / "study_run_state.json"
+    manifest_path = study_output / "study_manifest.csv"
+    if not state_path.is_file() or not manifest_path.is_file():
+        raise ValueError(
+            "A current study state and manifest are required before biological "
+            "report generation."
+        )
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Study state is unreadable: {state_path}") from exc
+    if state.get("run_status") != "complete":
+        raise ValueError(
+            "Biological group comparison is blocked because the current study "
+            f"status is {state.get('run_status', 'unknown')!r}, not 'complete'."
+        )
+    rows = load_multisample_manifest(manifest_path)
+    included = [row for row in rows if _study_bool(row.get("include", True))]
+    if not included:
+        raise ValueError("The study manifest contains no included specimens.")
+    marker_hashes = {}
+    for row in included:
+        sample_id = str(row.get("sample_id", ""))
+        record = state.get("samples", {}).get(sample_id, {})
+        if record.get("status") != "complete":
+            raise ValueError(
+                f"Biological group comparison is blocked: {sample_id} is "
+                f"{record.get('status', 'missing')!r}."
+            )
+        output_dir = pl.Path(str(record.get("output_dir", ""))).resolve()
+        marker_path = output_dir / "sample_complete.json"
+        _validate_study_completion_marker(
+            marker_path,
+            sample_id,
+            str(state.get("config_hash", "")),
+            str(record.get("specimen_input_hash", "")),
+        )
+        marker_hashes[sample_id] = _sha256_file(marker_path)
+    aggregate_names = ("specimen_summary.csv", "study_track_records.csv")
+    missing_aggregates = [
+        name for name in aggregate_names if not (study_output / name).is_file()
+    ]
+    if missing_aggregates:
+        raise ValueError(
+            "Study aggregation must finish before report generation. Missing: "
+            + ", ".join(missing_aggregates)
+        )
+    aggregate_hashes = {
+        name: _sha256_file(study_output / name) for name in aggregate_names
+    }
+    return {
+        "state": state,
+        "state_path": state_path,
+        "manifest_path": manifest_path,
+        "state_sha256": _sha256_file(state_path),
+        "manifest_sha256": _sha256_file(manifest_path),
+        "sample_completion_marker_sha256": marker_hashes,
+        "aggregate_source_sha256": aggregate_hashes,
+    }
+
+
+def _study_report_artifact_inventory(package_root):
+    """Hash every published report artifact except the binding itself."""
+    package_root = pl.Path(package_root).resolve()
+    records = []
+    if not package_root.is_dir():
+        return records
+    for path in sorted(item for item in package_root.rglob("*") if item.is_file()):
+        relative = path.relative_to(package_root).as_posix()
+        if relative == "package_source_binding.json":
+            continue
+        records.append(
+            {
+                "path": relative,
+                "size_bytes": int(path.stat().st_size),
+                "sha256": _sha256_file(path),
+            }
+        )
+    return records
+
+
+def _study_analysis_package_binding_status(study_output_dir):
+    """Return whether an existing report package matches current complete inputs."""
+    study_output = pl.Path(study_output_dir).resolve()
+    binding_path = (
+        study_output / "between_sample_analysis" / "package_source_binding.json"
+    )
+    if not binding_path.is_file():
+        return False, "The analysis package has no current source binding."
+    try:
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        inputs = _validated_complete_study_report_inputs(study_output)
+    except Exception as exc:
+        return False, str(exc)
+    if binding.get("study_state_sha256") != inputs["state_sha256"]:
+        return False, "The analysis package predates the current study state."
+    if binding.get("study_manifest_sha256") != inputs["manifest_sha256"]:
+        return False, "The analysis package predates the current study manifest."
+    if binding.get("sample_completion_marker_sha256") != inputs[
+        "sample_completion_marker_sha256"
+    ]:
+        return False, "The analysis package does not match current specimen outputs."
+    if binding.get("aggregate_source_sha256") != inputs.get(
+        "aggregate_source_sha256"
+    ):
+        return False, "The analysis package predates the current aggregate tables."
+    recorded_runtime = binding.get("report_runtime_identity") or {}
+    current_runtime = _pipeline_runtime_identity()
+    if recorded_runtime.get("runtime_identity_sha256") != current_runtime.get(
+        "runtime_identity_sha256"
+    ):
+        return False, "The analysis package was generated by different report code."
+    recorded_artifacts = binding.get("report_artifacts")
+    current_artifacts = _study_report_artifact_inventory(binding_path.parent)
+    if not recorded_artifacts or recorded_artifacts != current_artifacts:
+        return False, "The generated report artifacts do not match their source binding."
+    return True, "The package is bound to the current complete cohort."
+
+
+def generate_study_between_sample_analysis(
+    study_output_dir, stop_requested=None, progress_callback=None
+):
     """Generate the organized biological-results and quality-control packages."""
     study_output = pl.Path(study_output_dir).resolve()
+    report_inputs = _validated_complete_study_report_inputs(study_output)
+    audit_ready, audit_detail = production_audit_gate_state()
+    if not audit_ready:
+        raise RuntimeError(
+            "Biological report generation is blocked by the scientific audit gate. "
+            + audit_detail
+        )
     generator = (
         pl.Path(PROJECT_ROOT)
         / "scripts"
-        / "generate_v57_biological_comparison.py"
+        / "generate_v571_biological_comparison.py"
     )
     if not generator.is_file():
         raise FileNotFoundError(
             f"Between-sample report generator was not found: {generator}"
-        )
-    required = (
-        "specimen_summary.csv",
-        "study_track_records.csv",
-    )
-    missing = [name for name in required if not (study_output / name).is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "Study aggregation must finish before report generation. Missing: "
-            + ", ".join(missing)
         )
     specimens = pd.read_csv(study_output / "specimen_summary.csv")
     reference_group, comparison_group = _study_explicit_group_pair(specimens)
@@ -13974,18 +15513,68 @@ def generate_study_between_sample_analysis(study_output_dir):
         "--comparison-group",
         comparison_group,
     ]
-    completed = subprocess.run(
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "reporting",
+                "message": "Generating biological and quality-control packages",
+            }
+        )
+    # Never refresh in place: archive the previous published package first.
+    # A failed subprocess may leave diagnostics behind, but without a binding
+    # those files cannot be opened as current biological results.
+    _invalidate_stale_study_analysis_outputs(study_output)
+    completed_process = subprocess.Popen(
         command,
         cwd=str(PROJECT_ROOT),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
+    )
+    while completed_process.poll() is None:
+        requested = (
+            bool(stop_requested())
+            if callable(stop_requested)
+            else bool(
+                getattr(stop_requested, "is_set", lambda: False)()
+                if stop_requested is not None
+                else False
+            )
+        )
+        if requested:
+            completed_process.terminate()
+            try:
+                completed_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                completed_process.kill()
+                completed_process.wait(timeout=5)
+            _invalidate_stale_study_analysis_outputs(study_output)
+            raise AnalysisStopRequested(
+                "Biological report packaging stopped; specimen results remain complete."
+            )
+        time.sleep(0.2)
+    stdout, stderr = completed_process.communicate()
+    completed = subprocess.CompletedProcess(
+        command,
+        completed_process.returncode,
+        stdout,
+        stderr,
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise RuntimeError(
             "Between-sample report generation failed"
             + (f": {detail}" if detail else ".")
+        )
+    aggregate_after = {
+        name: _sha256_file(study_output / name)
+        for name in ("specimen_summary.csv", "study_track_records.csv")
+    }
+    if aggregate_after != report_inputs["aggregate_source_sha256"]:
+        _invalidate_stale_study_analysis_outputs(study_output)
+        raise RuntimeError(
+            "Study aggregate tables changed during report generation; the "
+            "generated package was invalidated."
         )
     package_root = study_output / "between_sample_analysis"
     paths = {
@@ -13996,6 +15585,28 @@ def generate_study_between_sample_analysis(study_output_dir):
     for label, path in paths.items():
         if not path.is_dir():
             raise RuntimeError(f"Generated {label} was not found: {path}")
+    report_artifacts = _study_report_artifact_inventory(package_root)
+    if not report_artifacts:
+        raise RuntimeError("The report generator produced no publishable artifacts.")
+    _study_atomic_json(
+        package_root / "package_source_binding.json",
+        {
+            "schema_version": "1.0",
+            "pipeline_version": _VERSION,
+            "study_state_sha256": report_inputs["state_sha256"],
+            "study_manifest_sha256": report_inputs["manifest_sha256"],
+            "sample_completion_marker_sha256": report_inputs[
+                "sample_completion_marker_sha256"
+            ],
+            "aggregate_source_sha256": report_inputs[
+                "aggregate_source_sha256"
+            ],
+            "analysis_unit": "biological specimen",
+            "cohort_status": "final_complete_cohort",
+            "report_runtime_identity": _pipeline_runtime_identity(),
+            "report_artifacts": report_artifacts,
+        },
+    )
     return paths
 
 
@@ -14035,6 +15646,17 @@ class SpermGUI:
         global ``CONFIG`` dict and updates the status label so the researcher
         knows the new parameters are active.
         """
+        if analysis_profile_review_state(CONFIG) == "reviewed":
+            proceed = messagebox.askyesno(
+                "Create Custom Analysis Settings",
+                "Editing advanced parameters will mark the loaded profile as "
+                "custom and block production batch and study runs until a "
+                "reviewed profile is loaded again. Continue?",
+                parent=self.root,
+            )
+            if not proceed:
+                return
+
         def on_apply(new_cfg):
             candidate = CONFIG.copy()
             candidate.update(new_cfg)
@@ -14048,8 +15670,14 @@ class SpermGUI:
                 )
                 return
             CONFIG.update(candidate)
+            mark_analysis_profile_custom(
+                CONFIG,
+                "Parameters were edited in the Advanced parameter editor.",
+            )
             self._refresh_analysis_profile_status()
-            self.lbl_roi.config(text="Parameters updated in memory.")
+            self.lbl_roi.config(
+                text="Custom parameters active; review is required before a production run."
+            )
 
         editor = ParameterEditor(self.root, CONFIG, self.default_config, on_apply)
 
@@ -14090,13 +15718,45 @@ class SpermGUI:
         CONFIG.update(candidate)
         self._refresh_analysis_profile_status()
 
-    def _load_tuned_params(self):
+    def _select_microscope_metadata(self):
+        """Locate and validate explicit Leica XML calibration for the loaded stack."""
+        filepath = filedialog.askopenfilename(
+            title="Select Leica microscope metadata XML",
+            filetypes=[("Leica metadata", "*.xml"), ("All Files", "*.*")],
+            initialdir=self.input_dir or os.path.dirname(os.path.abspath(__file__)),
+            parent=self.root,
+        )
+        if not filepath:
+            return
+        try:
+            candidate, calibration = apply_microscope_calibration(CONFIG, filepath)
+            candidate["_CALIBRATION_LOCKED_FROM_GUI"] = True
+            candidate["_CALIBRATION_METADATA_SHA256"] = _sha256_file(filepath)
+            CONFIG.update(candidate)
+            self._refresh_analysis_profile_status()
+            messagebox.showinfo(
+                "Microscope Calibration Loaded",
+                f"XY: {calibration['UM_PER_PX_XY']:.6g} um/pixel\n"
+                f"Z: {calibration['UM_PER_SLICE_Z']:.6g} um/slice\n\n"
+                f"Metadata:\n{filepath}",
+                parent=self.root,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Microscope Metadata Error",
+                str(exc),
+                parent=self.root,
+            )
+
+    def _load_tuned_params(self, parent=None):
         """Load one analysis profile containing segmentation and tracking settings."""
         from tkinter import filedialog, messagebox
+        parent = parent or self.root
         filepath = filedialog.askopenfilename(
-            title="Select Saturn v5.7 Analysis Profile",
+            title="Select Saturn v5.7.1 Analysis Profile",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
-            initialdir=os.path.dirname(os.path.abspath(__file__))
+            initialdir=os.path.dirname(os.path.abspath(__file__)),
+            parent=parent,
         )
         if not filepath:
             return
@@ -14118,6 +15778,7 @@ class SpermGUI:
                         ("All Files", "*.*"),
                     ],
                     initialdir=os.path.dirname(filepath),
+                    parent=parent,
                 )
                 if not replacement:
                     return
@@ -14142,24 +15803,128 @@ class SpermGUI:
                 f"U-Net checkpoint: {checkpoint_name}\n\n"
                 "This profile is now active for Run Slice, Run Batch, and "
                 "the Study Manager.",
-                parent=self.root,
+                parent=parent,
             )
         except Exception as e:
-            messagebox.showerror("Load Error", f"Failed to load parameters:\n{e}")
-
-    def _analysis_preflight(self, cfg, operation):
-        """Block a GUI run when its selected analysis inputs are incomplete."""
-        try:
-            validate_analysis_runtime_config(cfg)
-            return True
-        except Exception as exc:
             messagebox.showerror(
-                f"{operation} Not Ready",
-                f"{exc}\n\nLoad the reviewed analysis-profile JSON and its "
-                "matching U-Net checkpoint in the Parameters section.",
-                parent=self.root,
+                "Load Error",
+                f"Failed to load parameters:\n{e}",
+                parent=parent,
             )
-            return False
+
+    def _current_analysis_preflight_report(self, cfg, operation):
+        """Resolve the main-window inputs into one structured readiness report."""
+        roi_ready = False
+        if self.current_img is not None:
+            try:
+                roi = self.build_roi_mask()
+                roi_ready = roi is not None and bool(np.any(roi))
+            except Exception:
+                roi_ready = False
+
+        calibration_ready = False
+        calibration_detail = "Load source images to resolve calibration."
+        if self.files:
+            calibration_cfg = dict(cfg)
+            try:
+                provenance = resolve_stack_microscope_calibration(
+                    calibration_cfg,
+                    self.files,
+                    input_dir=self.input_dir,
+                )
+                calibration_status = str(provenance.get("status", ""))
+                calibration_ready = calibration_status.startswith("leica_xml")
+                calibration_detail = (
+                    f"{calibration_status or 'unresolved'}: "
+                    f"XY={float(provenance['xy_um_per_pixel']):.6g} um/pixel, "
+                    f"Z={float(provenance['z_um_per_slice']):.6g} um/slice"
+                )
+                if not calibration_ready:
+                    calibration_detail += (
+                        ". Comparative production analysis requires Leica XML "
+                        "metadata rather than fallback calibration."
+                    )
+            except Exception as exc:
+                calibration_detail = str(exc)
+
+        return build_gui_preflight_report(
+            cfg,
+            operation=operation,
+            image_count=len(self.files),
+            roi_ready=roi_ready,
+            calibration_ready=calibration_ready,
+            calibration_detail=calibration_detail,
+            require_reviewed_profile=True,
+        )
+
+    def _show_preflight_report(self, report, operation, parent=None):
+        """Render an actionable readiness checklist without exposing raw CONFIG."""
+        parent = parent or self.root
+        window = tk.Toplevel(parent)
+        window.title(f"{operation} Readiness")
+        window.geometry("900x430")
+        window.minsize(720, 340)
+
+        banner_color = "#dcfce7" if report.ready else "#fee2e2"
+        banner_text = "Ready to run" if report.ready else "Action required"
+        tk.Label(
+            window,
+            text=banner_text,
+            bg=banner_color,
+            fg="#166534" if report.ready else "#991b1b",
+            font=("Arial", 12, "bold"),
+            anchor="w",
+            padx=10,
+            pady=8,
+        ).pack(fill="x")
+
+        columns = ("status", "check", "detail", "action")
+        tree = ttk.Treeview(window, columns=columns, show="headings")
+        headings = {
+            "status": "Status",
+            "check": "Check",
+            "detail": "What was found",
+            "action": "What to do",
+        }
+        widths = {"status": 80, "check": 190, "detail": 320, "action": 280}
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(column, width=widths[column], minwidth=70)
+        for issue in report.issues:
+            status = {
+                "block": "Fix",
+                "warning": "Review",
+                "info": "Ready",
+            }[issue.severity]
+            tree.insert(
+                "",
+                "end",
+                values=(status, issue.title, issue.detail, issue.action),
+                tags=(issue.severity,),
+            )
+        tree.tag_configure("block", background="#fef2f2")
+        tree.tag_configure("warning", background="#fffbeb")
+        tree.tag_configure("info", background="#f0fdf4")
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+        tk.Button(window, text="Close", command=window.destroy).pack(
+            side="right", padx=10, pady=(0, 10)
+        )
+        return window
+
+    def _review_current_readiness(self):
+        report = self._current_analysis_preflight_report(
+            CONFIG.copy(),
+            "Analysis",
+        )
+        self._show_preflight_report(report, "Analysis")
+
+    def _analysis_preflight(self, cfg, operation, report=None):
+        """Block a GUI run using the same structured checklist shown to users."""
+        report = report or self._current_analysis_preflight_report(cfg, operation)
+        if report.ready:
+            return True
+        self._show_preflight_report(report, operation)
+        return False
 
     def _launch_parameter_tuner(self, mode):
         """Launch the external V5.6 ROI-ADAPTIVE tuner without blocking the GUI."""
@@ -14458,16 +16223,28 @@ class SpermGUI:
         self.study_run_button = None
         self.study_stop_button = None
         self.study_progress_bar = None
+        self.study_slice_progress_bar = None
         self.study_status_var = tk.StringVar(value="No study loaded")
         self.study_profile_var = tk.StringVar(
             value=analysis_profile_summary(CONFIG)
         )
+        self.study_design_var = tk.StringVar(
+            value="Study design: assign one reference and one comparison group"
+        )
         self.study_output_var = tk.StringVar(value="Output: not selected")
         self.study_progress_var = tk.DoubleVar(value=0)
         self.study_progress_text_var = tk.StringVar(value="Progress: 0 / 0 specimens")
+        self.study_slice_progress_var = tk.DoubleVar(value=0)
+        self.study_slice_progress_text_var = tk.StringVar(
+            value="Current specimen: 0 / 0 slices"
+        )
         self._study_running = False
         self._study_report_running = False
         self._study_stop_event = threading.Event()
+        self._study_progress_state = {"status": "idle", "specimens": {}}
+        self._batch_running = False
+        self._batch_stop_event = threading.Event()
+        self.batch_stop_button = None
 
         self.roi_points = []
         self.drawing = False
@@ -14503,18 +16280,19 @@ class SpermGUI:
         quick_row1.pack(fill='x', padx=6, pady=(3, 2))
         tk.Button(
             quick_row1,
-            text='Run Slice',
+            text='Preview Current Slice',
             command=self.run_analysis_slice,
             width=10
         ).pack(side='left', expand=True, fill='x', padx=(0, 2))
-        tk.Button(
+        self.quick_batch_button = tk.Button(
             quick_row1,
             text='Run Batch',
             command=self.run_batch_analysis,
             bg='#d4edda',
             font=('Arial', 9, 'bold'),
             width=10
-        ).pack(side='right', expand=True, fill='x', padx=(2, 0))
+        )
+        self.quick_batch_button.pack(side='right', expand=True, fill='x', padx=(2, 0))
         quick_row2 = tk.Frame(self.sidebar_quick_actions, bg='#e5e7eb')
         quick_row2.pack(fill='x', padx=6, pady=(2, 6))
         tk.Button(quick_row2, text='Top', command=self._sidebar_scroll_top, width=6).pack(side='left', fill='x', padx=(0, 2))
@@ -14537,7 +16315,7 @@ class SpermGUI:
         self.sidebar_container.bind('<Leave>', self._unbind_sidebar_mousewheel)
         # -----------------------------------------------------------------------------------------------
 
-        self.default_config = CONFIG.copy()
+        self.default_config = copy.deepcopy(ANALYSIS_CONFIG_DEFAULTS)
         self.mode_var = tk.StringVar(value='view')
 
         data_section = self._make_sidebar_section(self.sidebar, "Data", default_open=True, accent="#dbeafe")
@@ -14564,17 +16342,36 @@ class SpermGUI:
         ).pack(fill="x", padx=8, pady=(0, 8))
 
         params_section = self._make_sidebar_section(self.sidebar, "Parameters", default_open=True, accent="#e2e3e5")
-        tk.Button(params_section, text='Configure Parameters', command=self.open_parameter_editor, bg='#e2e3e5').pack(fill='x', padx=8, pady=(8, 4))
         params_frame = tk.Frame(params_section, bg='#f7f7f7')
-        params_frame.pack(fill='x', padx=8, pady=(0, 4))
+        params_frame.pack(fill='x', padx=8, pady=(8, 4))
         tk.Button(params_frame, text='Load Analysis Profile', command=self._load_tuned_params, bg='#d4edda', width=18).pack(side='left', expand=True, fill='x', padx=(0, 2))
-        tk.Button(params_frame, text='Revert Defaults', command=self._revert_to_defaults, bg='#f8d7da', width=14).pack(side='right', expand=True, fill='x', padx=(2, 0))
+        tk.Button(params_frame, text='Review Readiness', command=self._review_current_readiness, bg='#e0f2fe', width=14).pack(side='right', expand=True, fill='x', padx=(2, 0))
         tk.Button(
             params_section,
-            text="Select U-Net Checkpoint",
+            text="Relocate Matching U-Net Checkpoint",
             command=self._select_unet_checkpoint,
             bg="#e0e7ff",
         ).pack(fill="x", padx=8, pady=(0, 4))
+        tk.Button(
+            params_section,
+            text="Locate Microscope Metadata XML",
+            command=self._select_microscope_metadata,
+            bg="#ecfccb",
+        ).pack(fill="x", padx=8, pady=(0, 4))
+        advanced_frame = tk.Frame(params_section, bg="#f7f7f7")
+        advanced_frame.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Button(
+            advanced_frame,
+            text="Advanced Parameters",
+            command=self.open_parameter_editor,
+            bg="#f3f4f6",
+        ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        tk.Button(
+            advanced_frame,
+            text="Revert Defaults",
+            command=self._revert_to_defaults,
+            bg="#f8d7da",
+        ).pack(side="right", expand=True, fill="x", padx=(2, 0))
         self.lbl_params_status = tk.Label(
             params_section,
             text=analysis_profile_summary(CONFIG),
@@ -14606,6 +16403,18 @@ class SpermGUI:
         tools_section = self._make_sidebar_section(self.sidebar, "View / ROI Drawing", default_open=True, accent="#fde68a")
         tk.Radiobutton(tools_section, text='View/Nav (Raw Image)', variable=self.mode_var, value='view', command=self.render, bg="#f7f7f7").pack(anchor='w', padx=10, pady=(6, 0))
         tk.Radiobutton(tools_section, text='Review Overlays (After Batch)', variable=self.mode_var, value='review', command=self.render, bg="#f7f7f7").pack(anchor='w', padx=10)
+        tk.Label(
+            tools_section,
+            text=(
+                "Overlay review is read-only. Manual corrections are disabled "
+                "until the filled-mask audit workflow is validated."
+            ),
+            wraplength=250,
+            justify="left",
+            fg="#92400e",
+            bg="#fffbeb",
+            font=("Arial", 8),
+        ).pack(fill="x", padx=8, pady=(3, 5))
         tk.Radiobutton(tools_section, text='Draw ROI (Polygon)', variable=self.mode_var, value='roi', command=self.render, bg="#f7f7f7").pack(anchor='w', padx=10)
         tk.Label(tools_section, text='Left-click points, right-click undo', font=('Arial', 8, 'italic'), fg='dimgray', bg="#f7f7f7").pack(fill='x', padx=10, pady=(2, 4))
         tk.Button(tools_section, text='Finalize Polygon', command=self.finalize_roi, bg='#ffeeba').pack(fill='x', padx=20, pady=(0, 8))
@@ -14621,7 +16430,21 @@ class SpermGUI:
 
         analysis_section = self._make_sidebar_section(self.sidebar, "Analysis", default_open=True, accent="#d4edda")
         tk.Button(analysis_section, text='Run Analysis on Slice', command=self.run_analysis_slice).pack(fill='x', padx=8, pady=(8, 4))
-        tk.Button(analysis_section, text='Run Batch (All Slices + 3D Track)', command=self.run_batch_analysis, bg='#d4edda', font=('Arial', 10, 'bold')).pack(fill='x', padx=8, pady=(0, 8))
+        self.batch_run_button = tk.Button(
+            analysis_section,
+            text='Run Batch (All Slices + 3D Track)',
+            command=self.run_batch_analysis,
+            bg='#d4edda',
+            font=('Arial', 10, 'bold'),
+        )
+        self.batch_run_button.pack(fill='x', padx=8, pady=(0, 4))
+        self.batch_stop_button = tk.Button(
+            analysis_section,
+            text='Stop After Current Slice',
+            command=self._request_batch_stop,
+            state='disabled',
+        )
+        self.batch_stop_button.pack(fill='x', padx=8, pady=(0, 8))
 
         ai_section = self._make_sidebar_section(self.sidebar, f'{_VERSION} AI Biological Analysis', default_open=False, accent="#ede9fe")
         species_list = [
@@ -14708,20 +16531,68 @@ class SpermGUI:
 
         toolbar = tk.Frame(window, bg="#e5e7eb", bd=1, relief="ridge")
         toolbar.pack(fill="x")
+
+        data_row = tk.Frame(toolbar, bg="#e5e7eb")
+        data_row.pack(fill="x", padx=6, pady=(5, 2))
+        tk.Label(
+            data_row,
+            text="1  Specimens",
+            width=13,
+            anchor="w",
+            bg="#e5e7eb",
+            font=("Arial", 9, "bold"),
+        ).pack(side="left")
         for text, command in (
-            ("Discover Root", self._study_discover_root),
+            ("Discover Folder", self._study_discover_root),
             ("Load Manifest", self._study_load_manifest),
             ("Save Manifest", self._study_save_manifest),
+            ("Organize Copy", self._study_organize_copy),
+            ("Set Metadata XML", self._study_set_metadata_xml),
+            ("Preview Selected", self._study_preview_selected_specimen),
+        ):
+            tk.Button(data_row, text=text, command=command).pack(
+                side="left", padx=3
+            )
+
+        groups_row = tk.Frame(toolbar, bg="#e5e7eb")
+        groups_row.pack(fill="x", padx=6, pady=2)
+        tk.Label(
+            groups_row,
+            text="2  Study design",
+            width=13,
+            anchor="w",
+            bg="#e5e7eb",
+            font=("Arial", 9, "bold"),
+        ).pack(side="left")
+        for text, command in (
             ("Assign Group", self._study_assign_group),
             ("Set Reference", lambda: self._study_assign_group_role("reference")),
             ("Set Comparison", lambda: self._study_assign_group_role("comparison")),
-            ("Organize Dataset Copy", self._study_organize_copy),
-            ("Select Output", self._study_select_output),
-            ("Validate", self._study_validate),
         ):
-            tk.Button(toolbar, text=text, command=command).pack(side="left", padx=4, pady=6)
+            tk.Button(groups_row, text=text, command=command).pack(
+                side="left", padx=3
+            )
+
+        run_row = tk.Frame(toolbar, bg="#e5e7eb")
+        run_row.pack(fill="x", padx=6, pady=(2, 5))
+        tk.Label(
+            run_row,
+            text="3  Run setup",
+            width=13,
+            anchor="w",
+            bg="#e5e7eb",
+            font=("Arial", 9, "bold"),
+        ).pack(side="left")
+        for text, command in (
+            ("Load Profile", lambda: self._load_tuned_params(parent=window)),
+            ("Select Output", self._study_select_output),
+            ("Review Readiness", self._study_review_readiness),
+        ):
+            tk.Button(run_row, text=text, command=command).pack(
+                side="left", padx=3
+            )
         self.study_run_button = tk.Button(
-            toolbar,
+            run_row,
             text="Run / Resume Study",
             command=self._study_run,
             bg="#bbf7d0",
@@ -14729,8 +16600,8 @@ class SpermGUI:
         )
         self.study_run_button.pack(side="right", padx=6, pady=6)
         self.study_stop_button = tk.Button(
-            toolbar,
-            text="Stop After Current Sample",
+            run_row,
+            text="Stop After Current Slice",
             command=self._study_request_stop,
             bg="#fecaca",
             state="disabled",
@@ -14775,6 +16646,14 @@ class SpermGUI:
             bg="#f8fafc",
             fg="#0f766e",
         ).pack(fill="x")
+        tk.Label(
+            status,
+            textvariable=self.study_design_var,
+            anchor="w",
+            bg="#f8fafc",
+            fg="#334155",
+            font=("Arial", 9, "bold"),
+        ).pack(fill="x", pady=(2, 0))
         progress_row = tk.Frame(status, bg="#f8fafc")
         progress_row.pack(fill="x", pady=(5, 1))
         self.study_progress_bar = ttk.Progressbar(
@@ -14792,6 +16671,24 @@ class SpermGUI:
             bg="#f8fafc",
             fg="#475569",
             width=27,
+        ).pack(side="right", padx=(8, 0))
+        slice_progress_row = tk.Frame(status, bg="#f8fafc")
+        slice_progress_row.pack(fill="x", pady=(1, 1))
+        self.study_slice_progress_bar = ttk.Progressbar(
+            slice_progress_row,
+            orient="horizontal",
+            mode="determinate",
+            variable=self.study_slice_progress_var,
+            maximum=1,
+        )
+        self.study_slice_progress_bar.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            slice_progress_row,
+            textvariable=self.study_slice_progress_text_var,
+            anchor="e",
+            bg="#f8fafc",
+            fg="#475569",
+            width=32,
         ).pack(side="right", padx=(8, 0))
 
         table_frame = tk.Frame(window)
@@ -14832,7 +16729,8 @@ class SpermGUI:
             window,
             text=(
                 "Select one or more rows to Assign Group. Double-click Include, "
-                "Sample ID, Group, Study role, XY, or Z spacing to edit. Space toggles Include."
+                "Sample ID, Group, Study role, XY, or Z spacing to edit. Space toggles Include. "
+                "Reference controls report direction; it does not define acceptable morphology."
             ),
             anchor="w",
             fg="#475569",
@@ -14855,6 +16753,7 @@ class SpermGUI:
         self.study_run_button = None
         self.study_stop_button = None
         self.study_progress_bar = None
+        self.study_slice_progress_bar = None
 
     def _study_refresh_tree(self):
         tree = self.study_tree
@@ -14887,6 +16786,26 @@ class SpermGUI:
         if selected_id and tree.exists(selected_id):
             tree.selection_set(selected_id)
             tree.see(selected_id)
+        included = [
+            row for row in self.study_rows
+            if _study_bool(row.get("include", True))
+        ]
+        group_counts = {}
+        group_roles = {}
+        for row in included:
+            group = str(row.get("group", "")).strip() or "(unassigned)"
+            role = str(row.get("group_role", "")).strip().lower() or "unassigned"
+            group_counts[group] = group_counts.get(group, 0) + 1
+            group_roles.setdefault(group, set()).add(role)
+        parts = []
+        for group in sorted(group_counts):
+            roles = "/".join(sorted(group_roles[group]))
+            parts.append(f"{group}: n={group_counts[group]} ({roles})")
+        excluded = len(self.study_rows) - len(included)
+        summary = "; ".join(parts) if parts else "no included specimens"
+        self.study_design_var.set(
+            f"Study design: {summary}; excluded n={excluded}"
+        )
 
     def _study_selected_index(self):
         if self.study_tree is None:
@@ -14909,6 +16828,81 @@ class SpermGUI:
             except (ValueError, IndexError):
                 continue
         return sorted(set(indices))
+
+    def _study_preview_selected_specimen(self):
+        """Load a selected study specimen and its ROI into the main preview."""
+        index = self._study_selected_index()
+        if index is None:
+            messagebox.showinfo(
+                "Select a Specimen",
+                "Select one specimen row before previewing.",
+                parent=self.study_window,
+            )
+            return
+        row = self.study_rows[index]
+        input_dir = pl.Path(str(row.get("input_dir", ""))).resolve()
+        pattern = str(row.get("file_pattern", "")).strip()
+        roi_path = pl.Path(str(row.get("roi_path", ""))).resolve()
+        metadata_path = pl.Path(
+            str(row.get("calibration_metadata_path", ""))
+        ).resolve()
+        try:
+            files = sorted(
+                (
+                    path.resolve()
+                    for path in input_dir.glob(pattern)
+                    if path.is_file() and _study_parse_source_name(path.name)
+                ),
+                key=lambda path: natural_sort_key(path.name),
+            )
+            if not files:
+                raise FileNotFoundError("No matching top-level source TIFFs were found")
+            if not roi_path.is_file():
+                raise FileNotFoundError(f"ROI mask not found: {roi_path}")
+            if not metadata_path.is_file():
+                raise FileNotFoundError(f"Microscope metadata not found: {metadata_path}")
+
+            resolved_cfg, _calibration = apply_microscope_calibration(
+                CONFIG, metadata_path
+            )
+            CONFIG.update(resolved_cfg)
+            CONFIG["INPUT_DIR"] = str(input_dir)
+            CONFIG["ROI_MASK_PATH"] = str(roi_path)
+            CONFIG["_CALIBRATION_METADATA_SHA256"] = _sha256_file(metadata_path)
+            CONFIG["_CALIBRATION_LOCKED_FROM_GUI"] = True
+
+            self.input_dir = str(input_dir)
+            self.files = [str(path) for path in files]
+            self.current_idx = len(self.files) // 2
+            self.scale_z.config(to=len(self.files) - 1)
+            self.scale_z.set(self.current_idx)
+            self.reset_roi(redraw=False)
+            self.current_img = robust_imread(self.files[self.current_idx])
+            self._loaded_roi_mask = load_roi_mask_file(
+                roi_path, expected_shape=self.current_img.shape
+            )
+            self.roi_active = True
+            self.lbl_roi.config(text=f"ROI: {roi_path.name}")
+            self.lbl_z.config(
+                text=f"Z: {self.current_idx} / {len(self.files) - 1}"
+            )
+            self.lbl_status.config(
+                text=(
+                    f"Previewing {row.get('sample_id', input_dir.name)} | "
+                    f"XY {CONFIG['UM_PER_PX_XY']:.6g} um/px | "
+                    f"Z {CONFIG['UM_PER_SLICE_Z']:.6g} um"
+                ),
+                fg="blue",
+            )
+            self.render()
+            self.root.deiconify()
+            self.root.lift()
+        except Exception as exc:
+            messagebox.showerror(
+                "Preview Failed",
+                f"{type(exc).__name__}: {exc}",
+                parent=self.study_window,
+            )
 
     def _study_toggle_selected(self, event=None):
         indices = self._study_selected_indices()
@@ -14942,7 +16936,15 @@ class SpermGUI:
         if key == "include":
             self._study_toggle_selected()
             return
-        if key not in {"sample_id", "group", "group_role", "xy_um_per_pixel", "z_um_per_slice"}:
+        if key in {"xy_um_per_pixel", "z_um_per_slice"}:
+            messagebox.showinfo(
+                "Calibration Comes From Metadata",
+                "XY pixel size and Z spacing are read-only. Use Set Metadata XML "
+                "to repair or replace microscope calibration.",
+                parent=self.study_window,
+            )
+            return
+        if key not in {"sample_id", "group", "group_role"}:
             return
 
         from tkinter import simpledialog
@@ -15039,6 +17041,47 @@ class SpermGUI:
             self.study_status_var.set(f"Saved manifest: {path}")
         except Exception as exc:
             messagebox.showerror("Manifest Save Failed", str(exc), parent=self.study_window)
+
+    def _study_set_metadata_xml(self):
+        """Attach validated Leica metadata to one selected study specimen."""
+        if self._study_running:
+            return
+        indices = self._study_selected_indices()
+        if len(indices) != 1:
+            messagebox.showwarning(
+                "Select One Specimen",
+                "Select exactly one specimen row before setting its metadata XML.",
+                parent=self.study_window,
+            )
+            return
+        row = self.study_rows[indices[0]]
+        filepath = filedialog.askopenfilename(
+            title=f"Select Leica metadata XML for {row.get('sample_id', 'specimen')}",
+            filetypes=[("Leica metadata", "*.xml"), ("All Files", "*.*")],
+            initialdir=str(row.get("input_dir", self.study_root_dir or PROJECT_ROOT)),
+            parent=self.study_window,
+        )
+        if not filepath:
+            return
+        try:
+            calibration = load_leica_calibration_xml(filepath)
+            row["calibration_metadata_path"] = str(pl.Path(filepath).resolve())
+            row["calibration_metadata_sha256"] = _sha256_file(filepath)
+            row["xy_um_per_pixel"] = float(calibration["UM_PER_PX_XY"])
+            row["z_um_per_slice"] = float(calibration["UM_PER_SLICE_Z"])
+            row["acquisition_class"] = "explicit Leica XML calibration"
+            row["status"] = "pending"
+            row["message"] = ""
+            self.study_status_var.set(
+                f"Metadata calibrated for {row.get('sample_id', 'specimen')}"
+            )
+            self._study_refresh_tree()
+        except Exception as exc:
+            messagebox.showerror(
+                "Microscope Metadata Error",
+                str(exc),
+                parent=self.study_window,
+            )
 
     def _study_assign_group(self):
         if self._study_running:
@@ -15249,11 +17292,17 @@ class SpermGUI:
     def _study_open_analysis_package(self, package):
         paths = self._study_analysis_paths()
         target = paths.get(package)
-        if target is None or not target.is_dir():
+        current, reason = (
+            _study_analysis_package_binding_status(self.study_output_dir)
+            if self.study_output_dir
+            else (False, "No study output is selected.")
+        )
+        if target is None or not target.is_dir() or not current:
             messagebox.showwarning(
-                "Analysis Package Not Found",
-                "Generate the study aggregates first, then use Refresh Analysis "
-                "Package.\n\n"
+                "Current Analysis Package Not Available",
+                "Biological results can be opened only for the current fully "
+                "complete cohort.\n\n"
+                f"Status: {reason}\n\n"
                 f"Expected folder:\n{target or 'No study output selected'}",
                 parent=self.study_window,
             )
@@ -15301,16 +17350,35 @@ class SpermGUI:
             if not proceed:
                 return
         self._study_report_running = True
+        self._study_stop_event.clear()
         self.study_status_var.set("Generating biological and QC analysis packages")
+        if self.study_stop_button is not None:
+            self.study_stop_button.config(state="normal", text="Stop Report Generation")
+        included = sum(
+            _study_bool(row.get("include", True)) for row in self.study_rows
+        )
+
+        def report_progress(event):
+            item = dict(event)
+            item.setdefault("position", included)
+            item.setdefault("total", included)
+            self.root.after(0, lambda: self._study_progress_event(item))
 
         def worker():
             try:
                 paths = generate_study_between_sample_analysis(
-                    self.study_output_dir
+                    self.study_output_dir,
+                    stop_requested=self._study_stop_event,
+                    progress_callback=report_progress,
                 )
                 self.root.after(
                     0,
                     lambda: self._study_analysis_refresh_finished(paths),
+                )
+            except AnalysisStopRequested as exc:
+                self.root.after(
+                    0,
+                    lambda: self._study_analysis_refresh_stopped(str(exc)),
                 )
             except Exception as exc:
                 detail = f"{type(exc).__name__}: {exc}"
@@ -15323,6 +17391,11 @@ class SpermGUI:
 
     def _study_analysis_refresh_finished(self, paths):
         self._study_report_running = False
+        self._study_stop_event.clear()
+        if self.study_stop_button is not None:
+            self.study_stop_button.config(
+                state="disabled", text="Stop After Current Slice"
+            )
         self.study_status_var.set("Biological and QC analysis packages are ready")
         messagebox.showinfo(
             "Analysis Package Ready",
@@ -15335,6 +17408,11 @@ class SpermGUI:
 
     def _study_analysis_refresh_failed(self, detail):
         self._study_report_running = False
+        self._study_stop_event.clear()
+        if self.study_stop_button is not None:
+            self.study_stop_button.config(
+                state="disabled", text="Stop After Current Slice"
+            )
         self.study_status_var.set("Analysis package generation failed")
         messagebox.showerror(
             "Analysis Package Failed",
@@ -15388,16 +17466,103 @@ class SpermGUI:
         output = pl.Path(self.study_output_dir).resolve()
         if self.study_root_dir:
             study_root = pl.Path(self.study_root_dir).resolve()
-            try:
-                output.relative_to(study_root)
-                return False, "The output folder must be outside the source study folder."
-            except ValueError:
-                pass
+            if not output_path_is_separate_from_source(study_root, output):
+                return False, "The output and source study folders must not overlap."
         for row in self.study_rows:
             sample_dir = pl.Path(str(row.get("input_dir", ""))).resolve()
-            if output == sample_dir:
-                return False, f"The output folder is the input folder for {row.get('sample_id', 'a sample')}."
+            if not output_path_is_separate_from_source(sample_dir, output):
+                return False, (
+                    "The output folder overlaps the input tree for "
+                    f"{row.get('sample_id', 'a sample')}."
+                )
         return True, ""
+
+    def _study_preflight_report(self, cfg):
+        included = [
+            row for row in self.study_rows
+            if _study_bool(row.get("include", True))
+        ]
+        output_safe, output_detail = self._study_output_is_separate()
+        roi_ready = bool(included) and all(
+            pl.Path(str(row.get("roi_path", ""))).is_file()
+            for row in included
+        )
+        calibration_ready = bool(included) and all(
+            float(row.get("xy_um_per_pixel", 0) or 0) > 0
+            and float(row.get("z_um_per_slice", 0) or 0) > 0
+            and pl.Path(
+                str(row.get("calibration_metadata_path", ""))
+            ).is_file()
+            for row in included
+        )
+        report = build_gui_preflight_report(
+            cfg,
+            operation="Multi-Sample Study",
+            image_count=sum(int(row.get("slice_count", 0) or 0) for row in included),
+            roi_ready=roi_ready,
+            calibration_ready=calibration_ready,
+            calibration_detail=(
+                f"Microscope metadata and positive calibration are resolved for "
+                f"{len(included)} included specimen(s)."
+                if calibration_ready
+                else "One or more included specimens lack resolved microscope metadata."
+            ),
+            output_safe=output_safe,
+            output_detail=output_detail or "The study output is separate from source data.",
+            require_reviewed_profile=True,
+        )
+        role_ready = False
+        role_detail = "No included specimens are available."
+        try:
+            reference_group, comparison_group = _study_explicit_group_pair(
+                pd.DataFrame(included)
+            )
+            role_ready = True
+            role_detail = (
+                f"Reference: {reference_group}; comparison: {comparison_group}. "
+                "Every specimen within each group has the same role."
+            )
+        except Exception as exc:
+            role_detail = str(exc)
+        role_issue = PreflightIssue(
+            "GROUP_ROLES_READY" if role_ready else "GROUP_ROLES_MISSING",
+            "info" if role_ready else "block",
+            "Study groups ready" if role_ready else "Study roles incomplete",
+            (
+                role_detail
+                if role_ready
+                else role_detail
+            ),
+            (
+                "Continue to analysis."
+                if role_ready
+                else "Select each biological group and assign its study role."
+            ),
+        )
+        return PreflightReport(report.issues + (role_issue,))
+
+    def _study_review_readiness(self):
+        self._study_validate(show_dialog=False)
+        report = self._study_preflight_report(CONFIG.copy())
+        self._show_preflight_report(
+            report,
+            "Multi-Sample Study",
+            parent=self.study_window,
+        )
+
+    def _study_analysis_refresh_stopped(self, detail):
+        self._study_report_running = False
+        self._study_stop_event.clear()
+        if self.study_stop_button is not None:
+            self.study_stop_button.config(
+                state="disabled", text="Stop After Current Slice"
+            )
+        self.study_status_var.set("Analysis package generation stopped")
+        messagebox.showinfo(
+            "Analysis Package Stopped",
+            detail,
+            parent=self.study_window,
+        )
 
     def _study_run(self):
         if self._study_running:
@@ -15410,7 +17575,12 @@ class SpermGUI:
             messagebox.showerror("Invalid Output Folder", reason, parent=self.study_window)
             return
         cfg = CONFIG.copy()
-        if not self._analysis_preflight(cfg, "Multi-Sample Study"):
+        report = self._study_preflight_report(cfg)
+        if not self._analysis_preflight(
+            cfg,
+            "Multi-Sample Study",
+            report=report,
+        ):
             return
         included = sum(_study_bool(row.get("include", True)) for row in self.study_rows)
         proceed = messagebox.askyesno(
@@ -15425,17 +17595,22 @@ class SpermGUI:
 
         self._study_running = True
         self._study_stop_event.clear()
+        self._study_progress_state = {"status": "running", "specimens": {}}
         if self.study_run_button is not None:
             self.study_run_button.config(state="disabled", text="Study Running...")
         if self.study_stop_button is not None:
             self.study_stop_button.config(
                 state="normal",
-                text="Stop After Current Sample",
+                text="Stop After Current Slice",
             )
         self.study_progress_var.set(0)
         if self.study_progress_bar is not None:
             self.study_progress_bar.config(maximum=max(included, 1))
         self.study_progress_text_var.set(f"Progress: 0 / {included} specimens")
+        self.study_slice_progress_var.set(0)
+        if self.study_slice_progress_bar is not None:
+            self.study_slice_progress_bar.config(maximum=1)
+        self.study_slice_progress_text_var.set("Current specimen: waiting to start")
         self.study_status_var.set(f"Starting {included}-sample study")
         rows = [dict(row) for row in self.study_rows]
         output_dir = self.study_output_dir
@@ -15468,12 +17643,19 @@ class SpermGUI:
                                     ),
                                 }
                             )
-                        state["_analysis_paths"] = {
-                            key: str(value)
-                            for key, value in generate_study_between_sample_analysis(
-                                output_dir
-                            ).items()
-                        }
+                        try:
+                            generated_paths = generate_study_between_sample_analysis(
+                                output_dir,
+                                stop_requested=self._study_stop_event,
+                                progress_callback=progress,
+                            )
+                            state["_analysis_paths"] = {
+                                key: str(value)
+                                for key, value in generated_paths.items()
+                            }
+                        except AnalysisStopRequested as exc:
+                            state["_analysis_error"] = str(exc)
+                            state["_report_status"] = "stopped"
                     except Exception as exc:
                         state["_analysis_error"] = (
                             f"{type(exc).__name__}: {exc}"
@@ -15486,7 +17668,10 @@ class SpermGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _study_request_stop(self):
-        if not self._study_running or self._study_stop_event.is_set():
+        if (
+            not (self._study_running or self._study_report_running)
+            or self._study_stop_event.is_set()
+        ):
             return
         self._study_stop_event.set()
         if self.study_stop_button is not None:
@@ -15495,22 +17680,43 @@ class SpermGUI:
                 text="Stop Requested",
             )
         self.study_status_var.set(
-            "Stop requested; the current specimen will finish, then the study will pause."
+            "Stopping report generation..."
+            if self._study_report_running and not self._study_running
+            else "Stop requested; the current processing stage will finish, then the study will pause."
         )
 
     def _study_progress_event(self, event):
         sample_id = event.get("sample_id", "")
         status = event.get("event", "running")
         message = event.get("message", "")
+        reducer_event = dict(event)
+        reducer_event["specimen_id"] = reducer_event.pop("sample_id", "")
+        self._study_progress_state = reduce_study_progress(
+            self._study_progress_state,
+            reducer_event,
+        )
         if sample_id and status != "stopped":
             for row in self.study_rows:
                 if row.get("sample_id") == sample_id:
-                    row["status"] = "complete" if status in {"complete", "skipped"} else status
+                    row["status"] = (
+                        "complete"
+                        if status in {"complete", "skipped"}
+                        else (
+                            "running"
+                            if status in {"started", "slice_progress", "postprocess_progress"}
+                            else status
+                        )
+                    )
                     row["message"] = message
                     break
         position = int(event.get("position", 0) or 0)
         total = int(event.get("total", 0) or 0)
-        if status == "started":
+        if status == "reporting" and total <= 0:
+            total = sum(
+                _study_bool(row.get("include", True)) for row in self.study_rows
+            )
+            position = total
+        if status in {"started", "slice_progress", "postprocess_progress"}:
             completed_position = max(position - 1, 0)
         else:
             completed_position = position
@@ -15518,10 +17724,54 @@ class SpermGUI:
         if self.study_progress_bar is not None:
             self.study_progress_bar.config(maximum=max(total, 1))
         self.study_progress_text_var.set(
-            f"Progress: {completed_position} / {total} specimens"
+            "Generating reports for completed cohort"
+            if status == "reporting"
+            else f"Progress: {completed_position} / {total} specimens"
         )
+        if status == "started":
+            self.study_slice_progress_var.set(0)
+            if self.study_slice_progress_bar is not None:
+                self.study_slice_progress_bar.config(maximum=1)
+            self.study_slice_progress_text_var.set(
+                f"{sample_id}: preparing image stack"
+            )
+        elif status == "slice_progress":
+            slice_position = int(event.get("slice_position", 0) or 0)
+            slice_total = int(event.get("slice_total", 0) or 0)
+            self.study_slice_progress_var.set(slice_position)
+            if self.study_slice_progress_bar is not None:
+                self.study_slice_progress_bar.config(maximum=max(slice_total, 1))
+            self.study_slice_progress_text_var.set(
+                f"{sample_id}: {slice_position} / {slice_total} slices"
+            )
+        elif status == "postprocess_progress":
+            stage_position = int(event.get("stage_position", 0) or 0)
+            stage_total = int(event.get("stage_total", 0) or 0)
+            self.study_slice_progress_var.set(stage_position)
+            if self.study_slice_progress_bar is not None:
+                self.study_slice_progress_bar.config(maximum=max(stage_total, 1))
+            self.study_slice_progress_text_var.set(
+                f"{sample_id}: post-processing {stage_position} / {stage_total}"
+            )
+            if self.study_stop_button is not None:
+                self.study_stop_button.config(text="Stop After Current Stage")
+        elif status in {"complete", "skipped", "failed", "stopped"}:
+            if status in {"complete", "skipped"}:
+                maximum = (
+                    float(self.study_slice_progress_bar.cget("maximum"))
+                    if self.study_slice_progress_bar is not None
+                    else 1
+                )
+                self.study_slice_progress_var.set(maximum)
+            self.study_slice_progress_text_var.set(
+                f"{sample_id or 'Study'}: {status}"
+            )
         if status == "stopped":
             self.study_status_var.set(message)
+        elif status in {"slice_progress", "postprocess_progress"}:
+            self.study_status_var.set(
+                f"[{position}/{total}] {sample_id}: {message}"
+            )
         else:
             self.study_status_var.set(
                 f"[{position}/{total}] {sample_id}: {message}"
@@ -15536,7 +17786,7 @@ class SpermGUI:
         if self.study_stop_button is not None and self.study_stop_button.winfo_exists():
             self.study_stop_button.config(
                 state="disabled",
-                text="Stop After Current Sample",
+                text="Stop After Current Slice",
             )
         completed = sum(record.get("status") == "complete" for record in state.get("samples", {}).values())
         failed = sum(record.get("status") == "failed" for record in state.get("samples", {}).values())
@@ -15551,7 +17801,16 @@ class SpermGUI:
         self.study_progress_text_var.set(
             f"Progress: {min(completed + failed, total)} / {total} specimens"
         )
+        self.study_slice_progress_text_var.set(
+            "Current specimen: study paused"
+            if state.get("run_status") == "stopped"
+            else "Current specimen: study finished"
+        )
         stopped = state.get("run_status") == "stopped"
+        incomplete = state.get("run_status") in {
+            "complete_with_failures",
+            "incomplete",
+        }
         analysis_paths = state.get("_analysis_paths", {})
         analysis_error = state.get("_analysis_error", "")
         self.study_status_var.set(
@@ -15559,7 +17818,12 @@ class SpermGUI:
                 f"Study paused: {completed} complete, {failed} failed"
                 if stopped
                 else (
-                    f"Study finished: {completed} complete, {failed} failed; "
+                    (
+                        f"Study incomplete: {completed} complete, {failed} failed; "
+                        "group comparison blocked"
+                    )
+                    if incomplete
+                    else f"Study finished: {completed} complete, {failed} failed; "
                     + (
                         "analysis package ready"
                         if analysis_paths
@@ -15570,7 +17834,11 @@ class SpermGUI:
         )
         self._study_refresh_tree()
         messagebox.showinfo(
-            "Study Paused" if stopped else "Study Run Finished",
+            (
+                "Study Paused"
+                if stopped
+                else ("Study Incomplete" if incomplete else "Study Run Finished")
+            ),
             f"Complete: {completed}\nFailed: {failed}\n"
             + (
                 "Pending specimens can be continued with Run / Resume Study.\n\n"
@@ -15579,10 +17847,16 @@ class SpermGUI:
             )
             + f"Specimen analysis table:\n{pl.Path(self.study_output_dir) / 'specimen_summary.csv'}\n\n"
             + (
-                "Biological results:\n"
-                f"{analysis_paths.get('biological_dir', 'Use Refresh Analysis Package')}\n\n"
-                "Quality control:\n"
-                f"{analysis_paths.get('qc_dir', 'Use Refresh Analysis Package')}"
+                "Biological comparison: blocked until every included specimen "
+                "is complete.\nDescriptive technical QC remains in the study "
+                "output folder."
+                if incomplete or stopped
+                else (
+                    "Biological results:\n"
+                    f"{analysis_paths.get('biological_dir', 'Use Refresh Analysis Package')}\n\n"
+                    "Quality control:\n"
+                    f"{analysis_paths.get('qc_dir', 'Use Refresh Analysis Package')}"
+                )
             )
             + (
                 f"\n\nReport-generation warning:\n{analysis_error}"
@@ -15600,7 +17874,7 @@ class SpermGUI:
         if self.study_stop_button is not None and self.study_stop_button.winfo_exists():
             self.study_stop_button.config(
                 state="disabled",
-                text="Stop After Current Sample",
+                text="Stop After Current Slice",
             )
         self.study_status_var.set(f"Study stopped: {detail}")
         messagebox.showerror("Study Run Failed", detail, parent=self.study_window)
@@ -16037,6 +18311,12 @@ class SpermGUI:
                 self.files[self.current_idx],
                 sequence_idx=self.current_idx,
             )
+            configured_output = pl.Path(params["OUTPUT_DIR"]).expanduser().resolve()
+            preview_parent = configured_output.parent / "saturn_preview_runs_v5_7_1"
+            params["OUTPUT_DIR"] = get_unique_named_dir(
+                preview_parent,
+                f"z{int(preview_z):04d}_preview",
+            )
 
             full_img = self.current_img
             crop_offset_y, crop_offset_x = 0, 0
@@ -16083,6 +18363,12 @@ class SpermGUI:
             params["ROI_MASK_PATH"] = str(preview_roi_path.resolve())
             save_calibration_provenance(preview_output_dir, params)
             save_analysis_settings_bundle(preview_output_dir, params)
+            save_authoritative_instance_evidence(
+                preview_output_dir,
+                preview_z,
+                seg1,
+                params,
+            )
             log(
                 "  Calibration: "
                 f"XY={params['UM_PER_PX_XY']:.9g} um/pixel, "
@@ -16156,169 +18442,50 @@ class SpermGUI:
                 text = (
                     f'2D preview candidates: {len(results)} | median 2D length '
                     f'{np.median(lengths):.2f} um ({elapsed:.1f}s)\n'
-                    'Not a unique-nucleus count; run the complete stack for 3D results.'
+                    'Not a unique-nucleus count; run the complete stack for 3D results.\n'
+                    f'Preview files: {preview_output_dir}'
                 )
             else:
                 text = (
                     f'2D preview candidates: 0 ({elapsed:.1f}s) - '
-                    'see gui_analysis_log.txt for diagnostics'
+                    'see gui_analysis_log.txt for diagnostics\n'
+                    f'Preview files: {preview_output_dir}'
                 )
             lbl_stats = tk.Label(top, text=text, font=('Arial', 11))
             lbl_stats.pack(pady=4)
 
-            lbl_tool = tk.Label(top, text="Active Tool: None (Press 'E' to Erase, 'S' to Split, 'Esc' to Cancel)", fg='blue', font=('Arial', 10, 'bold'))
+            def open_preview_folder():
+                if os.name == "nt":
+                    os.startfile(preview_output_dir)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", preview_output_dir])
+                else:
+                    subprocess.Popen(["xdg-open", preview_output_dir])
+
+            tk.Button(
+                top,
+                text="Open Preview Folder",
+                command=open_preview_folder,
+            ).pack(pady=(0, 6))
+
+            lbl_tool = tk.Label(
+                top,
+                text=(
+                    "Review only. Corrections are disabled until the filled-mask, "
+                    "append-only correction workflow is validated."
+                ),
+                fg="#9a3412",
+                font=('Arial', 10, 'bold'),
+            )
             lbl_tool.pack(pady=2)
 
             self.lbl_roi.config(text=f'Preview done: {len(results)} 2D candidates')
 
-            # ------ INTERACTIVE MANUAL CORRECTION LOGIC ------
-            class ManualCorrector:
-                def __init__(self, canvas, ax_overlay, seg_data, prms, crop_oy, crop_ox, fimg):
-                    self.canvas = canvas
-                    self.ax = ax_overlay
-                    self.seg = seg_data
-                    self.params = prms
-                    self.crop_oy = crop_oy
-                    self.crop_ox = crop_ox
-                    self.fimg = fimg
-
-                    self.active_tool = None
-                    self.cid_press = self.canvas.mpl_connect('button_press_event', self.on_click)
-                    self.cid_key = self.canvas.mpl_connect('key_press_event', self.on_key)
-
-                    self.overlay_imshow = None
-                    self.text_artists = []
-
-                def on_key(self, event):
-                    if event.key == 'e':
-                        self.active_tool = 'erase'
-                        lbl_tool.config(text="Active Tool: ERASE (Click a colored spermatid to delete it)", fg='red')
-                    elif event.key == 's':
-                        self.active_tool = 'split'
-                        lbl_tool.config(text="Active Tool: SPLIT (Click on a skeleton branch to sever it)", fg='orange')
-                    elif event.key == 'escape':
-                        self.active_tool = None
-                        lbl_tool.config(text="Active Tool: None (Press 'E' to Erase, 'S' to Split, 'Esc' to Cancel)", fg='blue')
-
-                def on_click(self, event):
-                    if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
-                        return
-                    if not self.active_tool:
-                        return
-
-                    # Map global click to cropped coordinate space
-                    x_crop = int(round(event.xdata)) - self.crop_ox
-                    y_crop = int(round(event.ydata)) - self.crop_oy
-
-                    ch, cw = self.seg['skel_pruned'].shape
-                    if not (0 <= x_crop < cw and 0 <= y_crop < ch):
-                        return # Clicked outside the ROI working area
-
-                    modified = False
-                    if self.active_tool == 'erase':
-                        # Find the label at this pixel in the current skeleton
-                        lab = self.seg['skel_labeled'][y_crop, x_crop]
-                        # If the user clicked slightly off, search a 3x3 neighborhood
-                        if lab == 0:
-                            for dy in (-1, 0, 1):
-                                for dx in (-1, 0, 1):
-                                    yy, xx = y_crop+dy, x_crop+dx
-                                    if 0 <= yy < ch and 0 <= xx < cw and self.seg['skel_labeled'][yy, xx] > 0:
-                                        lab = self.seg['skel_labeled'][yy, xx]
-                                        break
-                        if lab > 0:
-                            self.seg['skel_pruned'][self.seg['skel_labeled'] == lab] = False
-                            modified = True
-
-                    elif self.active_tool == 'split':
-                        # Draw a small black circle to sever the topological skeleton connection
-                        from skimage.draw import disk
-                        rr, cc = disk((y_crop, x_crop), radius=2.5, shape=self.seg['skel_pruned'].shape)
-                        self.seg['skel_pruned'][rr, cc] = False
-                        modified = True
-
-                    if modified:
-                        self.recalculate_and_redraw()
-
-                def recalculate_and_redraw(self):
-                    # Re-label the modified skeleton
-                    self.seg['skel_labeled'] = measure.label(self.seg['skel_pruned'])
-
-                    # Re-run measurement filters
-                    new_meas = measure_spermatids(self.seg, self.params)
-                    new_results = new_meas['results']
-
-                    # Filter by ROI inside centroid logic
-                    if crop_roi is not None:
-                        filtered = []
-                        keep_labels = []
-                        for r in new_results:
-                            c_y = min(max(int(round(r['centroid_y'])), 0), crop_roi.shape[0] - 1)
-                            c_x = min(max(int(round(r['centroid_x'])), 0), crop_roi.shape[1] - 1)
-                            if crop_roi[c_y, c_x]:
-                                filtered.append(r)
-                                keep_labels.append(r['label'])
-                        new_results = filtered
-                        skel_l = np.where(np.isin(new_meas['skel_label'], keep_labels), new_meas['skel_label'], 0).astype(np.int32)
-                    else:
-                        skel_l = new_meas['skel_label']
-
-                    # Map back to full image
-                    H, W = self.fimg.shape
-                    skel_label_full = np.zeros((H, W), dtype=np.int32)
-                    ch, cw = skel_l.shape
-                    skel_label_full[self.crop_oy:self.crop_oy+ch, self.crop_ox:self.crop_ox+cw] = skel_l
-
-                    # Redraw Overlay
-                    new_overlay = make_overlay(self.fimg, skel_label_full)
-
-                    self.ax.clear()
-                    self.ax.imshow(new_overlay)
-                    self.ax.set_title(f'2D candidate overlay (N={len(new_results)}) - Manual Corrections Applied')
-                    self.ax.axis('off')
-
-                    # Redraw Text
-                    _um = self.params['UM_PER_PX_XY']
-                    for r in new_results:
-                        self.ax.text(r['centroid_x'] + self.crop_ox, r['centroid_y'] + self.crop_oy,
-                                 f"{r['length_px_geodesic'] * _um:.1f}",
-                                 color='white', fontsize=5, ha='center', va='center')
-
-                    self.canvas.draw()
-
-                    # Update Stats Label
-                    if new_results:
-                        lengths = [r['length_px_geodesic'] * _um for r in new_results]
-                        lbl_stats.config(
-                            text=(
-                                f'Corrected 2D candidates: {len(new_results)} | '
-                                f'median 2D length {np.median(lengths):.2f} um | '
-                                'not a unique-nucleus count'
-                            )
-                        )
-                    else:
-                        lbl_stats.config(text='Corrected 2D candidates: 0')
-
-                    corrected_frame = pd.DataFrame(
-                        rows_from_results(new_results, preview_z, _um)
-                    )
-                    corrected_frame.to_csv(
-                        os.path.join(
-                            preview_output_dir,
-                            f"single_measurements_z{preview_z:03d}_{_VERSION}.csv",
-                        ),
-                        index=False,
-                    )
-                    export_analysis_summary(
-                        preview_output_dir,
-                        df=corrected_frame,
-                        run_scope="single_slice_preview",
-                        z_index=preview_z,
-                        cfg=params,
-                    )
-
-            # Attach to popup so it doesn't get garbage collected
-            top.corrector = ManualCorrector(can, ax2, seg1, params, crop_offset_y, crop_offset_x, full_img)
+            # The former skeleton editor was intentionally removed. U-Net-primary
+            # measurements are derived from filled instance labels, so editing only
+            # the display skeleton could create a convincing but false correction.
+            # A versioned filled-mask correction workflow will replace it after the
+            # WORKFLOW-MANUAL-CORRECTION-001 audit gate passes.
 
         except Exception as e:
             import traceback
@@ -16328,381 +18495,207 @@ class SpermGUI:
             messagebox.showerror('Analysis Error', f'{type(e).__name__}: {e}')
 
     def run_batch_analysis(self):
+        """Run the validated batch engine from the GUI without duplicating science."""
+        if self._batch_running:
+            messagebox.showinfo('Batch Running', 'A batch analysis is already running.')
+            return
         if not self.files:
-            messagebox.showinfo('Info', 'No directory loaded.')
+            messagebox.showinfo('Load Images', 'Load an image directory first.')
             return
 
         params = CONFIG.copy()
         if not self._analysis_preflight(params, "Batch Analysis"):
             return
-
-        # Auto-incremental output directory inside selected folder
-        out_dir = get_unique_batch_dir(self.input_dir)
-        self.last_out_dir = out_dir
-
-        # EXPLICIT CONFIRMATION: Show the user where the data will go
-        confirm = messagebox.askokcancel("Confirm Output",
+        output_parent = filedialog.askdirectory(
+            title="Select a separate folder for batch results",
+            initialdir=str(pl.Path(self.input_dir).resolve().parent),
+            mustexist=False,
+            parent=self.root,
+        )
+        if not output_parent:
+            return
+        output_stem = f"{pl.Path(self.input_dir).resolve().name}_saturn_v571_batch"
+        out_dir = get_unique_named_dir(output_parent, output_stem)
+        if not output_path_is_separate_from_source(self.input_dir, out_dir):
+            messagebox.showerror(
+                "Unsafe Output Folder",
+                "Batch results must be saved outside the source image folder. "
+                "Choose a separate results location.",
+            )
+            return
+        if not messagebox.askokcancel(
+            "Confirm Batch Analysis",
             f"{analysis_profile_summary(params)}\n\n"
-            f"Results (Excel, PDF, CSV) will be saved to:\n\n{out_dir}\n\nContinue?")
-        if not confirm:
+            f"Images: {len(self.files)}\n"
+            f"Results folder:\n{out_dir}\n\nContinue?",
+        ):
             return
 
         ensure_dir(out_dir)
-        overlay_dir = os.path.join(out_dir, "overlays")
-        rescue_review_dir = os.path.join(
-            out_dir,
-            "technical_qc",
-            "unet_rescue_overlays",
-        )
-        ensure_dir(overlay_dir)
-        ensure_dir(rescue_review_dir)
-
-        params['OUTPUT_DIR'] = out_dir
-        params['SAVE_DEBUG_IMAGES'] = False
-        params['DO_TRACKING'] = True
-        roi_mask = self.build_roi_mask()
-        exclusion_mask = None
-        params["_SOURCE_IMAGE_FILES"] = [str(pl.Path(path).resolve()) for path in self.files]
+        roi_mask = np.asarray(self.build_roi_mask(), dtype=bool)
+        if not np.any(roi_mask):
+            messagebox.showerror('ROI Required', 'The selected ROI is empty.')
+            return
         roi_path = pl.Path(out_dir) / "roi_mask_used.npy"
-        np.save(roi_path, np.asarray(roi_mask, dtype=bool))
-        params["ROI_MASK_PATH"] = str(roi_path.resolve())
-        calibration = resolve_stack_microscope_calibration(
-            params,
-            self.files,
-            input_dir=self.input_dir,
-        )
-        save_calibration_provenance(out_dir, params)
-        save_analysis_settings_bundle(out_dir, params)
-        print(
-            "Calibration: "
-            f"XY={params['UM_PER_PX_XY']:.9g} um/pixel, "
-            f"Z={params['UM_PER_SLICE_Z']:.9g} um/slice "
-            f"({calibration['status']})"
-        )
-
-        self.lbl_roi.config(text="Processing... See Top Bar")
-        self.root.update_idletasks()
-
-        try:
-            import time as _t
-            t_batch = _t.time()
-            self.lbl_batch_op.config(text=f"Batch Segmenting: 0 / {len(self.files)} slices...", fg='blue')
-            self.root.update()
-
-            all_rows = []
-            summaries = []
-
-            # Z-Projection accumulation
-            max_proj_raw = None
-            max_proj_ov = None
-            slice_cache = {}
-
-            # Robust initialization
-            ts = None
-            df_trk = None
-            first_img = ensure_2d_image(robust_imread(self.files[0]), os.path.basename(self.files[0]))
-            if roi_mask is not None and roi_mask.shape != first_img.shape:
-                raise ValueError(f"ROI shape {roi_mask.shape} does not match image shape {first_img.shape}")
-            files_by_z = {
-                int(extract_z_index(fpath, sequence_idx=i)): fpath
-                for i, fpath in enumerate(self.files)
+        np.save(roi_path, roi_mask)
+        params.update(
+            {
+                "RUN_MODE": "batch",
+                "INPUT_DIR": self.input_dir,
+                "OUTPUT_DIR": out_dir,
+                "ROI_MASK_PATH": str(roi_path.resolve()),
+                "SHOW_PREVIEW_WINDOW": False,
+                "SAVE_DEBUG_IMAGES": False,
+                "DO_TRACKING": True,
+                "_SOURCE_IMAGE_FILES": [
+                    str(pl.Path(path).resolve()) for path in self.files
+                ],
             }
-            preprocess_context = build_stack_preprocess_context(self.files, roi_mask, params, exclusion_mask=exclusion_mask)
-            save_stack_preprocess_context(preprocess_context, out_dir)
-            if roi_mask is not None:
-                tifffile.imwrite(os.path.join(out_dir, "roi_mask_used.tif"), roi_mask.astype(np.uint8) * 255)
+        )
 
-            self.progress['value'] = 0
-            self.progress['maximum'] = len(self.files)
-            self.progress_post['value'] = 0
-            self.progress_post['maximum'] = 100
-            self.lbl_post_progress_val.config(text="0%", fg='orange')
+        self.last_out_dir = out_dir
+        self._batch_running = True
+        self._batch_stop_event.clear()
+        self.progress['value'] = 0
+        self.progress['maximum'] = max(len(self.files), 1)
+        self.lbl_progress_val.config(text='0%')
+        self.lbl_batch_op.config(text='Preparing batch analysis...', fg='blue')
+        for button in (self.batch_run_button, self.quick_batch_button):
+            if button is not None:
+                button.config(state='disabled')
+        if self.batch_stop_button is not None:
+            self.batch_stop_button.config(state='normal', text='Stop After Current Slice')
 
-            for idx, fpath in enumerate(self.files):
-                z_idx = extract_z_index(fpath, sequence_idx=idx)
+        def progress(event):
+            self.root.after(
+                0,
+                lambda item=dict(event): self._batch_progress_event(item),
+            )
 
-                pct = int(((idx + 1) / len(self.files)) * 100)
-                self.progress['value'] = idx + 1
-                self.lbl_progress_val.config(text=f"{pct}%")
-                self.root.update()
-
-                print(f"[{idx+1}/{len(self.files)}] Processing Z={z_idx:02d}...")
-
-                img_raw = robust_imread(fpath)
-                process_img = ensure_2d_image(img_raw, os.path.basename(fpath))
-                print(f"DEBUG batch image {os.path.basename(fpath)} shape: {process_img.shape}, ndim={process_img.ndim}")
-
-                full_img = process_img
-                crop_oy, crop_ox = 0, 0
-                unet_context = _make_unet_context_from_paths(files_by_z, z_idx)
-                seg = segment_slice(process_img, params, z_idx=z_idx,
-                                    roi_mask=roi_mask,
-                                    preprocess_context=preprocess_context,
-                                    exclusion_mask=exclusion_mask,
-                                    unet_context_stack=unet_context)
-                meas = measure_spermatids(seg, params)
-                res = meas['results']
-                sl_full = meas['skel_label']
-
-                for r in res:
-                    r['centroid_x'] += crop_ox
-                    r['centroid_y'] += crop_oy
-
-                um = params['UM_PER_PX_XY']
-                ls_um = [r['length_px_geodesic']*um for r in res]
-                ws_um = [r['width_px']*um for r in res]
-
-                all_rows.extend(rows_from_results(res, z_idx, um))
-                summaries.append({
-                    "z_slice": z_idx,
-                    "n_spermatids": len(res),
-                    "mean_length_um": round(float(np.mean(ls_um)), 3) if ls_um else 0,
-                    "median_length_um": round(float(np.median(ls_um)), 3) if ls_um else 0,
-                    "mean_width_um": round(float(np.mean(ws_um)), 3) if ws_um else 0,
-                })
-
-                if params['SAVE_OVERLAYS']:
-                    ov = make_overlay(full_img, sl_full)
-                    # Create side-by-side panel
-                    orig_rgb = (normalize_display(full_img) * 255).astype(np.uint8)
-                    if orig_rgb.ndim == 2:
-                        orig_rgb = np.stack([orig_rgb]*3, axis=-1)
-                    panel = np.hstack([orig_rgb, ov])
-                    _imwrite(os.path.join(overlay_dir, f"z{z_idx:02d}_panel.png"), panel)
-
-                    # ---- LIVE GUI UPDATE ----
-                    # Show the side-by-side segmentation panel during batch execution
-                    if hasattr(self, 'ax') and hasattr(self, 'canvas'):
-                        try:
-                            self.ax.clear()
-                            self.ax.axis('off')
-                            self.ax.imshow(panel)
-                            self.canvas.draw()
-                        except Exception:
-                            pass
-
-                    # Update Z-Projections
-                    if max_proj_raw is None:
-                        max_proj_raw = full_img.copy().astype(np.float32)
-                        max_proj_ov = ov.copy().astype(np.float32)
-                    else:
-                        max_proj_raw = np.maximum(max_proj_raw, full_img.astype(np.float32))
-                        max_proj_ov = np.maximum(max_proj_ov, ov.astype(np.float32))
-                    slice_cache[int(z_idx)] = {
-                        "image": full_img.copy(),
-                        "skel_label": sl_full.copy().astype(np.int32),
+        def worker():
+            try:
+                result = process_batch(
+                    params,
+                    progress_callback=progress,
+                    stop_requested=self._batch_stop_event,
+                )
+                if self._batch_stop_event.is_set():
+                    raise AnalysisStopRequested(
+                        "Batch stopped before optional PowerPoint packaging; "
+                        "CSV, PDF, Excel, and measurement outputs are complete."
+                    )
+                progress(
+                    {
+                        "event": "postprocess_progress",
+                        "stage_position": 6,
+                        "stage_total": 6,
+                        "message": "Generating optional PowerPoint report",
+                        "non_cancellable": True,
                     }
-                if params.get("SAVE_TECHNICAL_REVIEW_OVERLAYS", False):
-                    rescue_rgb = make_unet_rescue_review_overlay(
-                        full_img,
-                        sl_full,
-                        res,
-                        meas.get("unet_rescue_rejected_reason"),
-                    )
-                    _imwrite(
-                        os.path.join(
-                            rescue_review_dir,
-                            f"z{z_idx:02d}_unet_rescue_review.png",
-                        ),
-                        rescue_rgb,
-                    )
-
-                if params["SAVE_MASK_TIFS"]:
-                    tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_mask.tif"),
-                                     (seg["mask_clean"] & roi_mask if roi_mask is not None else seg["mask_clean"]).astype(np.uint8) * 255)
-                if params.get("UNET_SAVE_PROBABILITY_MAPS", True):
-                    if seg.get("unet_probability") is not None and np.any(seg.get("unet_probability")):
-                        tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_unet_probability.tif"),
-                                         seg["unet_probability"].astype(np.float32))
-                    if seg.get("unet_core_probability") is not None and np.any(seg.get("unet_core_probability")):
-                        tifffile.imwrite(os.path.join(out_dir, f"z{z_idx:02d}_unet_core_probability.tif"),
-                                         seg["unet_core_probability"].astype(np.float32))
-
-                # Update Progress Bar for each slice
-                self.lbl_batch_op.config(text=f"Batch Segmenting: {idx+1} / {len(self.files)} slices...", fg='blue')
-                self.progress['value'] = idx + 1
-                self.root.update()
-
-            df = pd.DataFrame(all_rows)
-            df_sum = pd.DataFrame(summaries)
-            df.to_csv(os.path.join(out_dir, "spermatid_measurements.csv"), index=False)
-            df_sum.to_csv(os.path.join(out_dir, "slice_summary.csv"), index=False)
-
-            if not df.empty:
-                self.lbl_batch_op.config(text='Running 3D Tracking & Morphometrics...', fg='#e67e22') # Orange-ish
-
-                # --- Sequential Progress Bar Swap ---
-                # Hide 2D progress, Show Post-Analysis progress
-                self.batch_p_frame.pack_forget()
-                self.post_p_frame.pack(fill='x')
-
-                self.progress_post['value'] = 25
-                self.lbl_post_progress_val.config(text="25%")
-                self.root.update()
-
-                df_trk, ts = track_across_slices(df, params)
-
-                # --- Advanced 3D Morphometrics ---
-                self.lbl_batch_op.config(text='Calculating Advanced 3D Metrics...', fg='#e67e22')
-                # Metrics are natively generated correctly and safely in track_across_slices
-
-                self.progress_post['value'] = 60
-                self.lbl_post_progress_val.config(text="60%")
-                self.root.update()
-
-                df_trk.to_csv(os.path.join(out_dir, "measurements_with_tracks.csv"), index=False)
-
-                # ------ AUTO CANDIDATE AUDIT ----------------------------------------------------------------------------------------------------------------
-                self.lbl_batch_op.config(text='Running Candidate Audit...', fg='#e67e22')
-                self.root.update()
-
-                ts = flag_quality_tracks(ts, params)
-
-                # Save annotated track summary with explicit population flags.
-                ts.to_csv(os.path.join(out_dir, "track_summary.csv"), index=False)
-
-                export_comparative_track_tables(out_dir, ts, None)
-                export_biologist_results(out_dir, ts, None)
-
-                # Generate candidate-coded overlays after audit.
-                if params['SAVE_OVERLAYS']:
-                    export_quality_overlays(out_dir, slice_cache, df_trk, ts)
-                    export_analysis_overlays(
+                )
+                try:
+                    generate_pptx_report(
                         out_dir,
-                        slice_cache,
-                        df_trk,
-                        ts,
+                        result["measurements"],
+                        result["slice_summary"],
+                        params["UM_PER_PX_XY"],
+                        result["track_summary"],
                     )
+                except Exception as exc:
+                    print(f"WARNING: PowerPoint generation failed: {exc}")
+                self.root.after(0, lambda: self._batch_run_finished(result))
+            except AnalysisStopRequested as exc:
+                self.root.after(0, lambda: self._batch_run_stopped(str(exc), out_dir))
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                self.root.after(0, lambda: self._batch_run_failed(detail))
 
-                # Generate outlier_audit/ subfolder automatically
-                export_outlier_audit(out_dir, ts, params)
-                export_post_detection_qc(out_dir, df_trk, ts)
+        threading.Thread(target=worker, daemon=True).start()
 
-                n_candidates = int(ts["technical_valid"].sum()) if "technical_valid" in ts.columns else len(ts)
-                primary_tracks = _technical_valid_track_population(ts)
-                median_projection_z_extent = (
-                    float(primary_tracks["projection_z_extent_um"].median())
-                    if not primary_tracks.empty and "projection_z_extent_um" in primary_tracks.columns
-                    else np.nan
-                )
-                self.lbl_batch_op.config(
-                    text=(
-                        f'Primary result: {n_candidates} estimated unique nuclei | '
-                        f'median projection + Z extent {median_projection_z_extent:.2f} um'
-                    ),
-                    fg='#27ae60')
-                self.root.update()
+    def _batch_progress_event(self, event):
+        if event.get("event") == "postprocess_progress":
+            position = int(event.get("stage_position", 0) or 0)
+            total = int(event.get("stage_total", 0) or 0)
+            self.progress_post['maximum'] = max(total, 1)
+            self.progress_post['value'] = position
+            self.lbl_post_progress_val.config(
+                text=f'{int(round(100 * position / max(total, 1)))}%'
+            )
+            self.batch_p_frame.pack_forget()
+            self.post_p_frame.pack(fill='x')
+            self.lbl_batch_op.config(text=event.get("message", "Post-processing"), fg='#9a3412')
+            if self.batch_stop_button is not None:
+                if event.get("non_cancellable"):
+                    self.batch_stop_button.config(
+                        state="disabled",
+                        text="Finishing Report",
+                    )
+                else:
+                    self.batch_stop_button.config(text='Stop After Current Stage')
+            return
+        position = int(event.get("slice_position", 0) or 0)
+        total = int(event.get("slice_total", len(self.files)) or len(self.files))
+        self.progress['maximum'] = max(total, 1)
+        self.progress['value'] = position
+        percent = int(round(100 * position / max(total, 1)))
+        self.lbl_progress_val.config(text=f'{percent}%')
+        self.lbl_batch_op.config(text=event.get("message", "Processing images"), fg='blue')
 
-                # Save Global Z-Projection
-                if max_proj_raw is not None:
-                    self.lbl_batch_op.config(text='Generating Global Z-Projection...', fg='#e67e22')
-                    raw_p = (normalize_display(max_proj_raw.astype(np.uint16)) * 255).astype(np.uint8)
-                    if raw_p.ndim == 2: raw_p = np.stack([raw_p]*3, axis=-1)
-                    ov_p = max_proj_ov.astype(np.uint8)
-                    global_panel = np.hstack([raw_p, ov_p])
-                    _imwrite(os.path.join(out_dir, "global_z_projection.png"), global_panel)
+    def _request_batch_stop(self):
+        if not self._batch_running or self._batch_stop_event.is_set():
+            return
+        self._batch_stop_event.set()
+        if self.batch_stop_button is not None:
+            self.batch_stop_button.config(state='disabled', text='Stop Requested')
+        self.lbl_batch_op.config(
+            text='Stop requested; the current processing stage will finish first.',
+            fg='#9a3412',
+        )
 
-                self.progress_post['value'] = 80
-                self.lbl_post_progress_val.config(text="80%")
-                self.root.update()
-
-            analysis_summary = export_analysis_summary(
-                out_dir,
-                df=df,
-                track_summary=ts,
-                run_scope="full_stack_3d",
-                cfg=params,
+    def _reset_batch_controls(self):
+        self._batch_running = False
+        self._batch_stop_event.clear()
+        for button in (self.batch_run_button, self.quick_batch_button):
+            if button is not None:
+                button.config(state='normal')
+        if self.batch_stop_button is not None:
+            self.batch_stop_button.config(
+                state='disabled',
+                text='Stop After Current Slice',
             )
 
-            elapsed = _t.time() - t_batch
-            if analysis_summary["biological_count_available"]:
-                msg = (
-                    f"Batch complete in {elapsed:.1f}s.\n\n"
-                    f"Estimated unique nuclei: {analysis_summary['estimated_unique_nuclei']}\n"
-                    "Median projection + Z extent: "
-                    f"{analysis_summary['median_projection_z_extent_um']:.2f} um\n\n"
-                    f"Primary sample summary:\n"
-                    f"{os.path.join(out_dir, 'biologist_results', 'sample_summary.csv')}\n\n"
-                    f"Saved to:\n{out_dir}"
-                )
-            else:
-                msg = (
-                    f"Batch complete in {elapsed:.1f}s, but no 3D biological "
-                    f"population was produced.\n\nSaved to:\n{out_dir}"
-                )
-            print(msg)
-            self.lbl_batch_op.config(text='Batch Analysis Complete.', fg='green')
-            self.lbl_progress_val.config(text="100% - Done", fg='green')
-            self.root.update()
+    def _batch_run_finished(self, result):
+        self._reset_batch_controls()
+        self.progress['value'] = self.progress['maximum']
+        self.lbl_progress_val.config(text='100% - Done', fg='green')
+        self.lbl_batch_op.config(text='Batch analysis complete', fg='green')
+        track_summary = result.get("track_summary")
+        primary = _technical_valid_track_population(track_summary)
+        self._last_batch_ts = primary if not primary.empty else None
+        self._last_batch_out_dir = result["output_dir"] if self._last_batch_ts is not None else None
+        self.btn_ai.config(state='normal' if self._last_batch_ts is not None else 'disabled')
+        self.mode_var.set('review')
+        self.render()
+        summary = result.get("analysis_summary", {})
+        count = summary.get("estimated_unique_nuclei")
+        messagebox.showinfo(
+            'Batch Complete',
+            f"Estimated unique nuclei: {count if count is not None else 'not available'}\n\n"
+            f"Primary results and reports:\n{result['output_dir']}",
+        )
 
-            # Generate High-Res Graphical Report and Excel Audit
-            self.lbl_batch_op.config(text='Generating PDF & Excel Reports...', fg='#8e44ad') # Purple
+    def _batch_run_stopped(self, message, out_dir):
+        self._reset_batch_controls()
+        self.lbl_batch_op.config(text='Batch stopped safely', fg='#9a3412')
+        messagebox.showinfo(
+            'Batch Stopped',
+            f"{message}\n\nThe incomplete attempt remains at:\n{out_dir}",
+        )
 
-            def update_cb(v):
-                self.progress_post['value'] = v
-                self.lbl_post_progress_val.config(text=f"{v}%")
-                self.root.update()
-
-            generate_batch_report(
-                out_dir,
-                df,
-                df_sum,
-                um,
-                ts if not df.empty else None,
-                update_cb,
-                generate_pptx=False,
-                df_tracked=df_trk,
-                max_slice_pages=CONFIG.get("REPORT_MAX_SLICE_PAGES", 6),
-            )
-            generate_excel_report(out_dir, df, df_sum, ts if not df.empty else None)
-
-            # --- Store batch data for AI button ---
-            primary_for_ai = _technical_valid_track_population(ts)
-            if not primary_for_ai.empty:
-                self._last_batch_ts = primary_for_ai
-                self._last_batch_out_dir = out_dir
-                self.btn_ai.config(state='normal')
-                print(
-                    "AI READY: "
-                    f"{len(self._last_batch_ts)} technical-valid tracks stored. "
-                    "Click 'Run AI Analysis' to interpret."
-                )
-            else:
-                self._last_batch_ts = None
-                self._last_batch_out_dir = None
-                self.btn_ai.config(state='disabled')
-
-            self.lbl_batch_op.config(text='Generating PowerPoint Dashboard...', fg='#c0392b') # Red-ish
-            self.root.update()
-            try:
-                ok = generate_pptx_report(out_dir, df, df_sum, um, ts if not df.empty else None)
-                if not ok:
-                    print("WARNING: PPTX generation returned False - check console for traceback.")
-            except Exception as pptx_err:
-                import traceback as _tb
-                print(f"ERROR generating PPTX: {pptx_err}")
-                _tb.print_exc()
-
-            print(msg)
-            self.lbl_batch_op.config(text='ALL OPERATIONS COMPLETE', fg='green')
-            self.lbl_progress_val.config(text="100%", fg='green')
-            self.lbl_post_progress_val.config(text="100% - DONE", fg='green')
-            self.progress_post['value'] = 100
-            self.root.update()
-
-            # --- macOS STABILITY PATCH: Ensure all plot resources are freed before UI popup ---
-            try:
-                import matplotlib.pyplot as plt
-                plt.close('all')
-            except: pass
-
-            messagebox.showinfo('Batch Complete', msg)
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.lbl_batch_op.config(text=f'Batch error: {e}', fg='red')
-            messagebox.showerror('Batch Error', str(e))
+    def _batch_run_failed(self, detail):
+        self._reset_batch_controls()
+        self.lbl_batch_op.config(text=f'Batch error: {detail}', fg='red')
+        messagebox.showerror('Batch Error', detail)
 
 
 

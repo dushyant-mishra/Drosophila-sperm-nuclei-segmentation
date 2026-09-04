@@ -555,32 +555,41 @@ def test_primary_comparison_fields_are_in_biological_specimen_table():
     biological_block = source.split("biological_columns = [", 1)[1].split("]", 1)[0]
     for field in (
         "median_body_width_um",
-        "median_body_width_p90_um",
-        "median_area_length_width_um",
         "median_length_body_width_ratio",
     ):
         assert field in biological_block
+    for qc_only_field in (
+        "median_body_width_p90_um",
+        "median_area_length_width_um",
+    ):
+        assert qc_only_field not in biological_block
 
 
-def test_primary_specimen_export_excludes_unqualified_3d_aliases():
+def test_primary_specimen_export_contains_only_actionable_biological_metrics():
     source = (ROOT / "sperm_segmentation_saturnv5.7.1.py").read_text(
         encoding="utf-8"
     )
     biological_block = source.split("biological_columns = [", 1)[1].split(
         "]", 1
     )[0]
-    for misleading_alias in (
+    for qc_or_misleading_field in (
         '"median_3d_length_um"',
         '"median_3d_thickness_um"',
         '"median_3d_volume_um3"',
-    ):
-        assert misleading_alias not in biological_block
-    for explicit_field in (
         '"median_projection_z_extent_um"',
         '"median_observed_slab_effective_thickness_um"',
         '"median_observed_slice_mask_volume_um3"',
+        '"estimated_nuclei_per_100000_um3"',
     ):
-        assert explicit_field in biological_block
+        assert qc_or_misleading_field not in biological_block
+    for primary_field in (
+        '"estimated_unique_nuclei"',
+        '"median_representative_section_length_um"',
+        '"median_body_width_um"',
+        '"median_length_body_width_ratio"',
+        '"median_representative_section_tortuosity"',
+    ):
+        assert primary_field in biological_block
 
 
 def test_evidence_git_blob_hash_is_checkout_line_ending_independent():
@@ -606,7 +615,7 @@ def test_production_profile_uses_runtime_version_identifier():
     assert profile["_TUNING_METADATA"]["pipeline_version"] == "v5.7.1-body-width"
 
 
-def test_v571_primary_summaries_use_explicit_projection_and_slab_names(tmp_path):
+def test_v571_primary_summaries_hide_projection_and_slab_qc_fields(tmp_path):
     saturn = load_saturn()
     tracks = pd.DataFrame(
         {
@@ -616,7 +625,11 @@ def test_v571_primary_summaries_use_explicit_projection_and_slab_names(tmp_path)
             "observed_slab_effective_thickness_um": [1.4, 1.8],
             "observed_slice_mask_volume_um3": [20.0, 24.0],
             "max_length_2d": [7.5, 9.5],
+            "representative_body_length_um": [7.0, 9.0],
+            "representative_body_width_um": [2.0, 2.4],
+            "length_body_width_ratio": [3.5, 3.75],
             "tortuosity_3d": [1.0, 1.1],
+            "representative_section_tortuosity": [1.0, 1.05],
             "z_span_um": [1.0, 2.0],
         }
     )
@@ -626,18 +639,22 @@ def test_v571_primary_summaries_use_explicit_projection_and_slab_names(tmp_path)
     assert summary["median_projection_z_extent_um"] == pytest.approx(9.0)
     assert summary["median_3d_length_um_legacy_alias"] == pytest.approx(9.0)
     payload = json.loads((tmp_path / "analysis_summary.json").read_text())
-    assert payload["median_projection_z_extent_um"] == pytest.approx(9.0)
-    assert "median_3d_length_um" not in payload
-    assert "median_3d_length_um_legacy_alias" not in payload
+    assert payload["median_representative_section_length_um"] == pytest.approx(8.0)
+    for qc_field in (
+        "median_projection_z_extent_um",
+        "median_3d_length_um_legacy_alias",
+        "median_effective_thickness_um_psf_sensitive",
+    ):
+        assert qc_field not in payload
 
     paths = saturn.export_biologist_results(tmp_path, tracks, "v571")
     exported = pd.read_csv(paths["summary"])
-    assert exported.loc[0, "median_projection_z_extent_um"] == pytest.approx(9.0)
-    assert "median_3d_length_um" not in exported
-    assert exported.loc[0, "median_3d_length_um_legacy_alias"] == pytest.approx(9.0)
+    assert exported.loc[0, "median_representative_section_length_um"] == pytest.approx(8.0)
+    assert "median_projection_z_extent_um" not in exported
+    assert "median_effective_thickness_um_psf_sensitive" not in exported
 
 
-def test_v571_group_comparison_uses_explicit_projection_metric():
+def test_v571_group_comparison_uses_representative_section_length_only():
     saturn = load_saturn()
     frame = pd.DataFrame(
         {
@@ -647,12 +664,14 @@ def test_v571_group_comparison_uses_explicit_projection_metric():
             "status": ["complete"] * 6,
             "median_projection_z_extent_um": [8, 9, 10, 10, 11, 12],
             "median_3d_length_um_legacy_alias": [8, 9, 10, 10, 11, 12],
+            "median_representative_section_length_um": [7, 8, 9, 9, 10, 11],
         }
     )
     comparisons, _qc = saturn._study_specimen_group_comparisons(
         frame, random_seed=7, bootstrap_resamples=50, permutation_resamples=99
     )
-    assert "median_projection_z_extent_um" in set(comparisons["metric"])
+    assert "median_representative_section_length_um" in set(comparisons["metric"])
+    assert "median_projection_z_extent_um" not in set(comparisons["metric"])
     assert "median_3d_length_um_legacy_alias" not in set(comparisons["metric"])
 
 

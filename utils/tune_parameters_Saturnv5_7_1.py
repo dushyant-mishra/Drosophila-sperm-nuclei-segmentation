@@ -635,11 +635,11 @@ def summarize_candidate(rows, segs, cfg):
     outside_roi_hits = int(sum(outside_roi_by_stage.values()))
     exclusion_hits = int(sum(exclusion_by_stage.values()))
     median_len = float(np.median(lengths)) if lengths.size else 0.0
-    median_width = float(np.median(widths)) if widths.size else 0.0
-    median_ratio = float(np.median(ratios)) if ratios.size else 0.0
+    median_width = float(np.median(widths)) if widths.size else np.nan
+    median_ratio = float(np.median(ratios)) if ratios.size else np.nan
     short_frac = float(np.mean(lengths < 6.0)) if lengths.size else 1.0
     long_frac = float(np.mean(lengths > 14.0)) if lengths.size else 0.0
-    wide_frac = float(np.mean(widths > 4.2)) if widths.size else 0.0
+    wide_frac = float(np.mean(widths > 4.2)) if widths.size else np.nan
     source_counts = {}
     if rows:
         for r in rows:
@@ -717,11 +717,15 @@ def summarize_candidate(rows, segs, cfg):
     )
     morphology_prior_score = (
         abs(median_len - 9.5) * 2.0
-        + abs(median_width - 2.0)
+        + (abs(median_width - 2.0) if np.isfinite(median_width) else 0.0)
         + short_frac * 12.0
         + long_frac * 14.0
-        + wide_frac * 12.0
-        + max(0.0, 2.5 - median_ratio) * 6.0
+        + (wide_frac * 12.0 if np.isfinite(wide_frac) else 0.0)
+        + (
+            max(0.0, 2.5 - median_ratio) * 6.0
+            if np.isfinite(median_ratio)
+            else 0.0
+        )
     )
     very_short_frac = float(np.mean(lengths < 4.0)) if lengths.size else 1.0
     very_long_frac = float(np.mean(lengths > 20.0)) if lengths.size else 0.0
@@ -797,7 +801,7 @@ def summarize_candidate(rows, segs, cfg):
         "very_short_object_fraction": very_short_frac,
         "very_long_object_fraction": very_long_frac,
         "wide_object_fraction": wide_frac,
-        "low_length_width_ratio_fraction": float(np.mean(ratios < 2.5)) if ratios.size else 1.0,
+        "low_length_width_ratio_fraction": float(np.mean(ratios < 2.5)) if ratios.size else np.nan,
         "hysteresis_occupancy": hyst_occ,
         "clean_mask_occupancy": mask_occ,
         "bridge_inflation": bridge_infl,

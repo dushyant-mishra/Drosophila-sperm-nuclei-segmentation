@@ -19,6 +19,16 @@ from scipy.stats import mannwhitneyu, permutation_test, spearmanr, ttest_ind
 
 
 METRICS = {
+    "estimated_unique_nuclei": {
+        "label": "Estimated unique nuclei per specimen",
+        "short": "Estimated nuclei",
+        "question": "How many reconstructed technical-valid nuclei are present in each specimen?",
+        "meaning": (
+            "The specimen-level reconstructed count. Interpret raw counts together "
+            "with acquisition coverage; repeated 2D ROI volume is not anatomical organ volume."
+        ),
+        "role": "count",
+    },
     "estimated_nuclei_per_1000_um2": {
         "label": "Estimated nuclei per 1,000 um2",
         "short": "Area density",
@@ -46,6 +56,16 @@ METRICS = {
         "meaning": (
             "The specimen median of each reconstructed nucleus's maximum calibrated "
             "2D centerline length. Higher values indicate longer projected nuclei."
+        ),
+        "role": "morphology",
+    },
+    "median_representative_section_length_um": {
+        "label": "Specimen median representative-section length (um)",
+        "short": "Representative length",
+        "question": "Are nuclei typically longer in their representative optical section?",
+        "meaning": (
+            "The centerline length measured on the same largest-area technical-valid "
+            "Z plane used for the primary apparent body width."
         ),
         "role": "morphology",
     },
@@ -91,6 +111,18 @@ METRICS = {
         ),
         "role": "morphology",
     },
+    "median_representative_section_tortuosity": {
+        "label": "Specimen median representative-section tortuosity",
+        "short": "Centerline tortuosity",
+        "question": "Are representative nucleus centerlines straighter or more curved?",
+        "meaning": (
+            "The specimen median of 2D geodesic centerline length divided by "
+            "tip-to-tip distance on the same representative plane used for "
+            "length and width. Values near 1 are straighter; larger values are "
+            "more curved. This is not cross-slice track-path tortuosity."
+        ),
+        "role": "morphology",
+    },
     "median_observed_slab_effective_thickness_um": {
         "label": "Specimen median observed-slab effective thickness (um)",
         "short": "Observed-slab thickness",
@@ -128,7 +160,17 @@ BIOLOGICAL_METRICS = tuple(
     for metric, definition in METRICS.items()
     if definition["role"] in {"morphology", "morphology_psf_sensitive"}
 )
+V57_BIOLOGICAL_METRICS = (
+    "median_2d_length_um",
+    "median_body_width_um",
+    "median_length_body_width_ratio",
+    "median_projection_z_extent_um",
+    "median_3d_tortuosity",
+    "median_observed_slab_effective_thickness_um",
+    "median_observed_slice_mask_volume_um3",
+)
 QC_METRICS = tuple(metric for metric in METRICS if metric not in BIOLOGICAL_METRICS)
+CONCISE_REPORT = False
 
 
 def reference_group(groups):
@@ -710,12 +752,6 @@ def statistics_table_figure(statistics):
             "Median test\nFDR q": frame["permutation_bh_fdr_q"].map(
                 lambda x: f"{x:.3g}"
             ),
-            "Rank test\nFDR q": frame["mann_whitney_bh_fdr_q"].map(
-                lambda x: f"{x:.3g}"
-            ),
-            "Mean test\nFDR q": frame["welch_t_bh_fdr_q"].map(
-                lambda x: f"{x:.3g}"
-            ),
         }
     )
     figure, axis = plt.subplots(figsize=(13.5, 7.5))
@@ -726,7 +762,7 @@ def statistics_table_figure(statistics):
         bbox=[0.01, 0.28, 0.98, 0.58],
         cellLoc="center",
         colLoc="center",
-        colWidths=[0.29, 0.10, 0.10, 0.10, 0.11, 0.10, 0.10, 0.10],
+        colWidths=[0.34, 0.12, 0.12, 0.12, 0.14, 0.12],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(9)
@@ -750,8 +786,8 @@ def statistics_table_figure(statistics):
         "FDR q: p-value adjusted for testing multiple measurements; q < 0.05 "
         "is evidence of a group difference.\n"
         "Median test: permutation comparison of specimen medians (primary).  "
-        "Rank test: Mann-Whitney comparison of specimen ordering.  "
-        "Mean test: Welch comparison of specimen means."
+        "Secondary rank and mean sensitivity tests remain available in the "
+        "technical workbook; they are not alternative primary conclusions."
     )
     axis.text(
         0.01,
@@ -972,6 +1008,31 @@ def write_biological_excel(
             },
         ]
     )
+    displayed_statistics = statistics
+    if CONCISE_REPORT:
+        methods = methods[
+            ~methods["item"].isin(
+                {
+                    "Mann-Whitney U",
+                    "Welch t-test",
+                    "Why not two-group ANOVA?",
+                }
+            )
+        ].copy()
+        methods.loc[
+            methods["item"].eq("Multiple testing"), "explanation"
+        ] = (
+            "Benjamini-Hochberg FDR q-values are calculated for the primary "
+            "permutation-test family. Secondary sensitivity tests are retained "
+            "in the technical-QC package."
+        )
+        displayed_statistics = statistics[
+            [
+                column
+                for column in statistics.columns
+                if not column.startswith(("mann_whitney", "welch", "hedges_g"))
+            ]
+        ].copy()
     readme = pd.DataFrame(
         {
             "Item": [
@@ -995,7 +1056,7 @@ def write_biological_excel(
             "README": readme,
             "Specimen_Data": specimens,
             "Group_Descriptives": group_summary,
-            "Statistical_Tests": statistics,
+            "Statistical_Tests": displayed_statistics,
             "Numerical_Contract": numeric_contract,
             "Metric_Definitions": definitions,
             "Statistical_Methods": methods,
@@ -1136,13 +1197,32 @@ def write_powerpoint(path, title, figures, explanation_pages):
     presentation.save(path)
 
 
-def main():
+def main(arguments=None):
+    global BIOLOGICAL_METRICS, QC_METRICS, CONCISE_REPORT
     parser = argparse.ArgumentParser()
     parser.add_argument("--study-output", required=True)
     parser.add_argument("--output-folder", default="")
     parser.add_argument("--reference-group", default="")
     parser.add_argument("--comparison-group", default="")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--metric-profile",
+        choices=("legacy_v57", "concise_v571"),
+        default="legacy_v57",
+        help="Keep frozen v5.7 metrics or use the concise v5.7.1 biological contract.",
+    )
+    args = parser.parse_args(arguments)
+    CONCISE_REPORT = args.metric_profile == "concise_v571"
+    if args.metric_profile == "concise_v571":
+        BIOLOGICAL_METRICS = (
+            "estimated_unique_nuclei",
+            "median_representative_section_length_um",
+            "median_body_width_um",
+            "median_length_body_width_ratio",
+            "median_representative_section_tortuosity",
+        )
+    else:
+        BIOLOGICAL_METRICS = V57_BIOLOGICAL_METRICS
+    QC_METRICS = tuple(metric for metric in METRICS if metric not in BIOLOGICAL_METRICS)
 
     study_root = Path(args.study_output).resolve()
     output = (
@@ -1421,9 +1501,7 @@ def main():
         path = save_figure(figure, qc_figure_dir, stem)
         qc_figure_paths.append((title, path))
 
-    methods_page = text_page(
-        "Statistical methods and interpretation",
-        [
+    method_sections = [
             (
                 "Inference availability",
                 inference_guidance,
@@ -1466,7 +1544,21 @@ def main():
                 "test family. Effect sizes and confidence intervals should be "
                 "interpreted alongside q-values.",
             ),
-        ],
+        ]
+    if CONCISE_REPORT:
+        method_sections = [
+            section
+            for section in method_sections
+            if section[0] not in {"Mann-Whitney U", "Welch's t-test and ANOVA"}
+        ]
+        method_sections[-1] = (
+            "Multiple tests",
+            "The primary permutation-test p-values are adjusted together using "
+            "Benjamini-Hochberg FDR. Secondary sensitivity tests remain in technical QC.",
+        )
+    methods_page = text_page(
+        "Statistical methods and interpretation",
+        method_sections,
     )
     meaning_page = text_page(
         "Biological meaning of the primary measurements",
@@ -1498,9 +1590,10 @@ def main():
                 ),
                 (
                     "Scope",
-                    "This report contains biological morphology comparisons only. "
-                    "Count, acquisition-depth, tracking, warning-category, and audit "
-                    "diagnostics are in the separate quality-control package.",
+                    "This report contains the acquisition-coverage-sensitive specimen "
+                    "count and the primary biological morphology comparisons. Depth, "
+                    "tracking, warning-category, and audit diagnostics are in the "
+                    "separate quality-control package.",
                 ),
                 (
                     "Supporting files",
@@ -1566,7 +1659,7 @@ def main():
                 [
                     "Biological specimen is the replicate; nuclei are nested measurements.",
                     inference_guidance,
-                    "When available, the permutation median test is primary; Mann-Whitney and Welch tests are sensitivity analyses.",
+                    "The permutation comparison of specimen medians is the primary test; secondary sensitivity tests remain in technical QC.",
                     "Nuclei are never treated as independent biological replicates.",
                 ],
             ),

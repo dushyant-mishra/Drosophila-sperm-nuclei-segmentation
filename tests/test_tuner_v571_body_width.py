@@ -84,7 +84,8 @@ def test_tuner_does_not_substitute_legacy_width_when_body_width_is_unavailable()
 
     summary = tuner.summarize_candidate(rows, segs, cfg)
 
-    assert summary["median_width_um"] == 0.0
+    assert np.isnan(summary["median_width_um"])
+    assert np.isnan(summary["median_length_width_ratio"])
     assert summary["body_width_available_count"] == 0
     assert summary["body_width_missing_fraction"] == 1.0
     assert summary["median_width_um_dt_legacy"] == 3.0 * cfg["UM_PER_PX_XY"]
