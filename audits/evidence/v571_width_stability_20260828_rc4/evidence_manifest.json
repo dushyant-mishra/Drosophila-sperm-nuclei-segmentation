@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "generated_at_utc": "2026-08-28T17:43:45.497448+00:00",
+  "generator": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scripts\\validate_v571_body_width.py",
+  "generator_sha256": "36f5cb99ee645976ca3c127fcab2147cd821fbb90c579058dd9951090359878b",
+  "environment": {
+    "python_version": "3.14.3",
+    "python_implementation": "CPython",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "executable": "C:\\Users\\dmishra\\Desktop\\sperm_project\\.venv\\Scripts\\python.exe",
+    "packages": {
+      "numpy": "2.5.1",
+      "pandas": "3.0.3",
+      "scipy": "1.18.0",
+      "scikit-image": "0.26.0",
+      "matplotlib": "3.11.0"
+    }
+  },
+  "pipeline": "C:\\Users\\dmishra\\Desktop\\sperm_project\\sperm_segmentation_saturnv5.7.1.py",
+  "pipeline_sha256": "0ca0bc52929944561e331e400b9bff592dfd31a882f908cb8dce719fc7317f2e",
+  "coco_source": "C:\\Users\\dmishra\\Desktop\\sperm_project\\training_packages\\v5_7_kj_wt_replay_finetune\\annotations\\_annotations.coco.json",
+  "coco_source_sha256": "fda10ec49df3c45db0fe43f18dd585fdfe199bd075447b5bd0e2058c49d11d4b",
+  "engineering_validation_status": "pass",
+  "absolute_biological_accuracy_status": "not_established",
+  "artifacts": [
+    {
+      "path": "coco_mask_width_validation.csv",
+      "sha256": "7462a93c0ddba5026bc7d7ee35c75ac60010099de8e3e90d519a4aa7a157aa4e"
+    },
+    {
+      "path": "coco_mask_width_validation.json",
+      "sha256": "4e46ae20a74a6b5f7e64c1b8186078ac1511186d1e66523c9fb67b0b542ef40c"
+    },
+    {
+      "path": "synthetic_width_validation.csv",
+      "sha256": "fd612e387e60709a9518de2b7a0a186f8de186c588297e3740fd023d3cab11f0"
+    },
+    {
+      "path": "width_measurement_decision.csv",
+      "sha256": "85f3291cad554b3380bb659d189edd38e17fd9e76972b44f03c1722bf6089843"
+    },
+    {
+      "path": "V5_7_1_BODY_WIDTH_VALIDATION.md",
+      "sha256": "61341af38108f388910c558e390d6275ca8ab04fb74c94a63a31c4340476d96f"
+    },
+    {
+      "path": "coco_mask_width_validation.png",
+      "sha256": "2572e176f8c96365cba3490e89e162de0ce043c7ad0663967e1edc38392b6b50"
+    }
+  ]
+}

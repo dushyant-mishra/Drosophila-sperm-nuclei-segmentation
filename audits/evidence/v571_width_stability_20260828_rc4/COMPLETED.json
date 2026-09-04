@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "status": "complete",
+  "generated_at_utc": "2026-08-28T17:43:45.497448+00:00",
+  "manifest": "evidence_manifest.json",
+  "manifest_sha256": "9fc39b4739e4bf96cf24b443340c63d8755722360a8b2f5ea2c74ddf7aa563c2",
+  "artifact_count": 6,
+  "qc_only": true,
+  "absolute_biological_accuracy_status": "not_established"
+}

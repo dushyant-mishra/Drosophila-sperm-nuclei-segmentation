@@ -1,0 +1,19 @@
+{
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "status": "implemented",
+  "risk": "high",
+  "statement": "Apparent nucleus body width is measured by perpendicular boundary-to-boundary chords through the central filled-mask body and is used as the primary width field.",
+  "scope_limit": "This is apparent filled-mask width, not true, molecular, deconvolved, or PSF-corrected nucleus diameter.",
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "evidence": [
+    "audits/evidence/v571_width_stability_20260828_rc4/evidence_manifest.json",
+    "audits/evidence/v571_width_threshold_sensitivity_20260828_rc6/width_threshold_sensitivity_manifest.json",
+    "audits/evidence/v571_width_z_repeatability_20260828_rc2/v571_width_z_repeatability_summary.json"
+  ]
+}

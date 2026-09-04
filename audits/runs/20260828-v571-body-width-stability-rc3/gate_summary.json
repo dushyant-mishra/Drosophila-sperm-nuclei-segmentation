@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "mode": "diagnostic",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "measurement_geometry",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "pass",
+    "measurement_geometry": "pass",
+    "software_reproducibility": "pass",
+    "statistics_reporting": "pass",
+    "visual_evidence": "pass"
+  },
+  "required_roles_not_passed": [],
+  "blocking_findings": [],
+  "validation_errors": [
+    "pre-commit audits are diagnostic and cannot pass the acceptance gate"
+  ]
+}

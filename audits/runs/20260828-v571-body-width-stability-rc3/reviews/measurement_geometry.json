@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "measurement_geometry",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "The implementation is credible as apparent central-body filled-mask width. Geometry, non-unit calibration, same-plane ratio pairing, unavailable behavior, and legacy preservation passed independent review.",
+  "checks": [
+    {"check_id": "known_geometry_and_rotation", "status": "pass", "evidence": ["audits/evidence/v571_width_stability_20260828_rc4/coco_mask_width_validation.json reports maximum error 0.435 px and rotation spread 0.441 px."]},
+    {"check_id": "nonunit_calibration", "status": "pass", "evidence": ["tests/test_saturn_v571_body_width.py::test_body_width_uses_nonunit_resolved_xy_calibration uses 0.37841796875 um/px."]},
+    {"check_id": "same_plane_ratio", "status": "pass", "evidence": ["sperm_segmentation_saturnv5.7.1.py:5633-5666 pairs representative length and width from one selected row and preserves the former cross-plane ratio as legacy."]}
+  ],
+  "findings": [],
+  "limitations": ["One-pixel boundary perturbation changes apparent width by about 1.8 px in either direction.", "Absolute physical diameter accuracy is not established."],
+  "recommended_follow_up": ["Keep the measurement labelled apparent central-body mask width."]
+}

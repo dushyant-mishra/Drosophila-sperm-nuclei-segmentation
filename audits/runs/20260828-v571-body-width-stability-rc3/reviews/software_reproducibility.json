@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "software_reproducibility",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "Fresh append-only evidence binds validator, pipeline, environment, model, ROI, calibration, source manifests, all stack images, probability arrays, and outputs. Atomic writes and final completion markers fail closed.",
+  "checks": [
+    {"check_id": "append_only_atomic_outputs", "status": "pass", "evidence": ["All three validators refuse existing output directories, atomically publish artifacts, and write COMPLETED.json last."]},
+    {"check_id": "input_and_artifact_hashes", "status": "pass", "evidence": ["Independent review recomputed 188 hashes and structural checks across RC4, RC6, and RC2 with no mismatch."]},
+    {"check_id": "deterministic_inference", "status": "pass", "evidence": ["Threshold RC6 records six baseline calls plus one repeat with bit-identical foreground and core arrays."]},
+    {"check_id": "test_suite", "status": "pass", "evidence": ["Full repository validation completed with 339 passed."]}
+  ],
+  "findings": [],
+  "limitations": ["This diagnostic reviews a dirty workspace and therefore is not an acceptance candidate."],
+  "recommended_follow_up": ["Commit through the repository steward, then rerun the append-only acceptance audit on the clean commit."]
+}

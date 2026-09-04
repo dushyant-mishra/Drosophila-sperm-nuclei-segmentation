@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "branch": "feature/v5.7.1-annotation-tolerant-unet",
+  "dirty_worktree": true,
+  "working_tree_diff_hash": "9d7503a9f33cce81233780257ea21465b0f84075",
+  "mode": "diagnostic",
+  "roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "started_at_utc": "2026-08-28T16:30:00Z",
+  "completed_at_utc": "2026-08-28T18:05:00Z"
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "biological_validity",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "verdict": "pass",
+  "confidence": "medium",
+  "summary": "The narrowed apparent-mask-width claim preserves unusual mutant morphology, does not optimize toward WT width, avoids widest-plane selection, and exposes one routine width measurement.",
+  "checks": [
+    {"check_id": "morphology_not_veto", "status": "pass", "evidence": ["sperm_segmentation_saturnv5.7.1.py keeps short, long, wide, low-ratio, and tortuous cases as morphology warnings rather than comparative technical failures."]},
+    {"check_id": "representative_plane_unbiased", "status": "pass", "evidence": ["sperm_segmentation_saturnv5.7.1.py:5551 selects largest filled-mask area, then support, then Z; tests verify the widest plane is not selected merely for being widest."]},
+    {"check_id": "scope_language", "status": "pass", "evidence": ["Routine documentation describes apparent mask width and disclaims PSF-corrected physical diameter."]}
+  ],
+  "findings": [],
+  "limitations": ["The learned boundary can be thicker than the visible bright signal.", "The threshold diagnostic includes only one retained specimen from each group."],
+  "recommended_follow_up": ["Use independent specimens for group inference and retain the apparent-width qualifier."]
+}

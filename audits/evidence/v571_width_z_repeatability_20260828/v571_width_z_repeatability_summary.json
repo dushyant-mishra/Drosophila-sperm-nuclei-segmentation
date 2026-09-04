@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "analysis_type": "repeatability_qc",
+  "biological_truth_status": "not_established",
+  "population": "technical_valid tracks with at least 3 distinct observed planes having finite positive body_width_um",
+  "width_field": "body_width_um",
+  "representative_plane_definition": "recorded v5.7.1 largest-filled-mask-area representative width plane",
+  "adjacent_plane_definition": "same track at representative_z - 1 or + 1",
+  "material_difference_definition": "absolute difference >= threshold AND relative difference >= threshold; descriptive QC only, never an exclusion rule",
+  "material_absolute_threshold_um": 0.5,
+  "material_relative_threshold_fraction": 0.2,
+  "archive": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_rc6_candidate\\provenance\\tracking_replay_inputs_outputs.zip",
+  "archive_sha256": "11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9",
+  "technical_valid_tracks_with_at_least_3_observed_planes": {
+    "KJ-01": 3021,
+    "WT-01": 1853
+  },
+  "specimens": {
+    "KJ-01": {
+      "eligible_track_count": 2813,
+      "tracks_with_adjacent_width_observation": 2738,
+      "tracks_without_adjacent_width_observation": 75,
+      "median_width_cv": 0.09601038766726723,
+      "p90_width_cv": 0.20768924150129484,
+      "median_width_range_um": 0.3652000000000002,
+      "p90_width_range_um": 0.8810800000000011,
+      "median_max_adjacent_absolute_difference_um": 0.08329999999999993,
+      "p90_max_adjacent_absolute_difference_um": 0.3305599999999999,
+      "material_adjacent_difference_track_count": 126,
+      "material_adjacent_difference_track_fraction": 0.04601899196493791
+    },
+    "WT-01": {
+      "eligible_track_count": 1682,
+      "tracks_with_adjacent_width_observation": 1642,
+      "tracks_without_adjacent_width_observation": 40,
+      "median_width_cv": 0.09640075200620576,
+      "p90_width_cv": 0.21803189810331358,
+      "median_width_range_um": 0.405,
+      "p90_width_range_um": 0.9647200000000001,
+      "median_max_adjacent_absolute_difference_um": 0.08875,
+      "p90_max_adjacent_absolute_difference_um": 0.3464600000000002,
+      "material_adjacent_difference_track_count": 81,
+      "material_adjacent_difference_track_fraction": 0.04933008526187576
+    }
+  },
+  "overall": {
+    "eligible_track_count": 4495,
+    "tracks_with_adjacent_width_observation": 4380,
+    "tracks_without_adjacent_width_observation": 115,
+    "median_width_cv": 0.09617415905640771,
+    "p90_width_cv": 0.21221343660831057,
+    "median_width_range_um": 0.37840000000000007,
+    "p90_width_range_um": 0.9145199999999998,
+    "median_max_adjacent_absolute_difference_um": 0.08440000000000003,
+    "p90_max_adjacent_absolute_difference_um": 0.33631000000000005,
+    "material_adjacent_difference_track_count": 207,
+    "material_adjacent_difference_track_fraction": 0.04726027397260274
+  },
+  "primary_conclusion": "In this retained replay, largest-area representative-plane widths were usually repeatable against adjacent observed planes; material QC differences occurred in 4.7% of evaluable tracks."
+}

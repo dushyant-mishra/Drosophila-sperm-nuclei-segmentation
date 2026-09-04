@@ -1,0 +1,2 @@
+primary_user_field,display_name,engineering_validation_status,absolute_biological_accuracy_status,routine_report_action
+representative_body_width_um,apparent central-body mask width,pass,not_established,use primary field when available; keep alternatives in QC

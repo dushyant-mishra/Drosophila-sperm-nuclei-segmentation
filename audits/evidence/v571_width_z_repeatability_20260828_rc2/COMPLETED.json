@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "status": "complete",
+  "generated_at_utc": "2026-08-28T17:44:06.048623+00:00",
+  "summary": "v571_width_z_repeatability_summary.json",
+  "summary_sha256": "fdd2830f37509e4630730e9564e34266e31a93a37bb0c98660548c4627f4aee8",
+  "artifact_count": 2,
+  "qc_only": true,
+  "biological_truth_status": "not_established"
+}

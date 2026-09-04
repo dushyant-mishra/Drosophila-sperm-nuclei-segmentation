@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "generated_at_utc": "2026-08-28T17:19:30.899447+00:00",
+  "generator": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scripts\\validate_v571_body_width.py",
+  "generator_sha256": "c5cd7638cd3a4e0e79130fcff076188f0424ad9bc6029502fed7d308b379917f",
+  "pipeline": "C:\\Users\\dmishra\\Desktop\\sperm_project\\sperm_segmentation_saturnv5.7.1.py",
+  "pipeline_sha256": "84216f5a6e931a6ccf1ef2ba92201a594e88fc56be508e5ca2737d5d601d3de7",
+  "coco_source": "C:\\Users\\dmishra\\Desktop\\sperm_project\\training_packages\\v5_7_kj_wt_replay_finetune\\annotations\\_annotations.coco.json",
+  "coco_source_sha256": "fda10ec49df3c45db0fe43f18dd585fdfe199bd075447b5bd0e2058c49d11d4b",
+  "engineering_validation_status": "pass",
+  "absolute_biological_accuracy_status": "not_established",
+  "artifacts": [
+    {
+      "path": "coco_mask_width_validation.csv",
+      "sha256": "cd25a8d9adccd481b7fdea1db7950f9930ab549cf27a32a493b28dcec2cb94d1"
+    },
+    {
+      "path": "coco_mask_width_validation.json",
+      "sha256": "4ced629447bb3a38fbcddb891d035035f80b3740f753041ce5928ef668460f76"
+    },
+    {
+      "path": "synthetic_width_validation.csv",
+      "sha256": "fd612e387e60709a9518de2b7a0a186f8de186c588297e3740fd023d3cab11f0"
+    },
+    {
+      "path": "width_measurement_decision.csv",
+      "sha256": "85f3291cad554b3380bb659d189edd38e17fd9e76972b44f03c1722bf6089843"
+    },
+    {
+      "path": "V5_7_1_BODY_WIDTH_VALIDATION.md",
+      "sha256": "a9218178080c5ca6f73c13984556ca3da992e10f58ed735d689d0fd59c3ad425"
+    },
+    {
+      "path": "coco_mask_width_validation.png",
+      "sha256": "2572e176f8c96365cba3490e89e162de0ce043c7ad0663967e1edc38392b6b50"
+    }
+  ]
+}

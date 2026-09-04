@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "status": "complete",
+  "generated_at_utc": "2026-08-28T17:53:07.126961+00:00",
+  "manifest": "width_threshold_sensitivity_manifest.json",
+  "manifest_sha256": "0678ea8a81182d6f396212772b071862e395448332ce5d1719feb5103b3c80bd",
+  "artifact_count": 2,
+  "qc_only": true,
+  "biological_accuracy_claim": false
+}

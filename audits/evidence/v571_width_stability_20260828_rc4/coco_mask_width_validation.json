@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-08-28T17:43:45.497448+00:00",
+  "generator": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scripts\\validate_v571_body_width.py",
+  "generator_sha256": "36f5cb99ee645976ca3c127fcab2147cd821fbb90c579058dd9951090359878b",
+  "environment": {
+    "python_version": "3.14.3",
+    "python_implementation": "CPython",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "executable": "C:\\Users\\dmishra\\Desktop\\sperm_project\\.venv\\Scripts\\python.exe",
+    "packages": {
+      "numpy": "2.5.1",
+      "pandas": "3.0.3",
+      "scipy": "1.18.0",
+      "scikit-image": "0.26.0",
+      "matplotlib": "3.11.0"
+    }
+  },
+  "primary_user_field": "representative_body_width_um",
+  "primary_measurement_label": "apparent central-body mask width",
+  "engineering_validation_status": "pass",
+  "absolute_biological_accuracy_status": "not_established",
+  "engineering_acceptance_criteria": {
+    "known_geometry_max_error_at_most_1px": true,
+    "rotation_spread_at_most_1px": true,
+    "coco_measurement_success_at_least_95pct": true,
+    "one_pixel_expansion_increases_width": true,
+    "one_pixel_erosion_decreases_width": true
+  },
+  "synthetic_geometry": {
+    "case_count": 15,
+    "all_cases_measured": true,
+    "maximum_absolute_error_px": 0.43502884254439955,
+    "maximum_rotation_spread_px": 0.44086654134676806
+  },
+  "pipeline": "C:\\Users\\dmishra\\Desktop\\sperm_project\\sperm_segmentation_saturnv5.7.1.py",
+  "coco_source": "C:\\Users\\dmishra\\Desktop\\sperm_project\\training_packages\\v5_7_kj_wt_replay_finetune\\annotations\\_annotations.coco.json",
+  "annotation_count": 5273,
+  "rasterized_mask_count": 5273,
+  "measured_count": 5263,
+  "measurement_success_fraction": 0.9981035463682913,
+  "measurement_success_fraction_of_rasterized_masks": 0.9981035463682913,
+  "status_counts": {
+    "measured": 5263,
+    "insufficient_chords": 9,
+    "no_centerline": 1
+  },
+  "elapsed_seconds": 25.93570229999932,
+  "milliseconds_per_annotation": 4.918585681774951,
+  "unique_legacy_widths_rounded_0_001": 8,
+  "unique_body_widths_rounded_0_001": 1572,
+  "body_vs_area_length_correlation": 0.9451011502167239,
+  "body_vs_minor_axis_correlation": 0.6909762214880427,
+  "median_body_minus_area_length_px": -0.31046612676392504,
+  "median_absolute_body_vs_area_length_difference_px": 0.31452810975230117,
+  "p90_absolute_body_vs_area_length_difference_px": 1.0453801766308812,
+  "median_width_increase_from_one_pixel_mask_dilation_px": 1.8245227441883625,
+  "p10_p90_width_increase_from_one_pixel_mask_dilation_px": [
+    1.4488038898803433,
+    2.005424571865146
+  ],
+  "median_width_change_from_one_pixel_erosion_px": -1.8145182138674976,
+  "p10_p90_width_change_from_one_pixel_erosion_px": [
+    -2.00171344230544,
+    -1.4450170140511618
+  ],
+  "median_erode_to_dilate_boundary_span_px": 3.5607720104759717,
+  "validation_scope": "Engineering validation of apparent filled-mask width. Synthetic masks test formula and rotation behavior; COCO masks test coverage and mask-boundary sensitivity. This does not establish true physical nucleus diameter."
+}

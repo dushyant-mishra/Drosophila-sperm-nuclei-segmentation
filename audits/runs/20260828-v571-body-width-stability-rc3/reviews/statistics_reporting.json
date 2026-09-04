@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "statistics_reporting",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "verdict": "pass",
+  "confidence": "high",
+  "summary": "Biological inference remains specimen-level. Routine summaries expose one apparent width and its same-plane ratio; P90, area-length, perturbation, and legacy values remain technical QC.",
+  "checks": [
+    {"check_id": "specimen_inference_unit", "status": "pass", "evidence": ["sperm_segmentation_saturnv5.7.1.py performs group tests on specimen-level summaries."]},
+    {"check_id": "one_primary_width", "status": "pass", "evidence": ["analysis_summary.csv/json and biological comparison metrics include median_body_width_um but exclude P90, area-length, and legacy widths."]},
+    {"check_id": "partial_cohort_no_inference", "status": "pass", "evidence": ["Incomplete cohorts remain descriptive-only and cannot generate inferential comparisons."]}
+  ],
+  "findings": [],
+  "limitations": ["Threshold and repeatability evidence are technical diagnostics, not genotype comparisons."],
+  "recommended_follow_up": ["Continue using specimen medians for between-group inference."]
+}

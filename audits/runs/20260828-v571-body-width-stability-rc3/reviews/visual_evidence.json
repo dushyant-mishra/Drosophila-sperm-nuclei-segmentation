@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260828-v571-body-width-stability-rc3",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "role": "visual_evidence",
+  "reviewed_commit": "16a1f3770c07063b4f3108522500c88f16e7c84f",
+  "verdict": "pass",
+  "confidence": "medium",
+  "summary": "Object-level panels clearly show mask boundaries, centerlines, perpendicular chords, and representative-plane selection. Technical figures support engineering behavior only and are appropriately excluded from routine biological reporting.",
+  "checks": [
+    {"check_id": "object_level_geometry_visible", "status": "pass", "evidence": ["audits/evidence/v571_body_width_final KJ and WT selected-width panels show raw image, probability, mask, contour, centerline, and chords."]},
+    {"check_id": "engineering_scope_visible", "status": "pass", "evidence": ["audits/evidence/v571_width_stability_20260828_rc4 explicitly reports absolute biological accuracy as not established."]},
+    {"check_id": "routine_clutter_removed", "status": "pass", "evidence": ["Routine concise summaries expose apparent width, length, and ratio while technical variants remain QC-only."]}
+  ],
+  "findings": [],
+  "limitations": ["No visual panel constitutes ground truth for true physical diameter.", "Technical audit panels are intentionally denser than routine reports."],
+  "recommended_follow_up": ["Keep detailed chord and perturbation panels in audit/QC output only."]
+}

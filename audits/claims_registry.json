@@ -70,9 +70,63 @@
       }
     },
     {
+      "claim_id": "WORKFLOW-MANUAL-CORRECTION-001",
+      "title": "Manual corrections are replayable and preserve original evidence",
+      "status": "proposed",
+      "risk": "high",
+      "implementation_owner": "primary_implementation_agent",
+      "statement": "GUI corrections operate on authoritative filled instance masks or explicit cross-slice constraints, are stored append-only, and deterministically regenerate measurements, tracking, overlays, and reports without overwriting the original run.",
+      "biological_meaning": "A reviewer can correct a technical segmentation or tracking error without converting unusual WT or mutant morphology into an exclusion rule or losing the original model result.",
+      "population": "reviewed 2D instances and reconstructed nuclei",
+      "units": ["pixel mask", "track edge", "count", "um", "um2", "um3"],
+      "calibration_dependencies": ["resolved specimen XY calibration", "resolved specimen Z spacing"],
+      "source_dependencies": [
+        "immutable original instance-label images",
+        "raw image stack",
+        "ROI and exclusion masks",
+        "analysis profile and checkpoint identity",
+        "append-only correction operations"
+      ],
+      "implementation_evidence": [
+        "utils/saturn_v571_gui_services.py",
+        "utils/saturn_v571_correction_materializer.py",
+        "tests/test_saturn_v571_gui_services.py",
+        "tests/test_saturn_v571_correction_replay.py",
+        "tests/test_saturn_v571_correction_materializer.py",
+        "tests/test_saturn_v571_gui_workflow.py",
+        "sperm_segmentation_saturnv5.7.1.py"
+      ],
+      "acceptance_criteria": [
+        "Original masks, measurements, tracks, and reports are never overwritten",
+        "Every correction records stable instance identity, reviewer, timestamp, reason, before and after hashes, software version, profile, checkpoint, and calibration provenance",
+        "2D edits operate on filled instance masks and trigger deterministic remeasurement and full-specimen retracking",
+        "Track constraints cannot create duplicate source instances, same-Z collisions, cross-specimen links, or missing track IDs",
+        "Morphology alone cannot justify technical exclusion or prevent a link",
+        "GUI, batch, study, and regenerated reports identify the applied correction revision"
+      ],
+      "required_roles": [
+        "measurement_geometry",
+        "biological_validity",
+        "calibration_provenance",
+        "software_reproducibility",
+        "statistics_reporting",
+        "visual_evidence"
+      ],
+      "known_limitations": [
+        "The initial implementation may expose only a subset of the versioned correction actions",
+        "A correction revision is non-production until the audit gate passes"
+      ],
+      "non_claims": [
+        "Manual correction does not establish that every retained object is biologically normal",
+        "Correction frequency is not a biological phenotype"
+      ],
+      "supersedes": [],
+      "latest_audit": null
+    },
+    {
       "claim_id": "MEAS-BODY-WIDTH-001",
       "title": "Subpixel central-body chord width replaces quantized EDT width",
-      "status": "validated",
+      "status": "implemented",
       "risk": "high",
       "implementation_owner": "primary_implementation_agent",
       "statement": "Apparent nucleus body width is measured by perpendicular boundary-to-boundary chords through the central filled-mask body and is used as the primary width field.",
@@ -82,19 +136,28 @@
       "calibration_dependencies": ["Leica XY pixel size"],
       "source_dependencies": ["filled U-Net instance mask", "ordered centerline"],
       "implementation_evidence": [
-        "sperm_segmentation_saturnv5.7.1.py:3186",
-        "sperm_segmentation_saturnv5.7.1.py:3258",
+        "sperm_segmentation_saturnv5.7.1.py:3735",
+        "sperm_segmentation_saturnv5.7.1.py:3809",
         "utils/tune_parameters_Saturnv5_7_1.py",
         "tests/test_saturn_v571_body_width.py",
         "tests/test_tuner_v571_body_width.py",
+        "tests/test_v571_width_stability_validator.py",
+        "scripts/validate_v571_body_width.py",
+        "audits/evidence/v571_width_stability_20260828_rc4/evidence_manifest.json",
+        "scripts/validate_v571_width_threshold_sensitivity.py",
+        "audits/evidence/v571_width_threshold_sensitivity_20260828_rc6/width_threshold_sensitivity_manifest.json",
+        "scripts/validate_v571_width_z_repeatability.py",
+        "audits/evidence/v571_width_z_repeatability_20260828_rc2/v571_width_z_repeatability_summary.json",
         "scripts/generate_v571_body_width_evidence.py",
         "audits/evidence/v571_body_width_final/body_width_visual_evidence_manifest.json"
       ],
       "acceptance_criteria": [
         "Known-width synthetic masks are recovered within stated tolerance",
         "Rotation does not create material width bias",
+        "One-pixel erosion and dilation sensitivity is quantified as technical QC",
         "Too few valid chords produce unavailable rather than fabricated width",
         "Largest-area valid Z plane supplies representative track width",
+        "Reported length/body-width ratio pairs length and width from the same representative Z plane",
         "Legacy EDT fields remain explicitly labelled and do not drive primary reports"
       ],
       "required_roles": [
@@ -189,6 +252,102 @@
       "known_limitations": ["Length alone cannot distinguish a genuine short nucleus from an unresolved fragment"],
       "non_claims": ["Length below 2 um is not automatically technical noise"],
       "supersedes": []
+    },
+    {
+      "claim_id": "REPORT-BIOLOGIST-CONCISE-001",
+      "title": "Routine biological reports expose one concise actionable result contract",
+      "status": "implemented",
+      "risk": "high",
+      "implementation_owner": "primary_implementation_agent",
+      "statement": "Saturn v5.7.1 biological CSV, JSON, Excel, PDF, PowerPoint, and study-comparison outputs expose only the acquisition-coverage-sensitive estimated nucleus count, representative-section length, apparent central-body mask width, the same-plane length-to-width ratio, and representative-section centerline tortuosity; engineering and PSF-sensitive quantities remain in explicitly separated technical-QC artifacts.",
+      "biological_meaning": "A biologist has one unambiguous set of specimen outcomes and is not asked to choose among competing width, thickness, volume, density, or tracking diagnostics.",
+      "population": "technical-valid reconstructed nuclei summarized at specimen level",
+      "units": ["count", "um", "ratio"],
+      "calibration_dependencies": ["resolved specimen XY calibration", "resolved specimen Z spacing"],
+      "source_dependencies": [
+        "technical-valid track summary",
+        "representative-plane length and width",
+        "study manifest group roles"
+      ],
+      "implementation_evidence": [
+        "sperm_segmentation_saturnv5.7.1.py",
+        "scripts/generate_v57_biological_comparison.py",
+        "scripts/generate_v571_biological_comparison.py",
+        "tests/test_saturn_v571_concise_reports.py",
+        "tests/test_v571_biological_comparison_entrypoint.py",
+        "tests/test_saturn_v571_audit_blockers.py"
+      ],
+      "acceptance_criteria": [
+        "Every routine biological surface contains the same five outcome definitions",
+        "Length and width used for the primary ratio come from the same representative plane",
+        "Primary tortuosity is measured from the centerline on that same representative plane; centroid track-path tortuosity remains technical QC",
+        "PSF-sensitive thickness, slab-volume proxies, repeated-2D-ROI density, P90, IQR, area-length width, legacy EDT width, pitch, taper, nearest-neighbor, and tracking diagnostics do not appear in biological PDF or PowerPoint artifacts",
+        "Detailed engineering outputs remain available under clearly named technical-QC paths",
+        "Between-group inference continues to use specimens rather than nuclei as independent replicates"
+      ],
+      "required_roles": [
+        "measurement_geometry",
+        "biological_validity",
+        "software_reproducibility",
+        "statistics_reporting",
+        "visual_evidence"
+      ],
+      "known_limitations": [
+        "Apparent body-mask width is not a PSF-corrected physical diameter",
+        "Estimated raw nucleus count depends on acquisition coverage until slice-specific anatomical ROI volume is implemented"
+      ],
+      "non_claims": [
+        "The concise report does not establish biological significance",
+        "The concise report does not measure anatomical seminal-vesicle volume"
+      ],
+      "supersedes": [],
+      "latest_audit": null
+    },
+    {
+      "claim_id": "WORKFLOW-GUI-PRIMARY-001",
+      "title": "GUI is the safe primary entry point for slice, batch, and study analysis",
+      "status": "implemented",
+      "risk": "high",
+      "implementation_owner": "primary_implementation_agent",
+      "statement": "The Saturn v5.7.1 GUI uses one reviewed analysis path, blocks incomplete scientific inputs, preserves source data and prior attempts, reports progress and stop state truthfully, and prevents incomplete cohorts from producing biological group inference.",
+      "biological_meaning": "A biologist can run the same calibrated technical-valid analysis without command-line knowledge or silently changing the population, profile, checkpoint, specimen set, or comparison direction.",
+      "population": "GUI single-slice previews, full-stack batches, and multi-specimen studies",
+      "units": [],
+      "calibration_dependencies": ["resolved specimen microscope metadata"],
+      "source_dependencies": [
+        "sperm_segmentation_saturnv5.7.1.py",
+        "utils/saturn_v571_gui_services.py",
+        "audits/claims_registry.json"
+      ],
+      "implementation_evidence": [
+        "tests/test_saturn_v571_gui_services.py",
+        "tests/test_saturn_v571_gui_workflow.py"
+      ],
+      "acceptance_criteria": [
+        "Profile identity, checkpoint identity, calibration provenance, and scientific audit state are distinct visible readiness checks",
+        "Source and output directory trees never overlap",
+        "Stopped, failed, stale, or source-drifted attempts cannot be resumed or reported as complete",
+        "Every included specimen must be verified complete before biological group comparison",
+        "Reference and comparison roles control report direction without defining acceptable morphology",
+        "Overlay review is explicitly read-only until the append-only filled-mask correction workflow is independently accepted"
+      ],
+      "required_roles": [
+        "biological_validity",
+        "calibration_provenance",
+        "software_reproducibility",
+        "statistics_reporting",
+        "visual_evidence"
+      ],
+      "known_limitations": [
+        "Manual correction remains disabled until WORKFLOW-MANUAL-CORRECTION-001 is accepted",
+        "Long non-cancellable rendering stages must be labelled before they begin"
+      ],
+      "non_claims": [
+        "GUI readiness does not establish that every segmentation is biologically correct",
+        "A reference group is not a morphology target"
+      ],
+      "supersedes": [],
+      "latest_audit": null
     }
   ]
 }

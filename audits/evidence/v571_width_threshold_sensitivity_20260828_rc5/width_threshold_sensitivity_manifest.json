@@ -1,0 +1,132 @@
+{
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-08-28T17:48:14.149346+00:00",
+  "generator": "C:\\Users\\dmishra\\Desktop\\sperm_project\\scripts\\validate_v571_width_threshold_sensitivity.py",
+  "generator_sha256": "d9182b942524eaf2cb045c8af4cefe4796b79a82c655005c687d16ab3fd27ac7",
+  "environment": {
+    "python_version": "3.14.3",
+    "python_implementation": "CPython",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "executable": "C:\\Users\\dmishra\\Desktop\\sperm_project\\.venv\\Scripts\\python.exe",
+    "packages": {
+      "numpy": "2.5.1",
+      "pandas": "3.0.3",
+      "torch": "2.13.0+cpu",
+      "scipy": "1.18.0",
+      "scikit-image": "0.26.0"
+    }
+  },
+  "deterministic_torch_settings": {
+    "seed": 0,
+    "deterministic_algorithms": true,
+    "deterministic_debug_mode": "error",
+    "cublas_workspace_config": ":4096:8",
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": true,
+    "cuda_available": false
+  },
+  "purpose": "QC-only apparent filled-mask width and area threshold sensitivity",
+  "biological_accuracy_claim": false,
+  "production_parameters_changed": false,
+  "user_facing_biological_report": false,
+  "pipeline": "C:\\Users\\dmishra\\Desktop\\sperm_project\\sperm_segmentation_saturnv5.7.1.py",
+  "pipeline_sha256": "0ca0bc52929944561e331e400b9bff592dfd31a882f908cb8dce719fc7317f2e",
+  "profile": "C:\\Users\\dmishra\\Desktop\\sperm_project\\production_profiles\\saturn_v5_7_1_model_c_epoch003.json",
+  "profile_sha256": "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8",
+  "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+  "foreground_thresholds": [
+    0.55,
+    0.6,
+    0.65
+  ],
+  "baseline_foreground_threshold": 0.6,
+  "fixed_core_threshold": 0.5,
+  "specimen_planes": {
+    "KJ-01": [
+      34,
+      35,
+      36
+    ],
+    "WT-01": [
+      34,
+      35,
+      36
+    ]
+  },
+  "baseline_inference_call_count": 6,
+  "repeat_inference_call_count": 1,
+  "total_inference_call_count": 7,
+  "inference_records": [
+    {
+      "specimen": "KJ-01",
+      "z_index": 34,
+      "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+      "source_sha256": "66883b3924cd6bea62a6d42dd663099fe2d07b237e1e1418df375eae462c3a15",
+      "foreground_probability_sha256": "a0f116d5ebac6d95b2fd9d58599d6b94e0e75f16b2c2c8be6f41bd494b05c9f6",
+      "core_probability_sha256": "2095b5ebca5c7e5785ed52c0ccb4b7ed8d215c748d9a58508e1690a696f6cc99",
+      "inference_call_count": 1
+    },
+    {
+      "specimen": "KJ-01",
+      "z_index": 35,
+      "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+      "source_sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0",
+      "foreground_probability_sha256": "d44e3f4fac03ecce384c8999628d9398173feea636fa6e029421ff202979f8d8",
+      "core_probability_sha256": "1417d5c848c328dcf34ddb52a52bc720cdc4d2117f221791e3b97e273ae8862e",
+      "inference_call_count": 1
+    },
+    {
+      "specimen": "KJ-01",
+      "z_index": 36,
+      "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z36_ch00.tif",
+      "source_sha256": "fbf55b742890cfe232b1dd14803ab62e258c419312fa829ecc748f92a8a114b5",
+      "foreground_probability_sha256": "0ad75ce16db3f76e63ea225d5b3cbf1fc410bd5fb6d979852354b36ea1d4f79c",
+      "core_probability_sha256": "3b22240afbeef013116787672e67d99ab7abb0fd9ba5dc8ab86e284f02eb4f20",
+      "inference_call_count": 1
+    },
+    {
+      "specimen": "WT-01",
+      "z_index": 34,
+      "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+      "source_sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10",
+      "foreground_probability_sha256": "248c0060aaf5b12ef98b130c040803264c8a7769377c8f8f67ca2db246e7724d",
+      "core_probability_sha256": "374ebe605d0c0741c88ec9a351c6c41372b19e0dfa9849659c3e1010587a7d25",
+      "inference_call_count": 1
+    },
+    {
+      "specimen": "WT-01",
+      "z_index": 35,
+      "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+      "source_sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e",
+      "foreground_probability_sha256": "e22f7b95ef6b7bb828cb33a71048cad713c249c6eb1be05f341ae3b7b8092c96",
+      "core_probability_sha256": "d49740e20e28ab12281bf108155904c27a1876ac1b35b6b39876bcadfdaac9f2",
+      "inference_call_count": 1
+    },
+    {
+      "specimen": "WT-01",
+      "z_index": 36,
+      "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z36_ch00.tif",
+      "source_sha256": "14c5f496a9deade800aef57bce41d4b4c30eea7caef8f85226bb9a9b9e3b3f14",
+      "foreground_probability_sha256": "7d23a123e63116a129b86791e14be841721a75d82138327f4df08a1f1091b1aa",
+      "core_probability_sha256": "7f304f7a4fb1cc9fcdf864555428fbe2517e837c8547aac5827c0bb53c2e0f06",
+      "inference_call_count": 1
+    }
+  ],
+  "deterministic_repeat": {
+    "foreground_identical": true,
+    "core_identical": true,
+    "foreground_sha256": "a0f116d5ebac6d95b2fd9d58599d6b94e0e75f16b2c2c8be6f41bd494b05c9f6",
+    "repeated_foreground_sha256": "a0f116d5ebac6d95b2fd9d58599d6b94e0e75f16b2c2c8be6f41bd494b05c9f6",
+    "core_sha256": "2095b5ebca5c7e5785ed52c0ccb4b7ed8d215c748d9a58508e1690a696f6cc99",
+    "repeated_core_sha256": "2095b5ebca5c7e5785ed52c0ccb4b7ed8d215c748d9a58508e1690a696f6cc99",
+    "specimen": "KJ-01",
+    "z_index": 34,
+    "source_path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+    "repeat_inference_call_count": 1
+  },
+  "details_csv": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_width_threshold_sensitivity_20260828_rc5\\width_threshold_sensitivity_qc.csv",
+  "details_csv_sha256": "10141f500e9a72d94f8747cd9c9e391fe94792009d1f1714c9ea919c07d0f275",
+  "summary_csv": "C:\\Users\\dmishra\\Desktop\\sperm_project\\audits\\evidence\\v571_width_threshold_sensitivity_20260828_rc5\\width_threshold_sensitivity_summary_qc.csv",
+  "summary_csv_sha256": "26c210c695d71ca085d0ce085a202d0a12b54fbd440d3921ed80afc589af99bf",
+  "interpretation_limit": "These measurements quantify threshold sensitivity of apparent mask-derived width and area only; they do not establish true physical nucleus width or biological accuracy."
+}
