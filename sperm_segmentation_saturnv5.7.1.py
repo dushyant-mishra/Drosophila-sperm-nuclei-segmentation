@@ -3737,18 +3737,23 @@ def _normal_contour_chords(points, normals, contour):
     return np.where(valid, chords, np.nan)
 
 
-def measure_subpixel_body_width(instance_mask, center_coords, cfg=None):
-    """Measure central-body widths as contour chords normal to the centerline."""
-    cfg = CONFIG if cfg is None else cfg
-    method = "subpixel_mask_contour_perpendicular_chords_central_body"
-    unavailable = {
+def body_width_unavailable(method):
+    """Return an explicit unavailable body-width record with a stated reason."""
+    return {
         "body_width_px": np.nan,
         "body_width_p90_px": np.nan,
         "body_width_iqr_px": np.nan,
         "body_width_sample_count": 0,
-        "body_width_method": method,
+        "body_width_method": str(method),
         "body_centerline_length_px": np.nan,
     }
+
+
+def measure_subpixel_body_width(instance_mask, center_coords, cfg=None):
+    """Measure central-body widths as contour chords normal to the centerline."""
+    cfg = CONFIG if cfg is None else cfg
+    method = "subpixel_mask_contour_perpendicular_chords_central_body"
+    unavailable = body_width_unavailable(method)
     if not bool(cfg.get("BODY_WIDTH_ENABLE", True)):
         unavailable["body_width_method"] = "disabled"
         return unavailable
@@ -4111,6 +4116,23 @@ def measure_spermatids(seg, cfg):
         clean_skel = np.zeros_like(skel, dtype=bool)
         final_label = np.zeros_like(skel_lab, dtype=np.int32)
 
+    # ------ Filled instance masks for subpixel body width -------------------------------------------------------
+    # The chord measurement needs the filled object mask, not the skeleton. A cleaned
+    # mask component may still carry more than one accepted centerline; measuring the
+    # whole component would then report the merged extent as one nucleus width, so
+    # those objects report width as unavailable rather than a fabricated value.
+    mask_clean_full = np.asarray(
+        seg.get("mask_clean", np.zeros_like(skel, dtype=bool)), dtype=bool
+    )
+    mask_components = measure.label(mask_clean_full).astype(np.int32)
+    centerlines_per_component = {}
+    for sp in measure.regionprops(final_label):
+        component = int(mask_components[sp.coords[0, 0], sp.coords[0, 1]])
+        if component > 0:
+            centerlines_per_component[component] = (
+                centerlines_per_component.get(component, 0) + 1
+            )
+
     # ------ Re-index using cached values (no second Dijkstra pass) ---------------------------------------------
     final_results = []
     for new_i, sp in enumerate(measure.regionprops(final_label), start=1):
@@ -4118,7 +4140,28 @@ def measure_spermatids(seg, cfg):
         if old_label not in cache:
             continue
         c = cache[old_label]
+        component = int(mask_components[sp.coords[0, 0], sp.coords[0, 1]])
+        if component <= 0:
+            body_width = body_width_unavailable("unavailable_no_filled_mask")
+        elif centerlines_per_component.get(component, 0) != 1:
+            body_width = body_width_unavailable("unavailable_multi_centerline_component")
+        else:
+            body_width = measure_subpixel_body_width(
+                mask_components == component,
+                sp.coords,
+                cfg,
+            )
+        body_width_px = float(body_width["body_width_px"])
+        legacy_width_px = float(c["width"])
         final_results.append({
+            **body_width,
+            "width_px_dt_median_legacy": legacy_width_px,
+            "length_width_ratio_dt_legacy": c["length_width_ratio"],
+            "length_body_width_ratio": (
+                float(c["geo_len"]) / body_width_px
+                if np.isfinite(body_width_px) and body_width_px > 0
+                else np.nan
+            ),
             "label":               new_i,
             "length_px_geodesic":  c["geo_len"],
             "length_px_count":     c["length_px_count"],
@@ -5123,19 +5166,20 @@ def rows_from_results(results, z_idx, um):
         if not source_instance_key:
             source_instance_key = f"z{int(z_idx):04d}:instance:{sperm_id}"
         historical_area = round(float(r.get("area_px", 0.0)), 1)
-        estimated_slender_area = round(float(r["length_px_geodesic"]) * float(r["width_px"]), 1)
         instance_mask_area = round(r.get("instance_mask_area_px", np.nan), 1) if np.isfinite(r.get("instance_mask_area_px", np.nan)) else np.nan
         detection_source = r.get("detection_source", "saturn_classical")
         body_width_px = float(r.get("body_width_px", np.nan))
         body_width_available = np.isfinite(body_width_px) and body_width_px > 0
-        unet_instance = detection_source in {
-            "unet_primary",
-            "saturn_only_addition",
-        }
-        primary_width_px = (
-            body_width_px
-            if body_width_available
-            else (np.nan if unet_instance else float(r["width_px"]))
+        # Unqualified width is the subpixel contour chord by construction. When no
+        # chord can be formed the value stays unavailable; the legacy distance
+        # transform never substitutes for it under an unqualified name.
+        primary_width_px = body_width_px if body_width_available else np.nan
+        # Slender-area estimate follows the same primary width, so it never mixes a
+        # chord length with a distance-transform width.
+        estimated_slender_area = (
+            round(float(r["length_px_geodesic"]) * primary_width_px, 1)
+            if np.isfinite(primary_width_px)
+            else np.nan
         )
         primary_ratio = (
             float(r["length_px_geodesic"]) / primary_width_px
@@ -5159,10 +5203,13 @@ def rows_from_results(results, z_idx, um):
             "length_um_count":     round(r["length_px_count"]  * um, 3),
             "width_px": round(primary_width_px, 4) if np.isfinite(primary_width_px) else np.nan,
             "width_um": round(primary_width_px * um, 4) if np.isfinite(primary_width_px) else np.nan,
-            "width_measurement_method": (
-                r.get("body_width_method", "subpixel_central_body_chord")
-                if body_width_available
-                else ("unavailable" if unet_instance else "classical_dt_median")
+            "width_measurement_method": str(
+                r.get(
+                    "body_width_method",
+                    "subpixel_central_body_chord"
+                    if body_width_available
+                    else "unavailable",
+                )
             ),
             "length_width_ratio": round(primary_ratio, 4) if np.isfinite(primary_ratio) else np.nan,
             "width_px_dt_median_legacy": round(
@@ -5866,16 +5913,23 @@ def track_across_slices_legacy(detections_df, cfg):
         width = pd.to_numeric(df.get("width_um"), errors="coerce")
         length = pd.to_numeric(df.get("length_um_geodesic"), errors="coerce")
         df["length_width_ratio"] = length / width.clip(lower=1e-9)
-    # Older tracking inputs predate the explicit v5.7.1 legacy names. Treat
-    # their historical width fields as legacy values without redefining the
-    # unqualified body-width fields emitted by native v5.7.1 segmentation.
+    # Older tracking inputs predate the explicit v5.7.1 legacy names, and for them
+    # the unqualified width really is the distance-transform value. Native v5.7.1
+    # frames are identified by width_measurement_method and carry the chord value
+    # under the unqualified name, so back-filling from it there would relabel a
+    # chord measurement as legacy. In that case the legacy value stays absent.
+    native_v571_widths = "width_measurement_method" in df.columns
     if "width_um_dt_median_legacy" not in df.columns:
-        df["width_um_dt_median_legacy"] = pd.to_numeric(
-            df.get("width_um"), errors="coerce"
+        df["width_um_dt_median_legacy"] = (
+            np.nan
+            if native_v571_widths
+            else pd.to_numeric(df.get("width_um"), errors="coerce")
         )
     if "length_width_ratio_dt_legacy" not in df.columns:
-        df["length_width_ratio_dt_legacy"] = pd.to_numeric(
-            df.get("length_width_ratio"), errors="coerce"
+        df["length_width_ratio_dt_legacy"] = (
+            np.nan
+            if native_v571_widths
+            else pd.to_numeric(df.get("length_width_ratio"), errors="coerce")
         )
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
@@ -9316,6 +9370,83 @@ def process_batch(cfg, progress_callback=None, stop_requested=None):
     return result
 
 
+def notify_report_warning(title, message):
+    """Report a warning, using a modal dialog only in an interactive GUI session.
+
+    The report generators are reachable from batch and multi-sample study runs,
+    which are unattended. A modal dialog raised there blocks until somebody
+    dismisses it, so an overnight cohort run can stall indefinitely on a report
+    warning. Automated test runs hit the same path and pop dialogs onto the
+    operator's screen. Only warn modally when a Tk root already exists.
+
+    Args:
+        title (str): Dialog title.
+        message (str): Human-readable warning text.
+
+    Returns:
+        bool: True when a modal dialog was shown, False when logged only.
+    """
+    print(f"WARNING [{title}]: {message}")
+    try:
+        import tkinter as _tk
+
+        if getattr(_tk, "_default_root", None) is None:
+            return False
+        from tkinter import messagebox as _messagebox
+
+        _messagebox.showwarning(title, message)
+        return True
+    except Exception:
+        return False
+
+
+def resolve_writable_pdf_path(pdf_path):
+    """Return a PDF path that can actually be written, avoiding viewer locks.
+
+    On Windows an open PDF viewer holds an exclusive lock on the file, so
+    rewriting a previous report raises PermissionError. matplotlib opens the
+    file lazily on the first ``savefig``, which means the failure surfaces deep
+    inside report rendering and discards the whole report for a completed
+    analysis run. Probing the target first lets a locked report fall back to a
+    timestamped sibling instead of losing the output.
+
+    Args:
+        pdf_path (str): Desired output path.
+
+    Returns:
+        str: ``pdf_path`` when writable, otherwise a timestamped fallback path.
+    """
+    import os as _os
+    import time as _time
+
+    existed = _os.path.exists(pdf_path)
+    try:
+        with open(pdf_path, "ab"):
+            pass
+        return pdf_path
+    except PermissionError:
+        pass
+    except OSError:
+        # Missing parent directory or a similar problem is not a viewer lock;
+        # let the normal reporting path raise it with its own context.
+        return pdf_path
+    finally:
+        if not existed and _os.path.exists(pdf_path) and _os.path.getsize(pdf_path) == 0:
+            try:
+                _os.remove(pdf_path)
+            except OSError:
+                pass
+
+    base, extension = _os.path.splitext(pdf_path)
+    fallback = f"{base}_{_time.strftime('%Y%m%d_%H%M%S')}{extension}"
+    print(
+        f"WARNING: '{_os.path.basename(pdf_path)}' is open in another program and "
+        f"cannot be replaced. Writing '{_os.path.basename(fallback)}' instead. "
+        "Close the file to restore the standard report name."
+    )
+    return fallback
+
+
 def write_error_log(out_dir, component, message):
     """
     Writes a persistent error log to report_generation_errors.txt in the output directory.
@@ -9671,11 +9802,10 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
         err_msg = traceback.format_exc()
         print(f"ERROR generating Excel report: {e}")
         write_error_log(out_dir, "Excel Reporter", err_msg)
-        try:
-            from tkinter import messagebox
-            messagebox.showwarning("Reporting Warning", f"Excel Report failed to generate completely.\n{e}")
-        except Exception:
-            pass
+        notify_report_warning(
+            "Reporting Warning",
+            f"Excel Report failed to generate completely.\n{e}",
+        )
         raise RuntimeError("Excel report generation failed") from e
 
 
@@ -9705,6 +9835,7 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
     if missing and not primary.empty:
         raise ValueError(f"concise biological report is missing columns: {missing}")
 
+    pdf_path = resolve_writable_pdf_path(pdf_path)
     with PdfPages(pdf_path) as pdf:
         overview = plt.figure(figsize=(11, 8.5))
         overview.suptitle("Biologist Results: Included Estimated Nuclei", fontsize=17, fontweight="bold")
@@ -9835,6 +9966,7 @@ def generate_batch_report(
     os.makedirs(plot_dir, exist_ok=True)
 
     try:
+        pdf_path = resolve_writable_pdf_path(pdf_path)
         with PdfPages(pdf_path) as pdf:
             unet_report = summarize_unet_rescue_for_reports(df, out_dir)
             # --- PAGE 1: GLOBAL SUMMARY ---
@@ -10478,11 +10610,10 @@ def generate_batch_report(
         err_msg = traceback.format_exc()
         print(f"ERROR generating PDF report: {e}")
         write_error_log(out_dir, "PDF Reporter", err_msg)
-        try:
-            from tkinter import messagebox
-            messagebox.showwarning("Reporting Warning", f"PDF Report failed to generate completely.\n{e}")
-        except Exception:
-            pass
+        notify_report_warning(
+            "Reporting Warning",
+            f"PDF Report failed to generate completely.\n{e}",
+        )
         raise RuntimeError("PDF report generation failed") from e
 
 
@@ -11011,11 +11142,11 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
         err_msg = traceback.format_exc()
         print(f"Failed to generate PPTX report: {e}")
         write_error_log(out_dir, "PowerPoint Generator", err_msg)
-        try:
-            from tkinter import messagebox
-            messagebox.showerror("Reporting Error", f"Failed to generate PowerPoint Report:\n{e}\n\nSee report_generation_errors.txt for details.")
-        except Exception:
-            pass
+        notify_report_warning(
+            "Reporting Error",
+            f"Failed to generate PowerPoint Report:\n{e}\n\n"
+            "See report_generation_errors.txt for details.",
+        )
         return False
 
 
@@ -14757,6 +14888,7 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         },
     )
 
+    output_path = resolve_writable_pdf_path(output_path)
     with PdfPages(output_path) as pdf:
         pdf.savefig(figure, dpi=180, bbox_inches="tight")
         pdf.savefig(explanation, dpi=180, bbox_inches="tight")
