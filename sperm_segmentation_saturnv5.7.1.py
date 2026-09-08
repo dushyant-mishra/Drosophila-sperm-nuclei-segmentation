@@ -3880,11 +3880,22 @@ def measure_intensity_profile_width(
             float(np.median(sampled[right_tail])),
         )
         profile = sampled - background
-        peak = float(profile.max())
+        # Restrict to this object. The profile window is wide enough to reach a
+        # neighbouring nucleus, and a neighbour is not part of this object: its
+        # peak must not set the half-maximum, and its presence is not evidence
+        # that this mask holds two objects.
+        inside = ndi.map_coordinates(
+            instance_mask.astype(np.uint8), [rows, columns], order=0, mode="constant"
+        ).astype(bool)
+        if not inside.any():
+            continue
+        owned = profile.copy()
+        owned[~inside] = -np.inf
+        peak = float(owned.max())
         if peak <= 0:
             continue
         half = peak / 2.0
-        peak_index = int(np.argmax(profile))
+        peak_index = int(np.argmax(owned))
         left = peak_index
         while left > 0 and profile[left - 1] >= half:
             left -= 1
@@ -3914,8 +3925,9 @@ def measure_intensity_profile_width(
         # is valid only where acquisition settings match across specimens.
         integrals.append(float(np.clip(profile, 0.0, None).sum()) * step)
 
-        # A bimodal cross-section indicates two objects inside one mask.
-        above = profile >= half
+        # A bimodal cross-section inside one mask indicates two objects held
+        # together. Only pixels belonging to this object can count toward that.
+        above = (profile >= half) & inside
         transitions = int(np.count_nonzero(above[1:] & ~above[:-1])) + int(above[0])
         if transitions > 1:
             multi_peak += 1
@@ -4036,6 +4048,10 @@ def _measure_unet_primary_instances(seg, cfg):
         seg["unet_primary_centerline_labels"], dtype=np.int32
     )
     probability = np.asarray(seg["unet_probability"], dtype=np.float32)
+    # Unclipped, unequalized intensities for profile-based width. Absent on
+    # replayed segmentations that predate the field, which fail closed to an
+    # explicit unavailable record rather than to a mask-derived substitute.
+    linear_image = seg.get("img_linear")
     parent_map = seg.get("unet_primary_parent_by_instance", {})
     source_map = seg.get("unet_primary_instance_sources", {})
     centerline_meta = seg.get("unet_primary_centerline_metadata", {})
@@ -4090,6 +4106,12 @@ def _measure_unet_primary_instances(seg, cfg):
             center_coords,
             cfg,
         )
+        intensity_width = measure_intensity_profile_width(
+            linear_image,
+            instance_mask,
+            center_coords,
+            cfg,
+        )
         body_width_px = body_width["body_width_px"]
         area_length_width_px = float(prop.area) / max(geodesic, 1e-9)
         length_body_width_ratio = (
@@ -4139,6 +4161,7 @@ def _measure_unet_primary_instances(seg, cfg):
             "width_px_dt_median_legacy": median_width,
             "length_width_ratio_dt_legacy": ratio,
             **body_width,
+            **intensity_width,
             "area_length_width_px": area_length_width_px,
             "length_body_width_ratio": length_body_width_ratio,
             "tortuosity": float(topology["tortuosity"]),
@@ -4335,6 +4358,8 @@ def measure_spermatids(seg, cfg):
     mask_clean_full = np.asarray(
         seg.get("mask_clean", np.zeros_like(skel, dtype=bool)), dtype=bool
     )
+    # Unclipped, unequalized intensities for profile-based width.
+    linear_image = seg.get("img_linear")
     mask_components = measure.label(mask_clean_full).astype(np.int32)
     centerlines_per_component = {}
     for sp in measure.regionprops(final_label):
@@ -4354,11 +4379,24 @@ def measure_spermatids(seg, cfg):
         component = int(mask_components[sp.coords[0, 0], sp.coords[0, 1]])
         if component <= 0:
             body_width = body_width_unavailable("unavailable_no_filled_mask")
+            intensity_width = intensity_width_unavailable(
+                "unavailable_no_filled_mask"
+            )
         elif centerlines_per_component.get(component, 0) != 1:
             body_width = body_width_unavailable("unavailable_multi_centerline_component")
+            intensity_width = intensity_width_unavailable(
+                "unavailable_multi_centerline_component"
+            )
         else:
+            component_mask = mask_components == component
             body_width = measure_subpixel_body_width(
-                mask_components == component,
+                component_mask,
+                sp.coords,
+                cfg,
+            )
+            intensity_width = measure_intensity_profile_width(
+                linear_image,
+                component_mask,
                 sp.coords,
                 cfg,
             )
@@ -4366,6 +4404,7 @@ def measure_spermatids(seg, cfg):
         legacy_width_px = float(c["width"])
         final_results.append({
             **body_width,
+            **intensity_width,
             "width_px_dt_median_legacy": legacy_width_px,
             "length_width_ratio_dt_legacy": c["length_width_ratio"],
             "length_body_width_ratio": (
