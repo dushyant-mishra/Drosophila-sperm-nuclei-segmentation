@@ -1,0 +1,602 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "MEAS-BODY-WIDTH-001",
+  "generated_at_utc": "2026-09-08T18:26:39.504078+00:00",
+  "git_commit_at_generation": "646af0d50f09ff2f329cd790a082d58f6423ed2c",
+  "pipeline_git_blob_sha256": "53ee70a334e251df4f856700e7e6e8e68132ad88dd76c0a573c664d8aea8c834",
+  "profile_git_blob_sha256": "1fcc10c2199295d57210283255ead78cbe9ab51071121552a3668e5d3887d902",
+  "generator_git_blob_sha256": "d0d33c0441e809e08f89b93b11fef328f436309114ac2e1c3ec5f950dbdde4d8",
+  "checkpoint_sha256": "7d49031dbcce31f0600c44146d9b5282b0df6e28bb1fc1bdde6ef2146ed15d25",
+  "replay_archive_sha256": "11580cb7dd187830c1e50fcb51317bda4f75599adbf7bf9e0875b74db61e08b9",
+  "measurement_scope": "apparent filled-mask body width; not PSF-corrected chromatin diameter",
+  "records": [
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "clean",
+      "status": "rendered",
+      "track_id": 1299,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 1.3556,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_clean_track1299_selected_width.png",
+      "selected_width_artifact_sha256": "0fd9e367dd057e50b4d494ec7138c4cc6a0f29b19006ec17be907f50d12ffeb0",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_clean_track1299_representative_plane.png",
+      "representative_plane_artifact_sha256": "3e4095ce1f37e95363614e36f4653efcb2479a04f4dc6f3bb322b56f371bee33",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+          "sha256": "66883b3924cd6bea62a6d42dd663099fe2d07b237e1e1418df375eae462c3a15"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+          "sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z36_ch00.tif",
+          "sha256": "fbf55b742890cfe232b1dd14803ab62e258c419312fa829ecc748f92a8a114b5"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "morphology_warning",
+      "status": "rendered",
+      "track_id": 1800,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 1.7608,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_morphology_warning_track1800_selected_width.png",
+      "selected_width_artifact_sha256": "d25ee0e6b1b0caaca21f5d96783c1721fa96d30b08bd059771f6d99211a3d4c9",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_morphology_warning_track1800_representative_plane.png",
+      "representative_plane_artifact_sha256": "819cb1a4e93385f2002c83433267d936e71c568e82614548298137d19263ea45",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+          "sha256": "66883b3924cd6bea62a6d42dd663099fe2d07b237e1e1418df375eae462c3a15"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+          "sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z36_ch00.tif",
+          "sha256": "fbf55b742890cfe232b1dd14803ab62e258c419312fa829ecc748f92a8a114b5"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "branched_centerline",
+      "status": "rendered",
+      "track_id": 1829,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 3.9044,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_branched_centerline_track1829_selected_width.png",
+      "selected_width_artifact_sha256": "7807382aeefde6956a51597e8a19f771932919ea7dbbe222b0957febbd038bfd",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_branched_centerline_track1829_representative_plane.png",
+      "representative_plane_artifact_sha256": "590bae76f938455aa97cce4d4c3a20ae189e67515708f31bc289863891b89884",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+          "sha256": "66883b3924cd6bea62a6d42dd663099fe2d07b237e1e1418df375eae462c3a15"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+          "sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z36_ch00.tif",
+          "sha256": "fbf55b742890cfe232b1dd14803ab62e258c419312fa829ecc748f92a8a114b5"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "suspected_merge",
+      "status": "rendered",
+      "track_id": 1673,
+      "displayed_z_indices": [
+        33,
+        34
+      ],
+      "representative_width_z": 34,
+      "representative_width_known": true,
+      "visual_largest_area_z": 34,
+      "representative_body_width_um": 1.8921,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_suspected_merge_track1673_selected_width.png",
+      "selected_width_artifact_sha256": "1e8da1bf61f8ea471547eaa6f721d3f03e23e4f130d10de5ab000a3612cd07b3",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_suspected_merge_track1673_representative_plane.png",
+      "representative_plane_artifact_sha256": "7695a4e54565df3a287f30468dcc8cb80e17594827fec135d7c9c7a291f3f755",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 33,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z33_ch00.tif",
+          "sha256": "e68ec714f5d6b8ba8ac1dfa3e231c9b40e94ae4003838872f0ad195a79689a99"
+        },
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z34_ch00.tif",
+          "sha256": "66883b3924cd6bea62a6d42dd663099fe2d07b237e1e1418df375eae462c3a15"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "width_unavailable",
+      "status": "rendered",
+      "track_id": 18,
+      "displayed_z_indices": [
+        0
+      ],
+      "representative_width_z": null,
+      "representative_width_known": false,
+      "visual_largest_area_z": 0,
+      "representative_body_width_um": null,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_width_unavailable_track18_selected_width.png",
+      "selected_width_artifact_sha256": "2c7d414148916aa90c4ff6a8e08e82bad4098e02d5647d02c03bfd9820fd3919",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_width_unavailable_track18_representative_plane.png",
+      "representative_plane_artifact_sha256": "43fccb75741397dc7ca09f620d7fdf4f3ee6ffc23758e95edcb8d57f82228410",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 0,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z00_ch00.tif",
+          "sha256": "a17618bca8ec14708b325d029e4eec382a384805898c610c984e9c2006a42f41"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "short_track",
+      "status": "rendered",
+      "track_id": 1996,
+      "displayed_z_indices": [
+        35
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 1.6283,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_short_track_track1996_selected_width.png",
+      "selected_width_artifact_sha256": "af11867373c949aab771cdd331a121c0e9968a27028a912a3b4e7c5d6f1dd100",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_short_track_track1996_representative_plane.png",
+      "representative_plane_artifact_sha256": "c5885a97b707b7ac0e919a60083ab535b0d432646ccee7b2e990dcab93326ecc",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z35_ch00.tif",
+          "sha256": "db38f1e8ae9ccf1e0c329c5fc49b496d20c007267017dac953100ec6551dd1f0"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "narrowest_width",
+      "status": "rendered",
+      "track_id": 3569,
+      "displayed_z_indices": [
+        57,
+        58,
+        59
+      ],
+      "representative_width_z": 58,
+      "representative_width_known": true,
+      "visual_largest_area_z": 58,
+      "representative_body_width_um": 0.3792,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_narrowest_width_track3569_selected_width.png",
+      "selected_width_artifact_sha256": "eaad01d09004aafe6b9880e0de6c3619620ebe1e2d7fdac0b20f2f29cc7beba3",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_narrowest_width_track3569_representative_plane.png",
+      "representative_plane_artifact_sha256": "e68669ceda8939806b79bc500c597775744e41ee3bb1d4eb92a5e23eadeba38f",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 57,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z57_ch00.tif",
+          "sha256": "9a05d36432c145df54b540829f78456bb503295630addfadb656eea7abc72c06"
+        },
+        {
+          "z_index": 58,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z58_ch00.tif",
+          "sha256": "281e458484040ebd84970e1079d6d8820320b2e89a495ca241298cbbfed1e124"
+        },
+        {
+          "z_index": 59,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z59_ch00.tif",
+          "sha256": "2c5ea6ef921dc3124d77a6395845c9b04bc66ab83a50d763495aa612ce043400"
+        }
+      ]
+    },
+    {
+      "specimen": "KJ-01",
+      "source_stem": "kj_sv_40xx0.75-1",
+      "category": "widest_width",
+      "status": "rendered",
+      "track_id": 2176,
+      "displayed_z_indices": [
+        38,
+        39
+      ],
+      "representative_width_z": 38,
+      "representative_width_known": true,
+      "visual_largest_area_z": 38,
+      "representative_body_width_um": 5.6573,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_widest_width_track2176_selected_width.png",
+      "selected_width_artifact_sha256": "518ae6283ea8a90da21f58cee430b372c042ec24e8f58b62a062840a3ae915d9",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/KJ-01_widest_width_track2176_representative_plane.png",
+      "representative_plane_artifact_sha256": "e38fe8b42060138ef42288546e97e018f4cab924062baad81a7a819bc4cd9e3c",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/kj_sv_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "5987c45ac348e673c3b0ef79786e29541c9c45e90bc0b71254f615757bbcc2d0",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461841379310345,
+      "source_images": [
+        {
+          "z_index": 38,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z38_ch00.tif",
+          "sha256": "77964cafa3b563c04b83079ba9a8de456705a51771d1c71c7d6b449b0b993d8d"
+        },
+        {
+          "z_index": 39,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\kj sv feb\\kj sv 40xx0.75-1\\Project001_Series002_z39_ch00.tif",
+          "sha256": "3dfb3dbe82f642978e7a0c240fb01be98540957cfe23b02841ecf228934c828c"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "clean",
+      "status": "rendered",
+      "track_id": 1535,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 1.4538,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_clean_track1535_selected_width.png",
+      "selected_width_artifact_sha256": "a1a8bf541b8f43a72b597fae14266f9869ecfb61e58af1d9223f75e02d6e990e",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_clean_track1535_representative_plane.png",
+      "representative_plane_artifact_sha256": "1e7791dd228cd000fd47f2d83476ae1e1d166367b0cd8948272bb2e92dc469d3",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+          "sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z36_ch00.tif",
+          "sha256": "14c5f496a9deade800aef57bce41d4b4c30eea7caef8f85226bb9a9b9e3b3f14"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "morphology_warning",
+      "status": "rendered",
+      "track_id": 1332,
+      "displayed_z_indices": [
+        34,
+        35
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 2.6961,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_morphology_warning_track1332_selected_width.png",
+      "selected_width_artifact_sha256": "c4618464b2c9cd41cf24db94db7f1a1dc9580946d2d699dce9ff804d9d5174c5",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_morphology_warning_track1332_representative_plane.png",
+      "representative_plane_artifact_sha256": "eb420195c204d3fe627a91ac1f21e06fbd6d928163320226d27c304c8500475a",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+          "sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "branched_centerline",
+      "status": "rendered",
+      "track_id": 1512,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 1.8769,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_branched_centerline_track1512_selected_width.png",
+      "selected_width_artifact_sha256": "1bcea970b78694477a98c12bbc98f0537a05daa55eae73e5ccfa2a950001f3dd",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_branched_centerline_track1512_representative_plane.png",
+      "representative_plane_artifact_sha256": "4378a0e2af2da0c7648d37ae2bbf807ca2d8c4818b5079824daf89a821ca8aa6",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+          "sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z36_ch00.tif",
+          "sha256": "14c5f496a9deade800aef57bce41d4b4c30eea7caef8f85226bb9a9b9e3b3f14"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "suspected_merge",
+      "status": "rendered",
+      "track_id": 1876,
+      "displayed_z_indices": [
+        34
+      ],
+      "representative_width_z": 34,
+      "representative_width_known": true,
+      "visual_largest_area_z": 34,
+      "representative_body_width_um": 2.9582,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_suspected_merge_track1876_selected_width.png",
+      "selected_width_artifact_sha256": "0f3cd725601d65a2e891285e6b1e8b36a88c377ce780e5ef0e9f169eee1bb9b9",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_suspected_merge_track1876_representative_plane.png",
+      "representative_plane_artifact_sha256": "accb8e1e9e680cb260782310ece7ea86ca969c6310ce2431261feee4e24fafa4",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "width_unavailable",
+      "status": "rendered",
+      "track_id": 1,
+      "displayed_z_indices": [
+        0
+      ],
+      "representative_width_z": null,
+      "representative_width_known": false,
+      "visual_largest_area_z": 0,
+      "representative_body_width_um": null,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_width_unavailable_track1_selected_width.png",
+      "selected_width_artifact_sha256": "af4db2c2c84cb422dd0a565db6e7f7291dec159ab37a39ed92c001b1e418ec6e",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_width_unavailable_track1_representative_plane.png",
+      "representative_plane_artifact_sha256": "2727644a33b0bc107dcfaba709494aa6fc1e9129b822445012270bac13d34c4a",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 0,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z00_ch00.tif",
+          "sha256": "e5673b8f368d5970dcfc402ed70ed1184a668a0996e9611621453960931c7ee4"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "short_track",
+      "status": "rendered",
+      "track_id": 1857,
+      "displayed_z_indices": [
+        34,
+        35
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 1.5602,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_short_track_track1857_selected_width.png",
+      "selected_width_artifact_sha256": "ec0eacd4bca35ec078bdbe8a70ac1f5382d47b47c12c7a3dc654b8c0b6a80203",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_short_track_track1857_representative_plane.png",
+      "representative_plane_artifact_sha256": "19b4abf30600c01b958acfd0ab24f5a2b938bf1ae2afdeff0b5c7e71ab2a1cb9",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+          "sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "narrowest_width",
+      "status": "rendered",
+      "track_id": 1705,
+      "displayed_z_indices": [
+        34,
+        35,
+        36
+      ],
+      "representative_width_z": 35,
+      "representative_width_known": true,
+      "visual_largest_area_z": 35,
+      "representative_body_width_um": 0.3815,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_narrowest_width_track1705_selected_width.png",
+      "selected_width_artifact_sha256": "317875f149dee8f1d90218ef39225aec32af471fc06e54552bcc1d2f019bc413",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_narrowest_width_track1705_representative_plane.png",
+      "representative_plane_artifact_sha256": "55b18769a78529facc2e8e51cde8c24307b2ee2429444f675a31ce4998368d25",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 34,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z34_ch00.tif",
+          "sha256": "4c849baaf2adb7dd0313ea7446db4f55e77160abc6ea7c7762eef97e36146e10"
+        },
+        {
+          "z_index": 35,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z35_ch00.tif",
+          "sha256": "83a07da2f94ba5bd41e2df2bd412c5d34d09717b2c28dfe05b0edd13d371191e"
+        },
+        {
+          "z_index": 36,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z36_ch00.tif",
+          "sha256": "14c5f496a9deade800aef57bce41d4b4c30eea7caef8f85226bb9a9b9e3b3f14"
+        }
+      ]
+    },
+    {
+      "specimen": "WT-01",
+      "source_stem": "w1118_sv_feb_40xx0.75-1",
+      "category": "widest_width",
+      "status": "rendered",
+      "track_id": 2372,
+      "displayed_z_indices": [
+        44
+      ],
+      "representative_width_z": 44,
+      "representative_width_known": true,
+      "visual_largest_area_z": 44,
+      "representative_body_width_um": 6.1178,
+      "selection_method": "largest_filled_mask_area_then_unet_support_then_lowest_z",
+      "selected_width_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_widest_width_track2372_selected_width.png",
+      "selected_width_artifact_sha256": "1ee1afd7a75884d0e8cf2e1f3ff9913ad8e81526ba2de7639f6a3226357b20ac",
+      "representative_plane_artifact_repository_path": "audits/evidence/v571_body_width_stratified_20260908/WT-01_widest_width_track2372_representative_plane.png",
+      "representative_plane_artifact_sha256": "027848e1b61b6c9abf3b6ea2b498a6c4e23aaec6c0d777d5e2757daf036ff10e",
+      "roi_repository_path": "audits/evidence/v571_rc6_candidate/provenance/specimens/w1118_sv_feb_40xx0.75-1/settings/roi_mask_source.npy",
+      "roi_sha256": "84fd810d3acc223166928925343e93c7f12457b463d5974dd539b7a10f4bb703",
+      "xy_um_per_pixel": 0.37841796875,
+      "z_um_per_slice": 0.3461840909090909,
+      "source_images": [
+        {
+          "z_index": 44,
+          "path": "C:\\Users\\dmishra\\Desktop\\KJ Images and mutant-Grace\\w1118 sv feb\\w1118 sv feb 40xx0.75-1\\Project001_Series001_z44_ch00.tif",
+          "sha256": "3d73301df9da0f227f9f53c6d792d617e8d9bc80e4ab086db16ce9059ec5e28e"
+        }
+      ]
+    }
+  ]
+}
