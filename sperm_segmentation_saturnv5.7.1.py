@@ -175,6 +175,7 @@ print(f"[matplotlib backend: {matplotlib.get_backend()}]")
 from skimage import measure, morphology, exposure, segmentation as skseg, feature
 from skimage.filters import meijering, gaussian, apply_hysteresis_threshold
 from skimage.morphology import skeletonize
+from scipy import ndimage as ndi
 from scipy.ndimage import distance_transform_edt, gaussian_filter1d, grey_dilation
 from scipy.spatial import cKDTree
 from scipy.optimize import linear_sum_assignment
@@ -2542,6 +2543,10 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
             core_probability=unet_core_prob,
         )
         primary.update({
+            # Unclipped, un-equalized intensities. img_norm saturates at the
+            # 99.5th percentile and img_denoised adds blur, so neither can carry
+            # an intensity profile measurement.
+            "img_linear": full(work, np.float32),
             "img_norm": full(img_norm, np.float32),
             "img_denoised": full(img_denoised, np.float32),
             "img_eq": full(img_eq, np.float32),
@@ -2708,6 +2713,8 @@ def segment_slice(img_raw, cfg, z_idx=None, debug_dir=None, roi_mask=None, prepr
         "skel_pruned":  full(skel_pruned, bool),
         "skel_labeled": full(skel_labeled_fn.astype(np.int32), np.int32),
         "dist_clean":   full(dist_clean, np.float32),
+        # Unclipped, un-equalized intensities for profile-based measurement.
+        "img_linear":   full(work, np.float32),
         "img_norm":     full(img_norm, np.float32),
         "img_denoised": full(img_denoised, np.float32),
         "img_eq":       full(img_eq, np.float32),
@@ -3735,6 +3742,210 @@ def _normal_contour_chords(points, normals, contour):
     chords = t_positive - t_negative
     valid = np.isfinite(chords) & (chords > 0)
     return np.where(valid, chords, np.nan)
+
+
+# Every width value must carry its interpretation. A number stripped of this
+# context reads downstream as a physical nucleus diameter, which it is not: the
+# measurement saturates near the optical resolution limit at this sampling.
+WIDTH_INTERPRETATION_CAVEAT = (
+    "Relative comparison between groups is valid; absolute nucleus diameter is "
+    "not established. Width is the half-maximum extent of the intensity profile "
+    "and saturates near the optical resolution limit, so it must not be reported "
+    "as a physical nucleus width."
+)
+WIDTH_AXIS_CAVEAT = "relative comparison only; not absolute nucleus diameter"
+
+
+def optical_blur_fwhm_um(cfg):
+    """Combined lateral blur, in microns, from the PSF and pixel integration.
+
+    A confocal lateral point spread function has FWHM ~0.51*lambda/NA. At this
+    project's sampling the pixel pitch is larger than that PSF, so detector
+    integration, not diffraction, dominates the observed blur. Both terms are
+    combined in quadrature.
+    """
+    emission_um = float(cfg.get("EMISSION_WAVELENGTH_UM", 0.580))
+    numerical_aperture = float(cfg.get("NUMERICAL_APERTURE", 0.0))
+    pixel_um = float(cfg.get("UM_PER_PX_XY", 1.0))
+    if numerical_aperture <= 0:
+        return float(pixel_um)
+    psf_fwhm_um = 0.51 * emission_um / numerical_aperture
+    return float(np.hypot(psf_fwhm_um, pixel_um))
+
+
+def intensity_width_unavailable(method):
+    """Explicit unavailable intensity-width record with a stated reason."""
+    return {
+        "intensity_fwhm_width_px": np.nan,
+        "intensity_fwhm_width_um": np.nan,
+        "intensity_deconvolved_width_um": np.nan,
+        "intensity_integrated_density": np.nan,
+        "intensity_width_sample_count": 0,
+        "intensity_width_method": str(method),
+        "intensity_profile_multi_peak_fraction": np.nan,
+        "intensity_profile_suspected_merge": False,
+    }
+
+
+def measure_intensity_profile_width(
+    image, instance_mask, center_coords, cfg=None
+):
+    """Measure width from the raw intensity profile rather than the mask edge.
+
+    The segmentation mask boundary reflects the annotation convention the model
+    was trained on, which for this project is roughly twice the optical width of
+    a nucleus. Measuring the full width at half maximum of the background
+    corrected intensity across the centerline removes that dependence, because it
+    is anchored to the signal itself rather than to where a boundary was drawn.
+
+    The same profiles reveal merged objects: a cross-section through two adjacent
+    filaments is bimodal, whereas a single nucleus is unimodal.
+
+    Absolute accuracy is limited by sampling. Below roughly the combined blur
+    width the response compresses, so the deconvolved value is an upper-bounded
+    estimate rather than a true diameter.
+
+    Args:
+        image (numpy.ndarray): Linear, unclipped intensities (``img_linear``).
+        instance_mask (numpy.ndarray): Boolean mask of the object.
+        center_coords (numpy.ndarray): Centerline pixel coordinates.
+        cfg (dict): Pipeline configuration.
+
+    Returns:
+        dict: Intensity width fields, or an explicit unavailable record.
+    """
+    cfg = CONFIG if cfg is None else cfg
+    method = "raw_intensity_fwhm_perpendicular_central_body"
+    if not bool(cfg.get("INTENSITY_WIDTH_ENABLE", True)):
+        return intensity_width_unavailable("disabled")
+    if image is None:
+        return intensity_width_unavailable("unavailable_no_linear_image")
+
+    image = np.asarray(image, dtype=np.float64)
+    instance_mask = np.asarray(instance_mask, dtype=bool)
+    if image.shape != instance_mask.shape or not instance_mask.any():
+        return intensity_width_unavailable("unavailable_mask_image_mismatch")
+
+    path = _resample_smoothed_centerline(
+        center_coords,
+        cfg.get("BODY_WIDTH_SAMPLE_SPACING_PX", 1.0),
+        cfg.get("BODY_WIDTH_SMOOTH_SIGMA_PX", 1.0),
+    )
+    if path.shape[0] < 3:
+        return intensity_width_unavailable("unavailable_short_centerline")
+
+    arc_steps = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(arc_steps)])
+    total_length = float(cumulative[-1])
+    if total_length <= 0:
+        return intensity_width_unavailable("unavailable_zero_length_centerline")
+    trim = float(cfg.get("BODY_WIDTH_ENDPOINT_TRIM_FRACTION", 0.125))
+    eligible = np.flatnonzero(
+        (cumulative >= trim * total_length)
+        & (cumulative <= (1.0 - trim) * total_length)
+    )
+
+    half_extent = float(cfg.get("INTENSITY_WIDTH_PROFILE_HALF_EXTENT_PX", 8.0))
+    step = float(cfg.get("INTENSITY_WIDTH_PROFILE_STEP_PX", 0.1))
+    offsets = np.arange(-half_extent, half_extent + 1e-9, step)
+    # Background is read from the far tails of each profile rather than from a
+    # dilated ring around the mask. Dilation must never influence a measurement:
+    # the chosen radius would set the background level, which sets the
+    # half-maximum, which sets the width. The tails are also more local, and
+    # taking the quieter side keeps a neighbouring object on one side from
+    # inflating the estimate.
+    tail_offset = float(cfg.get("INTENSITY_WIDTH_BACKGROUND_OFFSET_PX", 5.0))
+    left_tail = offsets <= -tail_offset
+    right_tail = offsets >= tail_offset
+    if not left_tail.any() or not right_tail.any():
+        return intensity_width_unavailable("unavailable_profile_extent_too_small")
+    widths = []
+    integrals = []
+    multi_peak = 0
+    for index in eligible:
+        before = path[max(0, index - 2)]
+        after = path[min(path.shape[0] - 1, index + 2)]
+        tangent = after - before
+        norm = float(np.linalg.norm(tangent))
+        if norm <= 1e-9:
+            continue
+        tangent = tangent / norm
+        normal = np.array([-tangent[1], tangent[0]], dtype=np.float64)
+        points = path[index][None, :] + offsets[:, None] * normal[None, :]
+        rows = np.clip(points[:, 0], 0, image.shape[0] - 1)
+        columns = np.clip(points[:, 1], 0, image.shape[1] - 1)
+        sampled = ndi.map_coordinates(image, [rows, columns], order=1, mode="nearest")
+        background = min(
+            float(np.median(sampled[left_tail])),
+            float(np.median(sampled[right_tail])),
+        )
+        profile = sampled - background
+        peak = float(profile.max())
+        if peak <= 0:
+            continue
+        half = peak / 2.0
+        peak_index = int(np.argmax(profile))
+        left = peak_index
+        while left > 0 and profile[left - 1] >= half:
+            left -= 1
+        right = peak_index
+        while right < profile.size - 1 and profile[right + 1] >= half:
+            right += 1
+
+        # Sub-sample the two half-maximum crossings.
+        def crossing(inside, outside):
+            inner_value = profile[inside]
+            outer_value = profile[outside]
+            if inner_value == outer_value:
+                return float(inside)
+            return inside + (half - inner_value) / (outer_value - inner_value) * (
+                outside - inside
+            )
+
+        left_edge = crossing(left, left - 1) if left > 0 else float(left)
+        right_edge = (
+            crossing(right, right + 1) if right < profile.size - 1 else float(right)
+        )
+        widths.append((right_edge - left_edge) * step)
+        # Integrated signal across the object. Blur redistributes light but
+        # conserves it, so this tracks how much material is present and does not
+        # saturate the way a half-maximum width does once the object falls below
+        # the resolution limit. It is the sensitive companion to the FWHM, and it
+        # is valid only where acquisition settings match across specimens.
+        integrals.append(float(np.clip(profile, 0.0, None).sum()) * step)
+
+        # A bimodal cross-section indicates two objects inside one mask.
+        above = profile >= half
+        transitions = int(np.count_nonzero(above[1:] & ~above[:-1])) + int(above[0])
+        if transitions > 1:
+            multi_peak += 1
+
+    minimum = int(cfg.get("BODY_WIDTH_MIN_SAMPLES", 5))
+    if len(widths) < minimum:
+        record = intensity_width_unavailable("unavailable_insufficient_profiles")
+        record["intensity_width_sample_count"] = int(len(widths))
+        return record
+
+    values = np.asarray(widths, dtype=np.float64)
+    fwhm_px = float(np.median(values))
+    pixel_um = float(cfg.get("UM_PER_PX_XY", 1.0))
+    fwhm_um = fwhm_px * pixel_um
+    blur_um = optical_blur_fwhm_um(cfg)
+    deconvolved_um = float(np.sqrt(max(fwhm_um**2 - blur_um**2, 0.0)))
+    multi_peak_fraction = float(multi_peak) / float(len(values))
+    return {
+        "intensity_fwhm_width_px": fwhm_px,
+        "intensity_fwhm_width_um": fwhm_um,
+        "intensity_deconvolved_width_um": deconvolved_um,
+        "intensity_integrated_density": float(np.median(integrals)),
+        "intensity_width_sample_count": int(values.size),
+        "intensity_width_method": method,
+        "intensity_profile_multi_peak_fraction": multi_peak_fraction,
+        "intensity_profile_suspected_merge": bool(
+            multi_peak_fraction
+            >= float(cfg.get("INTENSITY_WIDTH_MERGE_PEAK_FRACTION", 0.30))
+        ),
+    }
 
 
 def body_width_unavailable(method):

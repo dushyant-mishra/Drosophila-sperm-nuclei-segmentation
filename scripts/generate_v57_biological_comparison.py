@@ -70,23 +70,36 @@ METRICS = {
         "role": "morphology",
     },
     "median_body_width_um": {
-        "label": "Specimen median apparent body width (um)",
+        "label": (
+            "Specimen median apparent body width (um)\n"
+            "relative comparison only; not absolute nucleus diameter"
+        ),
         "short": "Body width",
         "question": "Are nuclei typically broader or thinner?",
         "meaning": (
             "The specimen median of representative-plane subpixel perpendicular "
             "body chords. Higher values indicate broader apparent masks; width "
-            "remains sensitive to PSF, focus, and mask boundaries."
+            "remains sensitive to PSF, focus, and mask boundaries. "
+            "Relative comparison between groups is valid; absolute nucleus "
+            "diameter is not established. The value tracks the segmentation mask "
+            "boundary, which follows the training annotation convention, and it "
+            "saturates near the optical resolution limit. It must not be reported "
+            "as a physical nucleus width."
         ),
         "role": "morphology",
     },
     "median_length_body_width_ratio": {
-        "label": "Specimen median length / apparent body width",
+        "label": (
+            "Specimen median length / apparent body width\n"
+            "relative comparison only; not absolute nucleus diameter"
+        ),
         "short": "Length / width",
         "question": "Are nuclei more elongated or more rounded?",
         "meaning": (
             "A shape ratio. Higher values indicate longer, more slender nuclei; "
-            "interpret it together with length and width."
+            "interpret it together with length and width. Because the width term "
+            "is a relative measure rather than an absolute diameter, this ratio "
+            "is comparable between groups but is not a physical aspect ratio."
         ),
         "role": "morphology",
     },
