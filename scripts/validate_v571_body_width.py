@@ -111,7 +111,106 @@ def evaluate_synthetic_geometry(saturn, cfg):
     }
 
 
-def engineering_verdict(synthetic, rasterized, measured):
+def classical_path_cfg(saturn, cfg):
+    """Permissive classical config so morphology filters do not drop fixtures."""
+    classical = dict(cfg)
+    classical.update(
+        {
+            "SEGMENTATION_ENGINE": "classical_saturn",
+            "UM_PER_PX_XY": 1.0,
+            "MIN_SKEL_LEN_UM": 1.0,
+            "MAX_GEODESIC_LEN_UM": 500.0,
+            "MAX_WIDTH_UM": 60.0,
+            "MIN_LENGTH_WIDTH_RATIO": 1.0,
+            "MAX_BRANCH_NODES": 50,
+            "MAX_ENDPOINT_COUNT": 50,
+            "MAX_TORTUOSITY": 100.0,
+            "UNET_RESCUE_ENABLE": False,
+        }
+    )
+    return classical
+
+
+def classical_seg_from_mask(mask, skel_labeled=None):
+    """Minimal classical segmentation dict for measure_spermatids."""
+    mask = np.asarray(mask, dtype=bool)
+    skeleton = skeletonize(mask)
+    if skel_labeled is None:
+        skel_labeled = measure.label(skeleton).astype(np.int32)
+    return {
+        "mask_clean": mask,
+        "skel_pruned": skeleton,
+        "skel_labeled": skel_labeled,
+        "dist_clean": distance_transform_edt(mask).astype(np.float32),
+        "unet_probability": None,
+    }
+
+
+def evaluate_classical_path_geometry(saturn, cfg):
+    """Validate the classical routing, not just the shared measurement kernel.
+
+    The chord kernel is exercised elsewhere on bare masks. This case drives the
+    full classical detection path so that resolving a filled mask per centerline,
+    and refusing to measure a component holding several centerlines, are both
+    covered by known geometry.
+    """
+    classical = classical_path_cfg(saturn, cfg)
+    records = []
+    for expected_width in (5.0, 9.0, 13.0):
+        for angle in (0, 20, 45, 70, 90):
+            mask = rotated_rectangle(
+                (160, 160), np.array([80.0, 80.0]), 90.0, expected_width, angle
+            )
+            results = saturn.measure_spermatids(
+                classical_seg_from_mask(mask), classical
+            )["results"]
+            measured = (
+                float(results[0]["body_width_px"]) if len(results) == 1 else np.nan
+            )
+            records.append(
+                {
+                    "geometry": "rectangle",
+                    "path": "classical",
+                    "expected_width_px": expected_width,
+                    "angle_deg": angle,
+                    "object_count": len(results),
+                    "measured_width_px": measured,
+                    "absolute_error_px": abs(measured - expected_width),
+                }
+            )
+    frame = pd.DataFrame(records)
+    spreads = frame.groupby("expected_width_px")["measured_width_px"].agg(
+        lambda values: float(values.max() - values.min())
+    )
+
+    # A filled component holding two pruned centerlines must refuse to report a
+    # merged width rather than fabricate one.
+    merged = np.zeros((160, 200), dtype=bool)
+    merged[76:85, 20:180] = True
+    merged_labels = np.zeros((160, 200), dtype=np.int32)
+    merged_labels[80, 25:90] = 1
+    merged_labels[80, 110:175] = 2
+    merged_results = saturn.measure_spermatids(
+        classical_seg_from_mask(merged, skel_labeled=merged_labels), classical
+    )["results"]
+    merged_widths = [float(item["body_width_px"]) for item in merged_results]
+    merged_methods = {str(item["body_width_method"]) for item in merged_results}
+
+    return frame, {
+        "case_count": int(len(frame)),
+        "all_cases_measured": bool(frame["measured_width_px"].notna().all()),
+        "maximum_absolute_error_px": float(frame["absolute_error_px"].max()),
+        "maximum_rotation_spread_px": float(spreads.max()),
+        "merged_component_object_count": int(len(merged_results)),
+        "merged_component_reports_unavailable": bool(
+            len(merged_results) > 1
+            and all(not np.isfinite(value) for value in merged_widths)
+        ),
+        "merged_component_methods": sorted(merged_methods),
+    }
+
+
+def engineering_verdict(synthetic, rasterized, measured, classical=None):
     """Assess software behavior without claiming biological diameter accuracy."""
     criteria = {
         "known_geometry_max_error_at_most_1px": bool(
@@ -137,6 +236,23 @@ def engineering_verdict(synthetic, rasterized, measured):
             < 0
         ),
     }
+    if classical is not None:
+        criteria.update(
+            {
+                "classical_path_max_error_at_most_1px": bool(
+                    classical["maximum_absolute_error_px"] <= 1.0
+                ),
+                "classical_path_rotation_spread_at_most_1px": bool(
+                    classical["maximum_rotation_spread_px"] <= 1.0
+                ),
+                "classical_path_measures_every_case": bool(
+                    classical["all_cases_measured"]
+                ),
+                "merged_component_refuses_to_fabricate_width": bool(
+                    classical["merged_component_reports_unavailable"]
+                ),
+            }
+        )
     return criteria, "pass" if all(criteria.values()) else "fail"
 
 
@@ -266,6 +382,10 @@ def evaluate(coco_path, output_dir):
         saturn,
         cfg,
     )
+    classical_frame, classical_summary = evaluate_classical_path_geometry(
+        saturn,
+        cfg,
+    )
     records = []
     started = time.perf_counter()
     for annotation in payload.get("annotations", []):
@@ -348,6 +468,9 @@ def evaluate(coco_path, output_dir):
     atomic_write_dataframe(
         output_dir / "synthetic_width_validation.csv", synthetic_frame
     )
+    atomic_write_dataframe(
+        output_dir / "classical_path_width_validation.csv", classical_frame
+    )
     measured = frame[frame["status"] == "measured"].copy()
     rasterized = frame[frame["status"] != "unsupported_or_empty"].copy()
     status_counts = {
@@ -370,6 +493,7 @@ def evaluate(coco_path, output_dir):
         synthetic_summary,
         rasterized,
         measured,
+        classical_summary,
     )
     summary = {
         "schema_version": "1.0",
@@ -383,6 +507,7 @@ def evaluate(coco_path, output_dir):
         "absolute_biological_accuracy_status": "not_established",
         "engineering_acceptance_criteria": criteria,
         "synthetic_geometry": synthetic_summary,
+        "classical_path_geometry": classical_summary,
         "pipeline": str(PIPELINE),
         "coco_source": str(Path(coco_path).resolve()),
         "annotation_count": int(len(frame)),
@@ -485,6 +610,9 @@ validates engineering behavior, not true physical nucleus diameter.
 - Measurement success: {summary['measurement_success_fraction_of_rasterized_masks']:.2%}
 - Maximum synthetic absolute error: {synthetic_summary['maximum_absolute_error_px']:.3f} px
 - Maximum synthetic rotation spread: {synthetic_summary['maximum_rotation_spread_px']:.3f} px
+- Classical-path maximum absolute error: {classical_summary['maximum_absolute_error_px']:.3f} px
+- Classical-path maximum rotation spread: {classical_summary['maximum_rotation_spread_px']:.3f} px
+- Merged component refuses fabricated width: {classical_summary['merged_component_reports_unavailable']}
 - Distinct legacy EDT widths at 0.001 px: {summary['unique_legacy_widths_rounded_0_001']}
 - Distinct central-body widths at 0.001 px: {summary['unique_body_widths_rounded_0_001']}
 - Correlation with filled-mask area/length: {summary['body_vs_area_length_correlation']:.3f}
@@ -542,6 +670,7 @@ is applied.
         "coco_mask_width_validation.csv",
         "coco_mask_width_validation.json",
         "synthetic_width_validation.csv",
+        "classical_path_width_validation.csv",
         "width_measurement_decision.csv",
         "V5_7_1_BODY_WIDTH_VALIDATION.md",
         "coco_mask_width_validation.png",

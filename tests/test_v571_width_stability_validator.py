@@ -124,6 +124,7 @@ def test_validator_exports_one_user_field_and_explicit_limit(tmp_path):
         "coco_mask_width_validation.csv",
         "coco_mask_width_validation.json",
         "synthetic_width_validation.csv",
+        "classical_path_width_validation.csv",
         "width_measurement_decision.csv",
         "V5_7_1_BODY_WIDTH_VALIDATION.md",
         "coco_mask_width_validation.png",
