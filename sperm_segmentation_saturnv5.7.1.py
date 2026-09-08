@@ -3756,6 +3756,15 @@ WIDTH_INTERPRETATION_CAVEAT = (
 WIDTH_AXIS_CAVEAT = "relative comparison only; not absolute nucleus diameter"
 
 
+def _round_or_nan(value, digits):
+    """Round a possibly missing numeric value without inventing one."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return round(numeric, digits) if np.isfinite(numeric) else np.nan
+
+
 def optical_blur_fwhm_um(cfg):
     """Combined lateral blur, in microns, from the PSF and pixel integration.
 
@@ -5431,6 +5440,14 @@ def rows_from_results(results, z_idx, um):
             if np.isfinite(primary_width_px)
             else np.nan
         )
+        intensity_width_px = float(
+            r.get("intensity_fwhm_width_px", np.nan) or np.nan
+        )
+        profile_area_px = (
+            round(float(r["length_px_geodesic"]) * intensity_width_px, 2)
+            if np.isfinite(intensity_width_px) and intensity_width_px > 0
+            else np.nan
+        )
         primary_ratio = (
             float(r["length_px_geodesic"]) / primary_width_px
             if np.isfinite(primary_width_px) and primary_width_px > 0
@@ -5505,6 +5522,37 @@ def rows_from_results(results, z_idx, um):
             "estimated_slender_area_px": estimated_slender_area,
             "skeleton_area_px":    round(r.get("skeleton_area_px", 0.0), 1),
             "instance_mask_area_px": instance_mask_area,
+            # Intensity-profile measurements. Width from the signal itself does
+            # not inherit the training annotation convention that makes the mask
+            # boundary roughly twice the optical width of a nucleus.
+            "intensity_fwhm_width_px": _round_or_nan(
+                r.get("intensity_fwhm_width_px"), 4
+            ),
+            "intensity_fwhm_width_um": _round_or_nan(
+                r.get("intensity_fwhm_width_um"), 4
+            ),
+            "intensity_deconvolved_width_um": _round_or_nan(
+                r.get("intensity_deconvolved_width_um"), 4
+            ),
+            "intensity_integrated_density": _round_or_nan(
+                r.get("intensity_integrated_density"), 3
+            ),
+            "intensity_width_sample_count": int(
+                r.get("intensity_width_sample_count", 0) or 0
+            ),
+            "intensity_width_method": str(
+                r.get("intensity_width_method", "unavailable")
+            ),
+            "intensity_profile_multi_peak_fraction": _round_or_nan(
+                r.get("intensity_profile_multi_peak_fraction"), 4
+            ),
+            "intensity_profile_suspected_merge": bool(
+                r.get("intensity_profile_suspected_merge", False)
+            ),
+            # Footprint of a filament is its centerline length times its width.
+            # Deriving it from the profile width keeps area, and the volume summed
+            # from it, free of the mask-boundary inflation.
+            "profile_area_px": profile_area_px,
             "length_measurement_method": r.get(
                 "length_measurement_method",
                 "skeleton_centerline",
@@ -6184,12 +6232,23 @@ def track_across_slices_legacy(detections_df, cfg):
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
 
+    # Volume is summed from a footprint, so the footprint must not inherit the
+    # mask-boundary inflation. A filament's footprint is centerline length times
+    # width, and the profile width is measured from the signal rather than from
+    # where an annotation boundary was drawn. The mask pixel count remains
+    # available as instance_mask_area_px for diagnostics.
+    profile_area = pd.to_numeric(
+        df.get("profile_area_px", pd.Series(np.nan, index=df.index)),
+        errors="coerce",
+    )
     filled_area = pd.to_numeric(
         df.get("instance_mask_area_px", pd.Series(np.nan, index=df.index)),
         errors="coerce",
     )
     legacy_area = pd.to_numeric(df["area_px"], errors="coerce")
-    df["volume_area_px"] = filled_area.where(filled_area > 0, legacy_area)
+    df["volume_area_px"] = profile_area.where(
+        profile_area > 0, filled_area.where(filled_area > 0, legacy_area)
+    )
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -6477,12 +6536,23 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         )
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
+    # Volume is summed from a footprint, so the footprint must not inherit the
+    # mask-boundary inflation. A filament's footprint is centerline length times
+    # width, and the profile width is measured from the signal rather than from
+    # where an annotation boundary was drawn. The mask pixel count remains
+    # available as instance_mask_area_px for diagnostics.
+    profile_area = pd.to_numeric(
+        df.get("profile_area_px", pd.Series(np.nan, index=df.index)),
+        errors="coerce",
+    )
     filled_area = pd.to_numeric(
         df.get("instance_mask_area_px", pd.Series(np.nan, index=df.index)),
         errors="coerce",
     )
     legacy_area = pd.to_numeric(df["area_px"], errors="coerce")
-    df["volume_area_px"] = filled_area.where(filled_area > 0, legacy_area)
+    df["volume_area_px"] = profile_area.where(
+        profile_area > 0, filled_area.where(filled_area > 0, legacy_area)
+    )
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(

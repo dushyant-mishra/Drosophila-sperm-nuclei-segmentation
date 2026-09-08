@@ -39,6 +39,46 @@ or excuse a defect.
 - A proposed impossible join is rejected without deleting its original 2D
   detections.
 
+## Width, area, and volume are measured from intensity, not from the mask edge
+
+- The mask boundary reproduces the training annotation convention rather than the
+  nucleus. Annotations in this project have a median width of 1.606 um while the
+  optical width of a nucleus is about 0.643 um, so the learned mask is roughly
+  2.4 times too wide. The bias is not constant: it was 2.32x in KJ-01 against
+  2.51x in WT-01 and rises with brightness, which is larger than the 0.169 um
+  width difference between those specimens. Mask width therefore cannot carry a
+  genotype comparison.
+- Primary width is the half-maximum extent of the background-corrected intensity
+  profile along centerline normals. It is independent of where a boundary was
+  drawn: inflating a mask from 1.9 to 6.4 um leaves it unchanged at 0.797 um.
+- Integrated signal per profile is recorded alongside it. Blur conserves light,
+  so integration does not saturate below the resolution limit and is about 26
+  times more sensitive to a real width change. It is, however, proportional to
+  staining brightness, which the half-maximum is immune to. The two are reported
+  together: agreement is evidence, disagreement is a flag.
+- Area and volume are derived as centerline length times profile width, because a
+  filament's footprint is length times width. Summing mask pixels inflated volume
+  by 2.10x on KJ-01. The mask pixel count remains available as
+  `instance_mask_area_px` for diagnostics only.
+- This replaces the previous mask-derived area and volume outright rather than
+  retaining them as legacy fields, which departs from the usual rule in
+  `AGENTS.md` about preserving prior measurements. The owner authorized the
+  replacement because the pipeline has not yet produced a real biological run, so
+  no result depends on the superseded values, and carrying an inflated duplicate
+  would risk it being reported. Width retains its legacy fields as usual.
+- Dilation is never used in a measurement path. Profile background is read from
+  the far tails of the same profile, taking the quieter side, because a dilated
+  ring would let the chosen radius set the background, the half maximum and
+  therefore the width. Dilation remains acceptable only for display overlays.
+- Merges are detected from the profile: a cross-section through two filaments is
+  bimodal. Peak counting is restricted to pixels inside the instance mask so a
+  neighbouring nucleus is not mistaken for a merge.
+- Absolute nucleus diameter is not established and must never be reported. At
+  0.378 um per pixel against a 0.23 um point spread function the image is 3.3
+  times below Nyquist, and the deconvolved estimate saturates near 0.6 um.
+  Comparison between groups is supported; an absolute width claim is not. This
+  caveat travels with the metric wherever it is calculated or plotted.
+
 ## Measurements
 
 - Primary length follows the final instance-mask centerline and remains separate
