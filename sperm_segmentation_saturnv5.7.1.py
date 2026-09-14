@@ -3298,7 +3298,53 @@ def suspected_multi_object_merge_evidence(
     )
 
 
-def _refine_overlong_unet_instances(
+def _branch_topology_watershed_markers(component, cfg):
+    """Seed one marker per filament segment implied by the skeleton's branching.
+
+    The learned core head separates nuclei lying side by side. It does not
+    separate filaments joined end to end, whose only objective signature is that
+    the skeleton branches. Cutting the skeleton at its branch pixels leaves one
+    connected run per filament, and each run long enough to be a nucleus becomes
+    a marker.
+
+    Returns:
+        tuple: (markers, marker_count). marker_count below two means the
+        topology offers no split evidence and the component must be left alone.
+    """
+    component = np.asarray(component, dtype=bool)
+    markers = np.zeros(component.shape, dtype=np.int32)
+    if not component.any():
+        return markers, 0
+    skeleton = morphology.skeletonize(component)
+    if not skeleton.any():
+        return markers, 0
+    neighbours = ndi.convolve(
+        skeleton.astype(np.uint8),
+        np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8),
+        mode="constant",
+        cval=0,
+    )
+    # Removing the junction pixels disconnects the filaments that meet there.
+    segments = skeleton & (neighbours < 3)
+    if not segments.any():
+        return markers, 0
+    labelled = measure.label(segments, connectivity=2).astype(np.int32)
+    um_per_px = max(float(cfg.get("UM_PER_PX_XY", 1.0)), 1e-9)
+    min_child_um = float(cfg.get("UNET_PRIMARY_OVERLONG_SPLIT_MIN_CHILD_UM", 2.0))
+    min_child_px = max(2.0, min_child_um / um_per_px)
+    kept = 0
+    for region in measure.regionprops(labelled):
+        # A stub left behind by trimming a junction is not a filament.
+        if region.area < min_child_px:
+            continue
+        kept += 1
+        markers[labelled == region.label] = kept
+    if kept < 2:
+        return np.zeros(component.shape, dtype=np.int32), 0
+    return markers, kept
+
+
+def _refine_merged_unet_instances(
     probability,
     instance_labels,
     parent_by_instance,
@@ -3306,14 +3352,21 @@ def _refine_overlong_unet_instances(
     core_probability=None,
 ):
     """
-    Re-watershed long U-Net components only with independent fusion evidence.
+    Re-watershed U-Net components that objective evidence says hold several
+    objects.
 
-    Components at or below the trigger are preserved exactly. Longer
-    components remain intact unless the learned core head contains at least two
-    disconnected cores or well-separated peaks with a probability valley. A proposed split is
-    accepted only when every child retains a measurable centerline above the
-    technical minimum. Length alone never causes a split, and no pixels are
-    added or removed.
+    Candidacy comes from evidence, not from length. A component is considered
+    when its skeleton branches, or when it falls in the long review band. Two
+    nuclei joined end to end land near twice the median instance, well below a
+    length trigger calibrated for one overlong object, so a length gate would
+    miss exactly the merges this is meant to find.
+
+    A split still requires objective separation evidence: at least two
+    disconnected learned cores, or at least two filament segments left when the
+    skeleton is cut at its branch pixels. The proposal is accepted only when
+    every child keeps a measurable centerline above the technical minimum and no
+    child is as long as the parent. Length alone never causes a split, and no
+    pixels are added or removed.
     """
     instance_labels = np.asarray(instance_labels, dtype=np.int32)
     core_probability = (
@@ -3353,9 +3406,18 @@ def _refine_overlong_unet_instances(
     for prop in measure.regionprops(instance_labels):
         old_label = int(prop.label)
         component = instance_labels == old_label
-        # A straight-object lower bound avoids skeletonizing hundreds of
-        # clearly sub-threshold instances during every refinement pass.
-        if float(prop.axis_major_length) * um_per_px <= trigger_um * 0.85:
+        # Objective evidence, not length, decides whether a component is worth
+        # a split attempt. Length is annotation: two nuclei joined end to end
+        # land near twice the median instance, which is below any length trigger
+        # calibrated for a single overlong object, so a length gate would miss
+        # exactly the merges this is meant to find. Branch counting runs on the
+        # cropped component and is cheap enough for every instance.
+        branch_count = component_branch_node_count(prop.image)
+        branched = branch_count >= int(
+            cfg.get("MERGE_EVIDENCE_MIN_BRANCH_NODES", MERGE_EVIDENCE_MIN_BRANCH_NODES)
+        )
+        long_enough = float(prop.axis_major_length) * um_per_px > trigger_um * 0.85
+        if not (branched or long_enough):
             output[component] = next_label
             new_parent_map[next_label] = int(
                 parent_by_instance.get(old_label, 0)
@@ -3376,37 +3438,48 @@ def _refine_overlong_unet_instances(
                 )
             )
 
-        if (
-            length_um > trigger_um
-            and path.shape[0] >= 2
-            and core_marker_count >= 2
-        ):
-            markers = learned_markers
-            if int(markers.max()) >= 2:
-                proposed = skseg.watershed(
-                    -np.asarray(probability, dtype=np.float32),
-                    markers=markers,
-                    mask=component,
-                    compactness=compactness,
-                ).astype(np.int32)
-                proposed_children = [
-                    proposed == child_id
-                    for child_id in range(1, int(proposed.max()) + 1)
-                ]
-                child_lengths_um = []
-                for child in proposed_children:
-                    _, child_length_px = _longest_centerline_for_mask(child)
-                    child_lengths_um.append(child_length_px * um_per_px)
-                if (
-                    len(proposed_children) >= 2
-                    and all(
-                        value >= min_child_um
-                        for value in child_lengths_um
-                    )
-                    and max(child_lengths_um) < length_um
-                ):
-                    children = proposed_children
-                    disposition = "overlong_watershed_split"
+        branch_markers = np.zeros(component.shape, dtype=np.int32)
+        branch_marker_count = 0
+        if branched and core_marker_count < 2:
+            branch_markers, branch_marker_count = (
+                _branch_topology_watershed_markers(component, cfg)
+            )
+        if core_marker_count >= 2:
+            markers, split_evidence = learned_markers, split_evidence
+        elif branch_marker_count >= 2:
+            markers, split_evidence = branch_markers, "branch_topology_segments"
+        else:
+            markers = np.zeros(component.shape, dtype=np.int32)
+
+        if path.shape[0] >= 2 and int(markers.max()) >= 2:
+            proposed = skseg.watershed(
+                -np.asarray(probability, dtype=np.float32),
+                markers=markers,
+                mask=component,
+                compactness=compactness,
+            ).astype(np.int32)
+            proposed_children = [
+                proposed == child_id
+                for child_id in range(1, int(proposed.max()) + 1)
+            ]
+            child_lengths_um = []
+            for child in proposed_children:
+                _, child_length_px = _longest_centerline_for_mask(child)
+                child_lengths_um.append(child_length_px * um_per_px)
+            if (
+                len(proposed_children) >= 2
+                and all(
+                    value >= min_child_um
+                    for value in child_lengths_um
+                )
+                and max(child_lengths_um) < length_um
+            ):
+                children = proposed_children
+                disposition = (
+                    "branch_topology_watershed_split"
+                    if split_evidence == "branch_topology_segments"
+                    else "core_evidence_watershed_split"
+                )
 
         child_labels = []
         for child in children:
@@ -3416,20 +3489,28 @@ def _refine_overlong_unet_instances(
             )
             child_labels.append(next_label)
             next_label += 1
-        if length_um > trigger_um:
+        # Record every component that objective evidence made a candidate, not
+        # only the long ones, so a reviewer can see the split attempts that were
+        # considered and declined as well as those applied.
+        if branched or length_um > trigger_um:
             audit.append({
                 "input_instance_id": old_label,
                 "input_length_um": length_um,
+                "input_branch_node_count": int(branch_count),
+                "candidate_reason": (
+                    "branch_topology" if branched else "length_review_band"
+                ),
                 "output_instance_ids": child_labels,
                 "output_instance_count": len(child_labels),
                 "disposition": disposition,
                 "objective_core_marker_count": core_marker_count,
+                "branch_segment_marker_count": int(branch_marker_count),
                 "split_evidence": (
                     split_evidence
-                    if core_marker_count >= 2
-                    else "none_length_only_not_split"
+                    if max(core_marker_count, branch_marker_count) >= 2
+                    else "no_objective_split_evidence_not_split"
                 ),
-                "split_trigger_um": trigger_um,
+                "length_review_trigger_um": trigger_um,
                 "split_target_um": target_um,
             })
 
@@ -3563,7 +3644,7 @@ def _build_unet_primary_segmentation(
         rejected = np.maximum(rejected, split_rejected)
     overlong_split_audit = []
     for split_pass in range(4):
-        instances, parent_map, pass_audit = _refine_overlong_unet_instances(
+        instances, parent_map, pass_audit = _refine_merged_unet_instances(
             probability,
             instances,
             parent_map,
@@ -3574,7 +3655,7 @@ def _build_unet_primary_segmentation(
             row["split_pass"] = split_pass + 1
         overlong_split_audit.extend(pass_audit)
         if not any(
-            row["disposition"] == "overlong_watershed_split"
+            str(row["disposition"]).endswith("_watershed_split")
             for row in pass_audit
         ):
             break

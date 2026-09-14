@@ -120,7 +120,7 @@ def test_long_single_core_morphologies_remain_one_instance(shape_kind):
         "UNET_PRIMARY_OVERLONG_SPLIT_TRIGGER_UM": 20.0,
     })
 
-    refined, _, audit = saturn._refine_overlong_unet_instances(
+    refined, _, audit = saturn._refine_merged_unet_instances(
         probability,
         labels,
         {1: 1},
@@ -159,7 +159,7 @@ def test_connected_core_peaks_split_overlong_component_without_length_only_rule(
         "UNET_PRIMARY_OVERLONG_CORE_PEAK_MIN_DISTANCE_UM": 4.0,
     })
 
-    refined, _, audit = saturn._refine_overlong_unet_instances(
+    refined, _, audit = saturn._refine_merged_unet_instances(
         probability,
         labels,
         {1: 1},
@@ -169,7 +169,7 @@ def test_connected_core_peaks_split_overlong_component_without_length_only_rule(
 
     assert int(refined.max()) == 2
     assert np.array_equal(refined > 0, mask)
-    assert audit[0]["disposition"] == "overlong_watershed_split"
+    assert audit[0]["disposition"] == "core_evidence_watershed_split"
     assert audit[0]["split_evidence"] == "separated_learned_core_peaks"
 
 

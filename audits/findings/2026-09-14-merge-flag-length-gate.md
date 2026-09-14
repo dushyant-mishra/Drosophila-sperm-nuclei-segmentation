@@ -2,7 +2,7 @@
 
 Date: 2026-09-14
 Raised by: user observation on visual evidence panels, quantified by Claude
-Status: open, not yet remediated
+Status: remediated 2026-09-14, pending independent audit
 Affects: `PIPELINE-V571-PRODUCTION-001` (accepted), `POP-SHORTTRACK-001`,
 and any count-based biological conclusion
 
@@ -99,3 +99,53 @@ a superseding run rather than a silent amendment.
 A flag alone does not correct the count. Whether flagged merges are excluded from
 `estimated_unique_nuclei`, split into their constituent objects, or reported as a
 separate population is a further decision.
+
+
+## Remediation, 2026-09-14
+
+Both parts are implemented and the owner approved each.
+
+**Flagging.** `suspected_multi_object_merge_evidence` flags on three or more
+branch nodes, or on a bimodal intensity profile, or on the previously documented
+case of any branching above the overlong review length. Keeping the last clause
+makes the rule purely additive: on 559 instances nothing previously flagged
+became unflagged. The flagged share went from 0.18 percent to 7.51 percent, with
+32 of the 41 newly flagged carrying three or more branch nodes and 9 caught only
+by profile bimodality.
+
+**Splitting.** `_refine_overlong_unet_instances` is renamed
+`_refine_merged_unet_instances` because length no longer triggers it. Candidacy
+now comes from branching or from the long review band, and a split still requires
+objective separation evidence: at least two disconnected learned cores, or at
+least two filament segments left when the skeleton is cut at its branch pixels.
+The learned core head separates nuclei lying side by side and cannot separate
+filaments joined end to end, so `_branch_topology_watershed_markers` supplies the
+second evidence source. Child validation is unchanged, so a proposal whose
+constituents fail the checks is declined and the parent is retained untouched,
+which is the behaviour the owner asked for.
+
+Why the length trigger had to go rather than be lowered: the median instance is
+7.91 um, so two nuclei joined end to end land near 16 um. Of the objects
+measured, 42 sit in the 14 to 20 um band where a chained pair belongs against 3
+above the 20 um trigger, so the trigger sat above the merges it was meant to
+catch. Length is now annotation only, which is what the design ledger always
+required.
+
+**Count impact, plane 35 of one specimen per group:**
+
+| specimen | before | after | change |
+|---|---:|---:|---:|
+| kj_sv_40xx0.75-1 | 292 | 329 | +12.7% |
+| w1118_sv_feb_40xx0.75-1 | 267 | 286 | +7.1% |
+| total | 559 | 615 | +10.0% |
+
+The change is **not balanced between the groups**. KJ gains proportionally more
+than WT, so the previous under-counting was differentially suppressing KJ counts
+and would have biased a count comparison, not merely shifted both groups
+together. This is a further reason the defect mattered.
+
+A ten percent change to `estimated_unique_nuclei` is a change to a primary
+biological metric. `PIPELINE-V571-PRODUCTION-001` is accepted and this alters its
+behaviour, so a superseding audit run is required before any biological
+conclusion rests on these counts. The evidence above is from two planes and must
+be reproduced at cohort scale during that audit.
