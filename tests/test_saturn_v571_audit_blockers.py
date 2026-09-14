@@ -554,8 +554,8 @@ def test_primary_comparison_fields_are_in_biological_specimen_table():
     )
     biological_block = source.split("biological_columns = [", 1)[1].split("]", 1)[0]
     for field in (
-        "median_body_width_um",
-        "median_length_body_width_ratio",
+        "median_signal_profile_fwhm_width_um",
+        "median_length_signal_width_ratio",
     ):
         assert field in biological_block
     for qc_only_field in (
@@ -585,8 +585,8 @@ def test_primary_specimen_export_contains_only_actionable_biological_metrics():
     for primary_field in (
         '"estimated_unique_nuclei"',
         '"median_representative_section_length_um"',
-        '"median_body_width_um"',
-        '"median_length_body_width_ratio"',
+        '"median_signal_profile_fwhm_width_um"',
+        '"median_length_signal_width_ratio"',
         '"median_representative_section_tortuosity"',
     ):
         assert primary_field in biological_block
@@ -696,6 +696,7 @@ def test_v571_short_track_sensitivity_is_fail_closed_at_two_um():
             "technical_valid": [True, True, False],
             "projection_z_extent_um": [1.999, 2.0, np.nan],
             "representative_body_width_um": [1.0, np.nan, 9.0],
+            "representative_signal_profile_fwhm_width_um": [0.7, np.nan, 4.0],
         }
     )
     row = saturn._study_below_2_um_sensitivity_row("S1", frame)

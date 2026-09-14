@@ -36,6 +36,9 @@ STUDY_PROGRESS_EVENTS = frozenset(
 PRODUCTION_REQUIRED_CLAIM_IDS = (
     "PIPELINE-V571-PRODUCTION-001",
     "MEAS-BODY-WIDTH-001",
+    # The raw-signal FWHM is the width presented biologically, so production
+    # cannot be gated only on the mask-chord claim it supersedes.
+    "MEAS-INTENSITY-WIDTH-001",
     "REPORT-BIOLOGIST-CONCISE-001",
     "WORKFLOW-GUI-PRIMARY-001",
 )

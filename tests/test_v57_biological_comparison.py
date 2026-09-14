@@ -146,3 +146,43 @@ def test_numeric_contract_uses_exact_shared_display_tokens():
         contract["reference_median"],
         statistics["reference_median"],
     )
+
+
+def test_width_metrics_carry_the_interpretation_limit():
+    """A width number stripped of its caveat reads as a physical diameter."""
+    assert MODULE.metric_carries_width_caveat("median_signal_profile_fwhm_width_um")
+    assert MODULE.metric_carries_width_caveat("median_length_signal_width_ratio")
+    assert MODULE.metric_carries_width_caveat(
+        "median_observed_slab_effective_thickness_um"
+    )
+    assert not MODULE.metric_carries_width_caveat("estimated_unique_nuclei")
+    assert not MODULE.metric_carries_width_caveat(
+        "median_representative_section_length_um"
+    )
+
+
+def test_interpretation_limit_states_comparison_is_valid_and_diameter_is_not():
+    caveat = MODULE.WIDTH_INTERPRETATION_CAVEAT
+    assert "Relative comparison between groups is valid" in caveat
+    assert "absolute nucleus diameter is" in caveat
+    assert "not established" in caveat
+    assert "must not be reported" in caveat
+
+
+def test_every_v571_width_metric_definition_exposes_the_limit():
+    """The concise v5.7.1 contract must not present a width without its limit."""
+    concise = (
+        "median_signal_profile_fwhm_width_um",
+        "median_length_signal_width_ratio",
+    )
+    for metric in concise:
+        assert metric in MODULE.METRICS, metric
+        assert MODULE.metric_carries_width_caveat(metric), metric
+        meaning = MODULE.METRICS[metric]["meaning"]
+        label = MODULE.METRICS[metric]["label"]
+        # Either the axis label or the written meaning must carry the limit, so a
+        # reader of a figure or of a table both see it.
+        assert (
+            "not absolute nucleus diameter" in label
+            or "absolute nucleus diameter is not established" in meaning
+        ), metric

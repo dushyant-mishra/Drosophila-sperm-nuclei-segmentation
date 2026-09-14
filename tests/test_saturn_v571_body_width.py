@@ -298,7 +298,7 @@ def test_track_ratio_pairs_length_and_width_from_same_representative_plane():
     )
 
 
-def test_analysis_summary_uses_body_width_as_primary_and_labels_legacy():
+def test_analysis_summary_uses_signal_width_as_primary_and_labels_mask_qc():
     saturn = load_saturn_v571()
     tracks = pd.DataFrame(
         {
@@ -306,6 +306,8 @@ def test_analysis_summary_uses_body_width_as_primary_and_labels_legacy():
             "total_3d_length_um": [9.0, 11.0],
             "max_length_2d": [8.5, 10.5],
             "representative_body_width_um": [2.1, 2.5],
+            "representative_signal_profile_fwhm_width_um": [0.7, 0.9],
+            "length_signal_width_ratio": [12.0, 11.0],
             "representative_body_width_p90_um": [2.4, 2.8],
             "length_body_width_ratio": [4.0, 4.4],
             "median_width_um_dt_legacy": [2.7, 2.7],
@@ -318,8 +320,8 @@ def test_analysis_summary_uses_body_width_as_primary_and_labels_legacy():
         cfg={"SEGMENTATION_ENGINE": "unet_primary"},
     )
 
-    assert summary["median_body_width_um"] == pytest.approx(2.3)
-    assert summary["median_body_width_p90_um"] == pytest.approx(2.6)
+    assert summary["median_signal_profile_fwhm_width_um"] == pytest.approx(0.8)
+    assert summary["median_body_mask_chord_width_um_qc"] == pytest.approx(2.3)
     assert summary["median_width_um_dt_legacy"] == pytest.approx(2.7)
     assert "median_2d_width_um" not in summary
 
@@ -333,8 +335,8 @@ def test_biological_group_comparison_exposes_one_width_metric():
         if "width" in name
     ]
 
-    assert "median_body_width_um" in width_metrics
-    assert "median_length_body_width_ratio" in width_metrics
+    assert "median_signal_profile_fwhm_width_um" in width_metrics
+    assert "median_length_signal_width_ratio" in width_metrics
     assert "median_body_width_p90_um" not in width_metrics
     assert "median_area_length_width_um" not in width_metrics
 
@@ -347,6 +349,8 @@ def test_primary_analysis_summary_hides_qc_width_variants(tmp_path):
             "projection_z_extent_um": [9.0],
             "max_length_2d": [8.0],
             "representative_body_width_um": [2.0],
+            "representative_signal_profile_fwhm_width_um": [0.8],
+            "length_signal_width_ratio": [10.0],
             "representative_body_width_p90_um": [2.7],
             "length_body_width_ratio": [4.0],
             "median_width_um_dt_legacy": [2.8],
@@ -366,7 +370,7 @@ def test_primary_analysis_summary_hides_qc_width_variants(tmp_path):
     primary = pd.read_csv(tmp_path / "analysis_summary.csv")
     metrics = set(primary.columns)
 
-    assert "median_body_width_um" in metrics
-    assert "median_length_body_width_ratio" in metrics
+    assert "median_signal_profile_fwhm_width_um" in metrics
+    assert "median_length_signal_width_ratio" in metrics
     assert "median_body_width_p90_um" not in metrics
     assert "median_width_um_dt_legacy" not in metrics

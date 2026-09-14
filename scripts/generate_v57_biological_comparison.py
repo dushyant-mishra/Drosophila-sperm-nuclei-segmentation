@@ -86,6 +86,21 @@ METRICS = {
             "saturates near the optical resolution limit. It must not be reported "
             "as a physical nucleus width."
         ),
+        "role": "technical_qc",
+    },
+    "median_signal_profile_fwhm_width_um": {
+        "label": (
+            "Specimen median apparent signal-profile FWHM width (um)\n"
+            "relative comparison only; not absolute nucleus diameter"
+        ),
+        "short": "Signal-profile width",
+        "question": "Is the apparent optical signal typically broader or narrower?",
+        "meaning": (
+            "The specimen median of background-corrected half-maximum widths "
+            "sampled perpendicular to the centerline on one representative plane "
+            "per nucleus. It is comparative only and is not a PSF-corrected "
+            "physical diameter."
+        ),
         "role": "morphology",
     },
     "median_length_body_width_ratio": {
@@ -100,6 +115,24 @@ METRICS = {
             "interpret it together with length and width. Because the width term "
             "is a relative measure rather than an absolute diameter, this ratio "
             "is comparable between groups but is not a physical aspect ratio."
+        ),
+        "role": "technical_qc",
+    },
+    "median_length_signal_width_ratio": {
+        "label": (
+            "Specimen median representative length / signal-profile width\n"
+            "relative comparison only; not absolute nucleus diameter"
+        ),
+        "short": "Length / signal width",
+        "question": "Are nuclei relatively more elongated or less elongated?",
+        "meaning": (
+            "Representative-plane centerline length divided by signal-profile "
+            "FWHM from that same plane. Interpret it together with both source "
+            "measurements; it is not a molecular-scale physical aspect ratio. "
+            "Relative comparison between groups is valid; absolute nucleus "
+            "diameter is not established, so the width term carries the same "
+            "resolution limit and this ratio must not be read as a physical "
+            "aspect ratio."
         ),
         "role": "morphology",
     },
@@ -167,6 +200,23 @@ METRICS = {
         "role": "tracking_sensitive",
     },
 }
+
+# Width in this project is a comparative optical signal measure, never an
+# absolute nucleus diameter. The caveat has to travel with the number: a value
+# stripped of it reads downstream as a physical diameter.
+WIDTH_INTERPRETATION_CAVEAT = (
+    "Relative comparison between groups is valid; absolute nucleus diameter is "
+    "not established. Width is the half-maximum extent of the intensity profile "
+    "and saturates near the optical resolution limit, so it must not be reported "
+    "as a physical nucleus width."
+)
+WIDTH_METRIC_TOKENS = ("width", "thickness", "ratio")
+
+
+def metric_carries_width_caveat(metric):
+    """True when a metric's value depends on the comparative width measure."""
+    return any(token in str(metric).lower() for token in WIDTH_METRIC_TOKENS)
+
 
 BIOLOGICAL_METRICS = tuple(
     metric
@@ -589,9 +639,14 @@ def length_width_figure(specimens, groups):
     figure, axis = plt.subplots(figsize=(8, 6))
     for index, group in enumerate(groups):
         frame = specimens[specimens["group"] == group]
+        width_column = (
+            "median_signal_profile_fwhm_width_um"
+            if "median_signal_profile_fwhm_width_um" in frame.columns
+            else "median_body_width_um"
+        )
         axis.scatter(
             frame["median_2d_length_um"],
-            frame["median_body_width_um"],
+            frame[width_column],
             s=68,
             color=colors[index],
             edgecolor="white",
@@ -600,7 +655,7 @@ def length_width_figure(specimens, groups):
         )
         axis.scatter(
             frame["median_2d_length_um"].median(),
-            frame["median_body_width_um"].median(),
+            frame[width_column].median(),
             marker="X",
             s=180,
             color=colors[index],
@@ -608,7 +663,7 @@ def length_width_figure(specimens, groups):
             linewidth=0.8,
         )
     axis.set_xlabel("Specimen median 2D length (um)")
-    axis.set_ylabel("Specimen median apparent body width (um)")
+    axis.set_ylabel("Specimen median apparent signal-profile FWHM width (um)")
     axis.set_title(
         "Length-width relationship\nLarge X symbols show group medians",
         fontweight="bold",
@@ -961,6 +1016,11 @@ def write_biological_excel(
                 "analysis_role": definition["role"],
                 "biological_question": definition["question"],
                 "meaning": definition["meaning"],
+                "interpretation_limit": (
+                    WIDTH_INTERPRETATION_CAVEAT
+                    if metric_carries_width_caveat(metric)
+                    else ""
+                ),
             }
             for metric, definition in METRICS.items()
             if metric in BIOLOGICAL_METRICS
@@ -1054,6 +1114,7 @@ def write_biological_excel(
                 "Primary biological table",
                 "Primary statistical table",
                 "QC location",
+                "Width interpretation limit",
             ],
             "Value": [
                 reference,
@@ -1061,6 +1122,7 @@ def write_biological_excel(
                 "Specimen_Data",
                 "Statistical_Tests",
                 "../02_quality_control",
+                WIDTH_INTERPRETATION_CAVEAT,
             ],
         }
     )
@@ -1229,8 +1291,8 @@ def main(arguments=None):
         BIOLOGICAL_METRICS = (
             "estimated_unique_nuclei",
             "median_representative_section_length_um",
-            "median_body_width_um",
-            "median_length_body_width_ratio",
+            "median_signal_profile_fwhm_width_um",
+            "median_length_signal_width_ratio",
             "median_representative_section_tortuosity",
         )
     else:
@@ -1344,6 +1406,19 @@ def main(arguments=None):
         comparison,
     )
 
+    # A CSV read on its own carries no context, so ship the interpretation limit
+    # beside the numbers rather than only in the report narrative.
+    pd.DataFrame(
+        [
+            {"metric": metric, "interpretation_limit": WIDTH_INTERPRETATION_CAVEAT}
+            for metric in BIOLOGICAL_METRICS
+            if metric_carries_width_caveat(metric)
+        ]
+        or [{"metric": "", "interpretation_limit": ""}]
+    ).to_csv(
+        biological_data_dir / "metric_interpretation_limits.csv",
+        index=False,
+    )
     biological_statistics.to_csv(
         biological_data_dir / "biological_statistical_tests.csv",
         index=False,
@@ -1782,6 +1857,12 @@ def main(arguments=None):
         "group_direction_source": group_direction_source,
         "specimen_counts": specimens.groupby("group").size().to_dict(),
         "analysis_unit": "biological specimen",
+        "width_interpretation_limit": WIDTH_INTERPRETATION_CAVEAT,
+        "width_caveat_metrics": [
+            metric
+            for metric in BIOLOGICAL_METRICS
+            if metric_carries_width_caveat(metric)
+        ],
         "inference_status": (
             "exploratory_specimen_level_inference"
             if inference_available else "insufficient_specimens"
@@ -1825,6 +1906,10 @@ def main(arguments=None):
                 "Use `02_quality_control` for acquisition, normalization, tracking, and audit diagnostics.",
                 "",
                 "The biological specimen is the analysis unit.",
+                "",
+                "## Width interpretation limit",
+                "",
+                WIDTH_INTERPRETATION_CAVEAT,
                 "The previous specimen-group PDF is retained only as a provenance source in the QC folder.",
             ]
         ),

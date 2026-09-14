@@ -39,7 +39,7 @@ or excuse a defect.
 - A proposed impossible join is rejected without deleting its original 2D
   detections.
 
-## Width, area, and volume are measured from intensity, not from the mask edge
+## Signal-profile width and technical area/volume diagnostics
 
 - The mask boundary reproduces the training annotation convention rather than the
   nucleus. Annotations in this project have a median width of 1.606 um while the
@@ -51,21 +51,19 @@ or excuse a defect.
 - Primary width is the half-maximum extent of the background-corrected intensity
   profile along centerline normals. It is independent of where a boundary was
   drawn: inflating a mask from 1.9 to 6.4 um leaves it unchanged at 0.797 um.
-- Integrated signal per profile is recorded alongside it. Blur conserves light,
-  so integration does not saturate below the resolution limit and is about 26
-  times more sensitive to a real width change. It is, however, proportional to
-  staining brightness, which the half-maximum is immune to. The two are reported
-  together: agreement is evidence, disagreement is a flag.
-- Area and volume are derived as centerline length times profile width, because a
-  filament's footprint is length times width. Summing mask pixels inflated volume
-  by 2.10x on KJ-01. The mask pixel count remains available as
-  `instance_mask_area_px` for diagnostics only.
-- This replaces the previous mask-derived area and volume outright rather than
-  retaining them as legacy fields, which departs from the usual rule in
-  `AGENTS.md` about preserving prior measurements. The owner authorized the
-  replacement because the pipeline has not yet produced a real biological run, so
-  no result depends on the superseded values, and carrying an inflated duplicate
-  would risk it being reported. Width retains its legacy fields as usual.
+- Object-owned integrated profile signal is recorded in arbitrary units as
+  technical QC only. There is no independent staining reference in this study;
+  same-genotype specimens are biological replicates, not staining controls.
+  Integrated signal therefore cannot be a primary endpoint, acceptance gate, or
+  chromatin-content measurement.
+- Centerline length times signal FWHM is retained as an explicitly named
+  signal-profile footprint proxy. It is not a filled-mask area and is not an
+  anatomical volume. Missing profile widths remain missing and never fall back
+  to mask area under that name.
+- Filled-mask area and the corresponding observed-slice mask slab sum retain
+  their historical definitions and explicit names for reproducibility. They are
+  technical, segmentation-sensitive diagnostics rather than primary biological
+  morphometry.
 - Dilation is never used in a measurement path. Profile background is read from
   the far tails of the same profile, taking the quieter side, because a dilated
   ring would let the chosen radius set the background, the half maximum and
@@ -83,15 +81,15 @@ or excuse a defect.
 
 - Primary length follows the final instance-mask centerline and remains separate
   from centroid trajectory and legacy fields.
-- Primary apparent body width uses subpixel perpendicular contour chords after
-  endpoint trimming. Legacy distance-transform width remains explicitly
-  labelled and must not drive biological reports.
-- A reconstructed track receives representative width from the technically
-  valid observed plane with the largest filled-mask area. Missing width remains
-  unavailable; it is not fabricated from a gap.
-- Width is apparent mask width and is sensitive to segmentation boundary,
-  annotation thickness, focus, and lateral PSF. It is not a deconvolved
-  molecular diameter.
+- Primary comparative width uses background-corrected raw-signal FWHM along
+  centerline normals. It is an apparent optical signal width, not an absolute or
+  PSF-corrected molecular diameter.
+- A reconstructed track receives its representative FWHM width and paired
+  centerline length from the technically valid observed plane with the largest
+  filled-mask area. Missing width remains unavailable; it is not fabricated
+  from a gap or replaced by a mask width.
+- Subpixel mask-contour chord width and distance-transform width remain
+  explicitly named technical diagnostics. They do not drive biological reports.
 
 ## Calibration and ROI
 

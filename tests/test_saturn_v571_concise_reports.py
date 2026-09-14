@@ -25,6 +25,9 @@ def primary_tracks():
             "representative_body_length_um": [8.0, 10.0, 20.0],
             "representative_body_width_um": [2.0, 2.5, 5.0],
             "length_body_width_ratio": [4.0, 4.0, 4.0],
+            "representative_signal_profile_length_um": [8.0, 10.0, 20.0],
+            "representative_signal_profile_fwhm_width_um": [0.8, 0.9, 1.4],
+            "length_signal_width_ratio": [10.0, 11.1, 14.3],
             "representative_section_tortuosity": [1.0, 1.1, 2.0],
             "tortuosity_3d": [1.8, 2.0, 3.0],
             "projection_z_extent_um": [9.0, 11.0, 22.0],
@@ -59,8 +62,8 @@ def test_concise_pdf_and_ppt_contain_only_actionable_biological_measurements(tmp
     required = (
         "estimated unique nuclei",
         "representative-section length",
-        "apparent body-mask width",
-        "length / body width",
+        "apparent signal-profile fwhm width",
+        "length / signal width",
         "representative-section tortuosity",
     )
     forbidden = (

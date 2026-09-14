@@ -308,6 +308,12 @@ CONFIG = {
     "BODY_WIDTH_SAMPLE_SPACING_PX": 1.0,
     "BODY_WIDTH_SMOOTH_SIGMA_PX": 1.0,
     "BODY_WIDTH_MIN_SAMPLES": 5,
+    "INTENSITY_WIDTH_ENABLE": True,
+    "INTENSITY_WIDTH_PROFILE_HALF_EXTENT_PX": 8.0,
+    "INTENSITY_WIDTH_PROFILE_STEP_PX": 0.1,
+    "INTENSITY_WIDTH_BACKGROUND_OFFSET_PX": 5.0,
+    "INTENSITY_WIDTH_MERGE_PEAK_FRACTION": 0.30,
+    "INTENSITY_WIDTH_PSF_CORRECTION_ENABLE": False,
     "UNET_TRACKING_SUPPORT": True,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": 0.6,
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": 0.25,
@@ -566,6 +572,12 @@ _REQUIRED = {
     "BODY_WIDTH_SAMPLE_SPACING_PX": (int, float),
     "BODY_WIDTH_SMOOTH_SIGMA_PX": (int, float),
     "BODY_WIDTH_MIN_SAMPLES": int,
+    "INTENSITY_WIDTH_ENABLE": bool,
+    "INTENSITY_WIDTH_PROFILE_HALF_EXTENT_PX": (int, float),
+    "INTENSITY_WIDTH_PROFILE_STEP_PX": (int, float),
+    "INTENSITY_WIDTH_BACKGROUND_OFFSET_PX": (int, float),
+    "INTENSITY_WIDTH_MERGE_PEAK_FRACTION": (int, float),
+    "INTENSITY_WIDTH_PSF_CORRECTION_ENABLE": bool,
     "UNET_TRACKING_SUPPORT": bool,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": (int, float),
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": (int, float),
@@ -3789,6 +3801,10 @@ def intensity_width_unavailable(method):
         "intensity_fwhm_width_um": np.nan,
         "intensity_deconvolved_width_um": np.nan,
         "intensity_integrated_density": np.nan,
+        "intensity_profile_signal_au": np.nan,
+        "intensity_signal_comparability": (
+            "technical_qc_only_no_independent_staining_reference"
+        ),
         "intensity_width_sample_count": 0,
         "intensity_width_method": str(method),
         "intensity_profile_multi_peak_fraction": np.nan,
@@ -3870,6 +3886,7 @@ def measure_intensity_profile_width(
         return intensity_width_unavailable("unavailable_profile_extent_too_small")
     widths = []
     integrals = []
+    boundary_clipped_profiles = 0
     multi_peak = 0
     for index in eligible:
         before = path[max(0, index - 2)]
@@ -3906,11 +3923,31 @@ def measure_intensity_profile_width(
         half = peak / 2.0
         peak_index = int(np.argmax(owned))
         left = peak_index
-        while left > 0 and profile[left - 1] >= half:
+        while left > 0 and inside[left - 1] and profile[left - 1] >= half:
             left -= 1
         right = peak_index
-        while right < profile.size - 1 and profile[right + 1] >= half:
+        while (
+            right < profile.size - 1
+            and inside[right + 1]
+            and profile[right + 1] >= half
+        ):
             right += 1
+
+        # A half-maximum crossing must be observed on both sides while still
+        # inside this instance. If the signal remains above half maximum at the
+        # mask boundary, a neighbouring object or clipped mask can control the
+        # width; that profile is unavailable rather than silently inflated.
+        left_crossing_valid = (
+            left > 0 and inside[left - 1] and profile[left - 1] < half
+        )
+        right_crossing_valid = (
+            right < profile.size - 1
+            and inside[right + 1]
+            and profile[right + 1] < half
+        )
+        if not (left_crossing_valid and right_crossing_valid):
+            boundary_clipped_profiles += 1
+            continue
 
         # Sub-sample the two half-maximum crossings.
         def crossing(inside, outside):
@@ -3922,17 +3959,13 @@ def measure_intensity_profile_width(
                 outside - inside
             )
 
-        left_edge = crossing(left, left - 1) if left > 0 else float(left)
-        right_edge = (
-            crossing(right, right + 1) if right < profile.size - 1 else float(right)
-        )
+        left_edge = crossing(left, left - 1)
+        right_edge = crossing(right, right + 1)
         widths.append((right_edge - left_edge) * step)
-        # Integrated signal across the object. Blur redistributes light but
-        # conserves it, so this tracks how much material is present and does not
-        # saturate the way a half-maximum width does once the object falls below
-        # the resolution limit. It is the sensitive companion to the FWHM, and it
-        # is valid only where acquisition settings match across specimens.
-        integrals.append(float(np.clip(profile, 0.0, None).sum()) * step)
+        # This is an object-owned profile signal in arbitrary units. It remains
+        # technical QC because this study has no independent staining reference;
+        # brightness scaling therefore changes the value even when FWHM does not.
+        integrals.append(float(np.clip(profile[inside], 0.0, None).sum()) * step)
 
         # A bimodal cross-section inside one mask indicates two objects held
         # together. Only pixels belonging to this object can count toward that.
@@ -3943,7 +3976,12 @@ def measure_intensity_profile_width(
 
     minimum = int(cfg.get("BODY_WIDTH_MIN_SAMPLES", 5))
     if len(widths) < minimum:
-        record = intensity_width_unavailable("unavailable_insufficient_profiles")
+        reason = (
+            "unavailable_boundary_clipped_profiles"
+            if boundary_clipped_profiles
+            else "unavailable_insufficient_profiles"
+        )
+        record = intensity_width_unavailable(reason)
         record["intensity_width_sample_count"] = int(len(widths))
         return record
 
@@ -3951,14 +3989,23 @@ def measure_intensity_profile_width(
     fwhm_px = float(np.median(values))
     pixel_um = float(cfg.get("UM_PER_PX_XY", 1.0))
     fwhm_um = fwhm_px * pixel_um
-    blur_um = optical_blur_fwhm_um(cfg)
-    deconvolved_um = float(np.sqrt(max(fwhm_um**2 - blur_um**2, 0.0)))
+    deconvolved_um = np.nan
+    if bool(cfg.get("INTENSITY_WIDTH_PSF_CORRECTION_ENABLE", False)):
+        blur_um = optical_blur_fwhm_um(cfg)
+        deconvolved_um = float(np.sqrt(max(fwhm_um**2 - blur_um**2, 0.0)))
     multi_peak_fraction = float(multi_peak) / float(len(values))
+    profile_signal = float(np.median(integrals))
     return {
         "intensity_fwhm_width_px": fwhm_px,
         "intensity_fwhm_width_um": fwhm_um,
         "intensity_deconvolved_width_um": deconvolved_um,
-        "intensity_integrated_density": float(np.median(integrals)),
+        # Deprecated compatibility alias. New consumers use the explicitly
+        # unit-qualified technical-QC field below.
+        "intensity_integrated_density": profile_signal,
+        "intensity_profile_signal_au": profile_signal,
+        "intensity_signal_comparability": (
+            "technical_qc_only_no_independent_staining_reference"
+        ),
         "intensity_width_sample_count": int(values.size),
         "intensity_width_method": method,
         "intensity_profile_multi_peak_fraction": multi_peak_fraction,
@@ -5443,7 +5490,7 @@ def rows_from_results(results, z_idx, um):
         intensity_width_px = float(
             r.get("intensity_fwhm_width_px", np.nan) or np.nan
         )
-        profile_area_px = (
+        signal_profile_footprint_proxy_px2 = (
             round(float(r["length_px_geodesic"]) * intensity_width_px, 2)
             if np.isfinite(intensity_width_px) and intensity_width_px > 0
             else np.nan
@@ -5531,11 +5578,32 @@ def rows_from_results(results, z_idx, um):
             "intensity_fwhm_width_um": _round_or_nan(
                 r.get("intensity_fwhm_width_um"), 4
             ),
+            "length_intensity_fwhm_width_ratio": _round_or_nan(
+                (
+                    float(r["length_px_geodesic"]) / intensity_width_px
+                    if np.isfinite(intensity_width_px) and intensity_width_px > 0
+                    else np.nan
+                ),
+                4,
+            ),
             "intensity_deconvolved_width_um": _round_or_nan(
                 r.get("intensity_deconvolved_width_um"), 4
             ),
             "intensity_integrated_density": _round_or_nan(
                 r.get("intensity_integrated_density"), 3
+            ),
+            "intensity_profile_signal_au": _round_or_nan(
+                r.get(
+                    "intensity_profile_signal_au",
+                    r.get("intensity_integrated_density"),
+                ),
+                3,
+            ),
+            "intensity_signal_comparability": str(
+                r.get(
+                    "intensity_signal_comparability",
+                    "technical_qc_only_no_independent_staining_reference",
+                )
             ),
             "intensity_width_sample_count": int(
                 r.get("intensity_width_sample_count", 0) or 0
@@ -5552,7 +5620,16 @@ def rows_from_results(results, z_idx, um):
             # Footprint of a filament is its centerline length times its width.
             # Deriving it from the profile width keeps area, and the volume summed
             # from it, free of the mask-boundary inflation.
-            "profile_area_px": profile_area_px,
+            "signal_profile_footprint_proxy_px2": (
+                signal_profile_footprint_proxy_px2
+            ),
+            # Compatibility alias introduced during the unaccepted prototype.
+            "profile_area_px": signal_profile_footprint_proxy_px2,
+            "filled_mask_area_px_legacy": (
+                instance_mask_area
+                if np.isfinite(instance_mask_area)
+                else historical_area
+            ),
             "length_measurement_method": r.get(
                 "length_measurement_method",
                 "skeleton_centerline",
@@ -5898,9 +5975,111 @@ def _attach_tracking_audit(df, track_summary, rejected_extensions):
     return df, track_summary
 
 
+def _attach_representative_signal_width(df, track_summary):
+    """Attach the primary FWHM width and same-plane length to each track."""
+    output = track_summary.copy()
+    defaults = {
+        "representative_signal_profile_length_um": np.nan,
+        "representative_signal_profile_fwhm_width_um": np.nan,
+        "representative_signal_profile_signal_au_qc": np.nan,
+        "representative_signal_width_z": np.nan,
+        "representative_signal_width_sample_count": 0,
+        "representative_signal_width_method": "unavailable",
+        "representative_signal_width_selection": (
+            "largest_filled_mask_area_then_unet_support_then_lowest_z"
+        ),
+        "length_signal_width_ratio": np.nan,
+    }
+    for column, default in defaults.items():
+        if column not in output.columns:
+            output[column] = default
+    if (
+        df.empty
+        or output.empty
+        or "track_id" not in df.columns
+        or "intensity_fwhm_width_um" not in df.columns
+    ):
+        return output
+
+    candidates = df.copy()
+    candidates["intensity_fwhm_width_um"] = pd.to_numeric(
+        candidates["intensity_fwhm_width_um"], errors="coerce"
+    )
+    candidates = candidates[
+        np.isfinite(candidates["intensity_fwhm_width_um"])
+        & (candidates["intensity_fwhm_width_um"] > 0)
+    ].copy()
+    if "centerline_within_instance_mask" in candidates.columns:
+        candidates = candidates[
+            candidates["centerline_within_instance_mask"].map(_study_bool)
+        ].copy()
+    if candidates.empty:
+        return output
+
+    area_source = (
+        "instance_mask_area_px"
+        if "instance_mask_area_px" in candidates.columns
+        else "area_px"
+    )
+    candidates["_representative_area"] = pd.to_numeric(
+        candidates.get(area_source), errors="coerce"
+    ).fillna(-np.inf)
+    support_source = next(
+        (
+            column
+            for column in (
+                "unet_mean_probability",
+                "unet_max_probability",
+                "unet_probability",
+            )
+            if column in candidates.columns
+        ),
+        None,
+    )
+    candidates["_representative_support"] = (
+        pd.to_numeric(candidates[support_source], errors="coerce").fillna(-np.inf)
+        if support_source
+        else -np.inf
+    )
+    candidates = candidates.sort_values(
+        ["track_id", "_representative_area", "_representative_support", "z_slice"],
+        ascending=[True, False, False, True],
+        kind="mergesort",
+    )
+    selected = candidates.drop_duplicates("track_id", keep="first").set_index(
+        "track_id"
+    )
+    mappings = {
+        "representative_signal_profile_length_um": "length_um_geodesic",
+        "representative_signal_profile_fwhm_width_um": "intensity_fwhm_width_um",
+        "representative_signal_profile_signal_au_qc": "intensity_profile_signal_au",
+        "representative_signal_width_z": "z_slice",
+        "representative_signal_width_sample_count": "intensity_width_sample_count",
+        "representative_signal_width_method": "intensity_width_method",
+    }
+    for output_column, source_column in mappings.items():
+        if source_column in selected.columns:
+            output[output_column] = output["track_id"].map(selected[source_column])
+    output["length_signal_width_ratio"] = (
+        pd.to_numeric(
+            output["representative_signal_profile_length_um"], errors="coerce"
+        )
+        / pd.to_numeric(
+            output["representative_signal_profile_fwhm_width_um"], errors="coerce"
+        ).clip(lower=1e-9)
+    )
+    output["representative_signal_width_sample_count"] = pd.to_numeric(
+        output["representative_signal_width_sample_count"], errors="coerce"
+    ).fillna(0).astype(int)
+    output["representative_signal_width_method"] = output[
+        "representative_signal_width_method"
+    ].fillna("unavailable")
+    return output
+
+
 def _attach_representative_body_width(df, track_summary):
     """Select one body-width plane per track by area, support, then Z index."""
-    track_summary = track_summary.copy()
+    track_summary = _attach_representative_signal_width(df, track_summary)
     defaults = {
         "representative_body_length_um": np.nan,
         "representative_body_width_um": np.nan,
@@ -6232,13 +6411,14 @@ def track_across_slices_legacy(detections_df, cfg):
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
 
-    # Volume is summed from a footprint, so the footprint must not inherit the
-    # mask-boundary inflation. A filament's footprint is centerline length times
-    # width, and the profile width is measured from the signal rather than from
-    # where an annotation boundary was drawn. The mask pixel count remains
-    # available as instance_mask_area_px for diagnostics.
+    # Keep the filled-mask slab and the signal-profile footprint proxy separate.
+    # They are different estimands and must never silently substitute for one
+    # another under a shared volume name.
     profile_area = pd.to_numeric(
-        df.get("profile_area_px", pd.Series(np.nan, index=df.index)),
+        df.get(
+            "signal_profile_footprint_proxy_px2",
+            df.get("profile_area_px", pd.Series(np.nan, index=df.index)),
+        ),
         errors="coerce",
     )
     filled_area = pd.to_numeric(
@@ -6246,9 +6426,15 @@ def track_across_slices_legacy(detections_df, cfg):
         errors="coerce",
     )
     legacy_area = pd.to_numeric(df["area_px"], errors="coerce")
-    df["volume_area_px"] = profile_area.where(
-        profile_area > 0, filled_area.where(filled_area > 0, legacy_area)
+    df["filled_mask_area_px_legacy"] = filled_area.where(
+        filled_area > 0, legacy_area
     )
+    df["signal_profile_footprint_proxy_px2"] = profile_area.where(
+        profile_area > 0, np.nan
+    )
+    df["profile_footprint_available"] = df[
+        "signal_profile_footprint_proxy_px2"
+    ].notna().astype(int)
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -6260,7 +6446,15 @@ def track_across_slices_legacy(detections_df, cfg):
         median_length_width_ratio_dt_legacy = ("length_width_ratio_dt_legacy", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
-        sum_volume_area_px = ("volume_area_px", "sum"),
+        sum_filled_mask_area_px_legacy = ("filled_mask_area_px_legacy", "sum"),
+        sum_profile_footprint_proxy_px2 = (
+            "signal_profile_footprint_proxy_px2",
+            lambda values: values.sum(min_count=1),
+        ),
+        profile_footprint_observed_slice_count = (
+            "profile_footprint_available",
+            "sum",
+        ),
         min_area_px     = ("area_px",            "min"),
         max_area_px     = ("area_px",            "max"),
         area_start      = ("area_px",            "first"),
@@ -6304,9 +6498,17 @@ def track_across_slices_legacy(detections_df, cfg):
     # analyses use the explicitly named projection_z_extent_um field.
     ts["total_3d_length_um"] = l3d
 
-    # 3. Observed-slice mask slab sum; no missing-plane interpolation.
+    # 3. Observed-slice mask slab sum and separate profile-footprint proxy;
+    # neither interpolates missing planes.
     ts["observed_slice_mask_volume_um3"] = (
-        ts["sum_volume_area_px"] * (um_xy**2) * um_z
+        ts["sum_filled_mask_area_px_legacy"] * (um_xy**2) * um_z
+    )
+    ts["observed_slice_profile_footprint_proxy_um3"] = (
+        ts["sum_profile_footprint_proxy_px2"] * (um_xy**2) * um_z
+    )
+    ts["profile_footprint_expected_slice_count"] = ts["n_slices"].astype(int)
+    ts["profile_footprint_method"] = (
+        "sum_length_times_signal_fwhm_observed_slices_no_fallback"
     )
 
     # 4. Ordered centroid-path tortuosity.
@@ -6345,7 +6547,9 @@ def track_across_slices_legacy(detections_df, cfg):
         "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
         "observed_slab_effective_thickness_um", "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
-        "median_width_um_dt_legacy", "median_length_width_ratio_dt_legacy", "sum_area_px", "sum_volume_area_px",
+        "median_width_um_dt_legacy", "median_length_width_ratio_dt_legacy", "sum_area_px", "sum_filled_mask_area_px_legacy",
+        "sum_profile_footprint_proxy_px2", "observed_slice_profile_footprint_proxy_um3",
+        "profile_footprint_observed_slice_count", "profile_footprint_expected_slice_count", "profile_footprint_method",
         "min_area_px", "max_area_px", "area_start", "area_end"
     ] + [
         column
@@ -6361,6 +6565,14 @@ def track_across_slices_legacy(detections_df, cfg):
             "representative_width_selection",
             "length_body_width_ratio",
             "length_body_width_ratio_cross_plane_legacy",
+            "representative_signal_profile_length_um",
+            "representative_signal_profile_fwhm_width_um",
+            "representative_signal_profile_signal_au_qc",
+            "representative_signal_width_z",
+            "representative_signal_width_sample_count",
+            "representative_signal_width_method",
+            "representative_signal_width_selection",
+            "length_signal_width_ratio",
         )
         if column in ts.columns
     ]
@@ -6536,13 +6748,12 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         )
     if "suspected_multi_object_merge" not in df.columns:
         df["suspected_multi_object_merge"] = False
-    # Volume is summed from a footprint, so the footprint must not inherit the
-    # mask-boundary inflation. A filament's footprint is centerline length times
-    # width, and the profile width is measured from the signal rather than from
-    # where an annotation boundary was drawn. The mask pixel count remains
-    # available as instance_mask_area_px for diagnostics.
+    # Keep the filled-mask slab and the signal-profile footprint proxy separate.
     profile_area = pd.to_numeric(
-        df.get("profile_area_px", pd.Series(np.nan, index=df.index)),
+        df.get(
+            "signal_profile_footprint_proxy_px2",
+            df.get("profile_area_px", pd.Series(np.nan, index=df.index)),
+        ),
         errors="coerce",
     )
     filled_area = pd.to_numeric(
@@ -6550,9 +6761,15 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         errors="coerce",
     )
     legacy_area = pd.to_numeric(df["area_px"], errors="coerce")
-    df["volume_area_px"] = profile_area.where(
-        profile_area > 0, filled_area.where(filled_area > 0, legacy_area)
+    df["filled_mask_area_px_legacy"] = filled_area.where(
+        filled_area > 0, legacy_area
     )
+    df["signal_profile_footprint_proxy_px2"] = profile_area.where(
+        profile_area > 0, np.nan
+    )
+    df["profile_footprint_available"] = df[
+        "signal_profile_footprint_proxy_px2"
+    ].notna().astype(int)
 
     g = df.groupby("track_id", as_index=False)
     ts = g.agg(
@@ -6564,7 +6781,15 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         median_length_width_ratio_dt_legacy = ("length_width_ratio_dt_legacy", "median"),
         max_euc_2d      = ("euc_um_2d",          "max"),
         sum_area_px     = ("area_px",            "sum"),
-        sum_volume_area_px = ("volume_area_px", "sum"),
+        sum_filled_mask_area_px_legacy = ("filled_mask_area_px_legacy", "sum"),
+        sum_profile_footprint_proxy_px2 = (
+            "signal_profile_footprint_proxy_px2",
+            lambda values: values.sum(min_count=1),
+        ),
+        profile_footprint_observed_slice_count = (
+            "profile_footprint_available",
+            "sum",
+        ),
         min_area_px     = ("area_px",            "min"),
         max_area_px     = ("area_px",            "max"),
         area_start      = ("area_px",            "first"),
@@ -6599,7 +6824,14 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
     )
     ts["total_3d_length_um"] = l3d
     ts["observed_slice_mask_volume_um3"] = (
-        ts["sum_volume_area_px"] * (um_xy**2) * um_z
+        ts["sum_filled_mask_area_px_legacy"] * (um_xy**2) * um_z
+    )
+    ts["observed_slice_profile_footprint_proxy_um3"] = (
+        ts["sum_profile_footprint_proxy_px2"] * (um_xy**2) * um_z
+    )
+    ts["profile_footprint_expected_slice_count"] = ts["n_slices"].astype(int)
+    ts["profile_footprint_method"] = (
+        "sum_length_times_signal_fwhm_observed_slices_no_fallback"
     )
     ts = _attach_explicit_track_geometry(df, ts, cfg)
     ts["taper_ratio"] = ts["max_area_px"] / np.maximum(ts["min_area_px"], 0.001)
@@ -6649,7 +6881,9 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
         "centroid_path_length_3d_um", "centroid_end_to_end_3d_um", "centroid_path_tortuosity_3d", "tortuosity_3d_method", "volume_method", "observed_slice_count", "missing_slice_count",
         "observed_slab_effective_thickness_um", "thickness_um", "pitch_deg", "yaw_deg", "taper_ratio", "nearest_neighbor_um",
         "n_slices", "z_start", "z_end", "max_length_2d",
-        "median_width_um_dt_legacy", "median_length_width_ratio_dt_legacy", "sum_area_px", "sum_volume_area_px",
+        "median_width_um_dt_legacy", "median_length_width_ratio_dt_legacy", "sum_area_px", "sum_filled_mask_area_px_legacy",
+        "sum_profile_footprint_proxy_px2", "observed_slice_profile_footprint_proxy_um3",
+        "profile_footprint_observed_slice_count", "profile_footprint_expected_slice_count", "profile_footprint_method",
         "min_area_px", "max_area_px", "area_start", "area_end",
         "suspected_multi_object_merge",
     ] + [
@@ -6666,6 +6900,14 @@ def _summarize_tracked_detections(df, rejected_extensions, cfg):
             "representative_width_selection",
             "length_body_width_ratio",
             "length_body_width_ratio_cross_plane_legacy",
+            "representative_signal_profile_length_um",
+            "representative_signal_profile_fwhm_width_um",
+            "representative_signal_profile_signal_au_qc",
+            "representative_signal_width_z",
+            "representative_signal_width_sample_count",
+            "representative_signal_width_method",
+            "representative_signal_width_selection",
+            "length_signal_width_ratio",
         )
         if column in ts.columns
     ] + unet_summary_cols
@@ -8406,9 +8648,9 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
 
     column_map = {
         "track_id": "estimated_nucleus_id",
-        "representative_body_length_um": "representative_section_length_um",
-        "representative_body_width_um": "body_width_um",
-        "length_body_width_ratio": "length_body_width_ratio",
+        "representative_signal_profile_length_um": "representative_section_length_um",
+        "representative_signal_profile_fwhm_width_um": "signal_profile_fwhm_width_um",
+        "length_signal_width_ratio": "length_signal_width_ratio",
         "representative_section_tortuosity": "representative_section_tortuosity",
     }
     available = [column for column in column_map if column in primary.columns]
@@ -8427,8 +8669,10 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
         "median_representative_section_length_um": median(
             "representative_body_length_um"
         ),
-        "median_body_width_um": median("representative_body_width_um"),
-        "median_length_body_width_ratio": median("length_body_width_ratio"),
+        "median_signal_profile_fwhm_width_um": median(
+            "representative_signal_profile_fwhm_width_um"
+        ),
+        "median_length_signal_width_ratio": median("length_signal_width_ratio"),
         "median_representative_section_tortuosity": median(
             "representative_section_tortuosity"
         ),
@@ -8447,11 +8691,10 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
             "The estimated nucleus count is acquisition-coverage-sensitive: compare it only\n"
             "across specimens with reviewed ROI coverage, stack depth, and boundaries.\n"
             "Morphology-warning tracks remain included because they may represent real biology.\n"
-            "Primary width is the apparent central-body mask chord from the\n"
-            "largest-area technically valid Z plane. Legacy distance-transform width\n"
-            "is retained in explicitly named *_dt_legacy columns.\n"
-            "Mask width can inherit annotation-boundary, model-threshold, focus, and PSF bias;\n"
-            "it is not a mathematically PSF-corrected physical diameter.\n"
+            "Primary comparative width is the background-corrected signal-profile FWHM\n"
+            "from the largest-area technically valid Z plane. It is an apparent optical\n"
+            "signal width, not an absolute nucleus diameter or a PSF-corrected diameter.\n"
+            "Mask-chord and distance-transform widths remain technical-QC fields only.\n"
             "PSF-sensitive thickness, slab-volume proxies, legacy widths, and engineering\n"
             "diagnostics are intentionally kept outside this biological results folder.\n\n"
             "Do not use raw 2D detections, U-Net contribution counts, warning-free counts,\n"
@@ -8543,10 +8786,15 @@ def build_analysis_summary(
             "z_index": z_index,
             "candidate_2d_detection_count": int(len(detections)),
             "median_2d_length_um": median(detections, "length_um_geodesic"),
-            "median_body_width_um": median(detections, "body_width_um"),
-            "median_length_body_width_ratio": median(
+            "median_signal_profile_fwhm_width_um": median(
+                detections, "intensity_fwhm_width_um"
+            ),
+            "median_length_signal_width_ratio": median(
                 detections,
-                "length_body_width_ratio",
+                "length_intensity_fwhm_width_ratio",
+            ),
+            "median_body_mask_chord_width_um_qc": median(
+                detections, "body_width_um"
             ),
             "median_width_um_dt_legacy": median(
                 detections, "width_um_dt_median_legacy"
@@ -8589,17 +8837,17 @@ def build_analysis_summary(
             primary,
             "representative_body_length_um",
         ),
-        "median_body_width_um": median(
+        "median_signal_profile_fwhm_width_um": median(
+            primary,
+            "representative_signal_profile_fwhm_width_um",
+        ),
+        "median_body_mask_chord_width_um_qc": median(
             primary,
             "representative_body_width_um",
         ),
-        "median_body_width_p90_um": median(
+        "median_length_signal_width_ratio": median(
             primary,
-            "representative_body_width_p90_um",
-        ),
-        "median_length_body_width_ratio": median(
-            primary,
-            "length_body_width_ratio",
+            "length_signal_width_ratio",
         ),
         "median_width_um_dt_legacy": median(primary, "median_width_um_dt_legacy"),
         "median_length_width_ratio_dt_legacy": median(
@@ -8670,16 +8918,16 @@ def export_analysis_summary(
                 "z_index",
                 "candidate_2d_detection_count",
                 "median_2d_length_um",
-                "median_body_width_um",
-                "median_length_body_width_ratio",
+                "median_signal_profile_fwhm_width_um",
+                "median_length_signal_width_ratio",
             ]
         )
     else:
         primary_keys.extend(
             [
                 "median_representative_section_length_um",
-                "median_body_width_um",
-                "median_length_body_width_ratio",
+                "median_signal_profile_fwhm_width_um",
+                "median_length_signal_width_ratio",
                 "median_representative_section_tortuosity",
             ]
         )
@@ -9945,8 +10193,8 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                     ("Analysis population", "Included estimated nuclei"),
                     ("Estimated unique nuclei", int(len(primary))),
                     ("Median representative-section length (um)", primary_median("representative_body_length_um")),
-                    ("Median apparent body-mask width (um)", primary_median("representative_body_width_um")),
-                    ("Median length / body width", primary_median("length_body_width_ratio")),
+                    ("Median apparent signal-profile FWHM width (um)", primary_median("representative_signal_profile_fwhm_width_um")),
+                    ("Median length / signal width", primary_median("length_signal_width_ratio")),
                     ("Median 3D tortuosity", primary_median("tortuosity_3d")),
                 ]
                 for row_index, (label, value) in enumerate(biologist_metrics, start=2):
@@ -10146,9 +10394,9 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
     figure_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = result_dir / f"Biologist_Report_{_VERSION}.pdf"
     required = (
-        "representative_body_length_um",
-        "representative_body_width_um",
-        "length_body_width_ratio",
+        "representative_signal_profile_length_um",
+        "representative_signal_profile_fwhm_width_um",
+        "length_signal_width_ratio",
         "representative_section_tortuosity",
     )
     missing = [column for column in required if column not in primary.columns]
@@ -10166,9 +10414,9 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
         else:
             metrics = (
                 ("Estimated unique nuclei (coverage-sensitive)", f"{len(primary):,}"),
-                ("Median representative-section length", f"{primary['representative_body_length_um'].median():.2f} um"),
-                ("Median apparent body-mask width", f"{primary['representative_body_width_um'].median():.2f} um"),
-                ("Median length / body width", f"{primary['length_body_width_ratio'].median():.2f}"),
+                ("Median representative-section length", f"{primary['representative_signal_profile_length_um'].median():.2f} um"),
+                ("Median apparent signal-profile FWHM width", f"{primary['representative_signal_profile_fwhm_width_um'].median():.2f} um"),
+                ("Median length / signal width", f"{primary['length_signal_width_ratio'].median():.2f}"),
                 ("Median representative-section tortuosity", f"{primary['representative_section_tortuosity'].median():.3f}"),
             )
             y = 0.92
@@ -10178,7 +10426,7 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
                 y -= 0.17
         length_ax = overview.add_subplot(1, 2, 2)
         if not primary.empty:
-            length_ax.hist(primary["representative_body_length_um"].dropna(), bins=25, color="#16a34a", edgecolor="black")
+            length_ax.hist(primary["representative_signal_profile_length_um"].dropna(), bins=25, color="#16a34a", edgecolor="black")
             length_ax.set_xlabel("Representative-section length (um)")
             length_ax.set_ylabel("Estimated nuclei")
             length_ax.set_title("Length Distribution")
@@ -10202,9 +10450,9 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
         morphology = plt.figure(figsize=(11, 8.5))
         morphology.suptitle("Primary Morphology Measurements", fontsize=17, fontweight="bold")
         fields = (
-            ("representative_body_length_um", "Representative-section length (um)", "#16a34a"),
-            ("representative_body_width_um", "Apparent body-mask width (um)", "#0284c7"),
-            ("length_body_width_ratio", "Length / body width", "#7c3aed"),
+            ("representative_signal_profile_length_um", "Representative-section length (um)", "#16a34a"),
+            ("representative_signal_profile_fwhm_width_um", "Apparent signal-profile FWHM width (um)", "#0284c7"),
+            ("length_signal_width_ratio", "Length / signal width", "#7c3aed"),
             ("representative_section_tortuosity", "Representative-section centerline tortuosity", "#ca8a04"),
         )
         for index, (column, title, color) in enumerate(fields, start=1):
@@ -10419,8 +10667,8 @@ def generate_batch_report(
                 metric_lines = [
                     ("Estimated unique nuclei", f"{len(primary):,}"),
                     ("Median representative-section length", f"{report_median('representative_body_length_um'):.2f} um"),
-                    ("Median apparent body-mask width", f"{report_median('representative_body_width_um'):.2f} um"),
-                    ("Median length/body width", f"{report_median('length_body_width_ratio'):.2f}"),
+                    ("Median apparent signal-profile FWHM width", f"{report_median('representative_signal_profile_fwhm_width_um'):.2f} um"),
+                    ("Median length/signal width", f"{report_median('length_signal_width_ratio'):.2f}"),
                     ("Median 3D tortuosity", f"{report_median('tortuosity_3d'):.3f}"),
                 ]
                 y = 0.88
@@ -10746,12 +10994,12 @@ def generate_batch_report(
                 to = primary['tortuosity_3d']
                 th = primary['observed_slab_effective_thickness_um']
                 stats_rows.append(["Projection + Z extent (um)", f"{l3d.mean():.2f}", f"{l3d.median():.2f}", f"{l3d.std():.2f}"])
-                if "representative_body_width_um" in primary.columns:
-                    width_2d = pd.to_numeric(primary["representative_body_width_um"], errors="coerce")
-                    stats_rows.append(["Apparent Body-mask Width (um)", f"{width_2d.mean():.2f}", f"{width_2d.median():.2f}", f"{width_2d.std():.2f}"])
-                if "length_body_width_ratio" in primary.columns:
-                    ratio_2d = pd.to_numeric(primary["length_body_width_ratio"], errors="coerce")
-                    stats_rows.append(["Length / Body Width", f"{ratio_2d.mean():.2f}", f"{ratio_2d.median():.2f}", f"{ratio_2d.std():.2f}"])
+                if "representative_signal_profile_fwhm_width_um" in primary.columns:
+                    width_2d = pd.to_numeric(primary["representative_signal_profile_fwhm_width_um"], errors="coerce")
+                    stats_rows.append(["Apparent Signal-profile FWHM Width (um)", f"{width_2d.mean():.2f}", f"{width_2d.median():.2f}", f"{width_2d.std():.2f}"])
+                if "length_signal_width_ratio" in primary.columns:
+                    ratio_2d = pd.to_numeric(primary["length_signal_width_ratio"], errors="coerce")
+                    stats_rows.append(["Length / Signal Width", f"{ratio_2d.mean():.2f}", f"{ratio_2d.median():.2f}", f"{ratio_2d.std():.2f}"])
                 stats_rows.append(["3D Z-Span (um)", f"{ze.mean():.2f}", f"{ze.median():.2f}", f"{ze.std():.2f}"])
                 stats_rows.append(["Observed-slice mask slab sum (um3)*", f"{vo.mean():.1f}", f"{vo.median():.1f}", f"{vo.std():.1f}"])
                 stats_rows.append(["3D Tortuosity", f"{to.mean():.3f}", f"{to.median():.3f}", f"{to.std():.3f}"])
@@ -11113,15 +11361,15 @@ def generate_pptx_report(out_dir, df, df_summary, um, df_tracks=None):
             metrics_frame = metrics_box.text_frame
             metrics_frame.text = (
                 f"Estimated unique nuclei\n{len(primary):,}\n\n"
-                f"Median representative-section length\n{primary['representative_body_length_um'].median():.2f} um\n\n"
-                f"Median apparent body-mask width\n{primary['representative_body_width_um'].median():.2f} um\n\n"
-                f"Median length/body width\n{primary['length_body_width_ratio'].median():.2f}\n\n"
+                f"Median representative-section length\n{primary['representative_signal_profile_length_um'].median():.2f} um\n\n"
+                f"Median apparent signal-profile FWHM width\n{primary['representative_signal_profile_fwhm_width_um'].median():.2f} um\n\n"
+                f"Median length/signal width\n{primary['length_signal_width_ratio'].median():.2f}\n\n"
                 f"Median 3D tortuosity\n{primary['tortuosity_3d'].median():.3f}"
             )
             metrics_frame.paragraphs[0].font.size = Pt(16)
             add_histogram(
                 slide1,
-                primary['representative_body_length_um'],
+                primary['representative_signal_profile_length_um'],
                 Inches(4.8),
                 Inches(1.0),
                 Inches(4.8),
@@ -14581,9 +14829,9 @@ def summarize_study_sample(row, output_dir):
         "median_length_width_ratio_dt_legacy": median(
             analysis_tracks, "median_length_width_ratio_dt_legacy"
         ),
-        "median_body_width_um": median(
+        "median_signal_profile_fwhm_width_um": median(
             analysis_tracks,
-            "representative_body_width_um",
+            "representative_signal_profile_fwhm_width_um",
         ),
         "median_representative_section_length_um": median(
             analysis_tracks,
@@ -14597,18 +14845,18 @@ def summarize_study_sample(row, output_dir):
             analysis_tracks,
             "representative_area_length_width_um",
         ),
-        "median_length_body_width_ratio": median(
+        "median_length_signal_width_ratio": median(
             analysis_tracks,
-            "length_body_width_ratio",
+            "length_signal_width_ratio",
         ),
         "median_representative_section_tortuosity": median(
             analysis_tracks,
             "representative_section_tortuosity",
         ),
-        "body_width_available_fraction": float(
+        "signal_profile_width_available_fraction": float(
             pd.to_numeric(
                 analysis_tracks.get(
-                    "representative_body_width_um",
+                    "representative_signal_profile_fwhm_width_um",
                     pd.Series(index=analysis_tracks.index, dtype=float),
                 ),
                 errors="coerce",
@@ -14649,8 +14897,8 @@ def _study_group_summary(specimen_frame):
     metrics = [
         "estimated_unique_nuclei",
         "median_representative_section_length_um",
-        "median_body_width_um",
-        "median_length_body_width_ratio",
+        "median_signal_profile_fwhm_width_um",
+        "median_length_signal_width_ratio",
         "median_representative_section_tortuosity",
     ]
     records = []
@@ -14671,8 +14919,12 @@ def _study_group_summary(specimen_frame):
 _STUDY_COMPARISON_METRICS = {
     "estimated_unique_nuclei": "Estimated unique nuclei per specimen",
     "median_representative_section_length_um": "Specimen median representative-section length (um)",
-    "median_body_width_um": "Specimen median apparent central-body mask width (um)",
-    "median_length_body_width_ratio": "Specimen median length / body width",
+    "median_signal_profile_fwhm_width_um": (
+        "Specimen median apparent signal-profile FWHM width (um)"
+    ),
+    "median_length_signal_width_ratio": (
+        "Specimen median representative length / signal-profile FWHM width"
+    ),
     "median_representative_section_tortuosity": (
         "Specimen median representative-section centerline tortuosity"
     ),
@@ -15309,10 +15561,10 @@ def _study_below_2_um_sensitivity_row(sample_id, frame):
         return available, missing_fraction
 
     primary_width_n, primary_width_missing = metric_availability(
-        primary, "representative_body_width_um"
+        primary, "representative_signal_profile_fwhm_width_um"
     )
     sensitivity_width_n, sensitivity_width_missing = metric_availability(
-        without_short, "representative_body_width_um"
+        without_short, "representative_signal_profile_fwhm_width_um"
     )
     below_short = int((valid & (length < 2.0)).sum())
     return {
@@ -15324,8 +15576,12 @@ def _study_below_2_um_sensitivity_row(sample_id, frame):
         "below_2_um_fraction": float(below_short / max(valid.sum(), 1)),
         "primary_median_length_um": metric_median(primary, "projection_z_extent_um"),
         "sensitivity_median_length_um": metric_median(without_short, "projection_z_extent_um"),
-        "primary_median_body_width_um": metric_median(primary, "representative_body_width_um"),
-        "sensitivity_median_body_width_um": metric_median(without_short, "representative_body_width_um"),
+        "primary_median_signal_profile_fwhm_width_um": metric_median(
+            primary, "representative_signal_profile_fwhm_width_um"
+        ),
+        "sensitivity_median_signal_profile_fwhm_width_um": metric_median(
+            without_short, "representative_signal_profile_fwhm_width_um"
+        ),
         "primary_width_available_n": primary_width_n,
         "primary_width_missing_fraction": primary_width_missing,
         "sensitivity_width_available_n": sensitivity_width_n,
@@ -15396,8 +15652,8 @@ def _write_study_aggregates(
         "z_um_per_slice",
         "estimated_unique_nuclei",
         "median_representative_section_length_um",
-        "median_body_width_um",
-        "median_length_body_width_ratio",
+        "median_signal_profile_fwhm_width_um",
+        "median_length_signal_width_ratio",
         "median_representative_section_tortuosity",
     ]
     completed_specimens[

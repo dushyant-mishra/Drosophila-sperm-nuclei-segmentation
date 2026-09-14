@@ -10,8 +10,16 @@
       "statement": "The v5.7.1 dual-head U-Net-primary pipeline, calibrated measurement path, morphology-neutral global tracking, and biologist-facing reporting operate consistently across GUI, batch, tuner, and study workflows without using WT morphology as a technical acceptance target.",
       "biological_meaning": "Technical-valid nuclei and tracks remain measurable across plausible WT and mutant morphology, with provenance sufficient for specimen-level comparisons.",
       "population": "technical_valid detections and reconstructed nuclei",
-      "units": ["um", "um2", "um3", "count"],
-      "calibration_dependencies": ["Leica XY pixel size", "Leica Z spacing"],
+      "units": [
+        "um",
+        "um2",
+        "um3",
+        "count"
+      ],
+      "calibration_dependencies": [
+        "Leica XY pixel size",
+        "Leica Z spacing"
+      ],
       "source_dependencies": [
         "sperm_segmentation_saturnv5.7.1.py",
         "utils/tune_parameters_Saturnv5_7_1.py",
@@ -78,8 +86,18 @@
       "statement": "GUI corrections operate on authoritative filled instance masks or explicit cross-slice constraints, are stored append-only, and deterministically regenerate measurements, tracking, overlays, and reports without overwriting the original run.",
       "biological_meaning": "A reviewer can correct a technical segmentation or tracking error without converting unusual WT or mutant morphology into an exclusion rule or losing the original model result.",
       "population": "reviewed 2D instances and reconstructed nuclei",
-      "units": ["pixel mask", "track edge", "count", "um", "um2", "um3"],
-      "calibration_dependencies": ["resolved specimen XY calibration", "resolved specimen Z spacing"],
+      "units": [
+        "pixel mask",
+        "track edge",
+        "count",
+        "um",
+        "um2",
+        "um3"
+      ],
+      "calibration_dependencies": [
+        "resolved specimen XY calibration",
+        "resolved specimen Z spacing"
+      ],
       "source_dependencies": [
         "immutable original instance-label images",
         "raw image stack",
@@ -132,9 +150,17 @@
       "statement": "Apparent nucleus body width is measured by perpendicular boundary-to-boundary chords through the central filled-mask body and is used as the primary width field.",
       "biological_meaning": "A rotation-stable apparent width of the segmented central nucleus body, excluding tapered endpoints.",
       "population": "technically valid U-Net instances with sufficient centerline chord samples",
-      "units": ["px", "um"],
-      "calibration_dependencies": ["Leica XY pixel size"],
-      "source_dependencies": ["filled U-Net instance mask", "ordered centerline"],
+      "units": [
+        "px",
+        "um"
+      ],
+      "calibration_dependencies": [
+        "Leica XY pixel size"
+      ],
+      "source_dependencies": [
+        "filled U-Net instance mask",
+        "ordered centerline"
+      ],
       "implementation_evidence": [
         "sperm_segmentation_saturnv5.7.1.py:3735",
         "sperm_segmentation_saturnv5.7.1.py:3809",
@@ -172,13 +198,86 @@
         "An over-thick learned foreground mask can overestimate apparent width because every chord terminates at that mask boundary",
         "Not an optical deconvolution or PSF-corrected chromatin diameter"
       ],
-      "non_claims": ["Does not establish true molecular-scale nucleus width"],
-      "supersedes": ["width_um_dt_median_legacy"],
+      "non_claims": [
+        "Does not establish true molecular-scale nucleus width"
+      ],
+      "supersedes": [
+        "width_um_dt_median_legacy"
+      ],
       "latest_audit": {
         "run_id": "20260828-v571-body-width-acceptance-rc2",
         "gate_passed": false,
         "decision": "not_accepted"
       }
+    },
+    {
+      "claim_id": "MEAS-INTENSITY-WIDTH-001",
+      "title": "Raw-signal FWHM replaces mask-boundary width as the comparative width",
+      "status": "implemented",
+      "risk": "high",
+      "implementation_owner": "primary_implementation_agent",
+      "statement": "Comparative nucleus width is the background-corrected full width at half maximum of the raw intensity profile sampled perpendicular to the centerline and restricted to the object's own instance mask. It replaces the filled-mask contour chord as the width presented in biological reports; the chord and the distance-transform width remain explicitly named technical diagnostics.",
+      "biological_meaning": "An apparent optical signal width that supports comparison between experimental groups. It is not an absolute nucleus diameter.",
+      "population": "technically valid instances whose profile shows a half-maximum crossing on both sides while still inside the instance mask",
+      "units": [
+        "px",
+        "um",
+        "arbitrary_intensity_units"
+      ],
+      "calibration_dependencies": [
+        "Leica XY pixel size",
+        "numerical aperture and emission wavelength when PSF correction is explicitly enabled"
+      ],
+      "source_dependencies": [
+        "img_linear unclipped raw intensities",
+        "instance mask used only to scope the profile, never to set the width",
+        "ordered centerline"
+      ],
+      "implementation_evidence": [
+        "sperm_segmentation_saturnv5.7.1.py:measure_intensity_profile_width",
+        "sperm_segmentation_saturnv5.7.1.py:optical_blur_fwhm_um",
+        "sperm_segmentation_saturnv5.7.1.py:intensity_width_unavailable",
+        "tests/test_saturn_v571_intensity_width_contract.py",
+        "tests/test_saturn_v571_body_width.py",
+        "scripts/generate_v57_biological_comparison.py",
+        "scripts/generate_v571_biological_comparison.py",
+        "audits/V5_7_1_DESIGN_DECISIONS.md",
+        "docs/plans/2026-09-08-v571-intensity-width-hardening.md"
+      ],
+      "acceptance_criteria": [
+        "Known-width synthetic profiles are recovered monotonically and the measured value is reported with its compression in the sub-resolution regime stated",
+        "Width is independent of segmentation mask thickness: inflating the mask must not change the reported width",
+        "Signal outside the object's own instance mask must not set the half maximum, the crossing, or the integrated signal",
+        "A profile without a half-maximum crossing on both sides inside the mask is unavailable rather than inflated",
+        "No morphological dilation appears anywhere in the measurement path, including background estimation",
+        "Rotation does not create material width bias",
+        "Representative width and the paired centerline length come from the same observed Z plane",
+        "Integrated profile signal is reported only as technical QC and never as a biological endpoint or acceptance gate",
+        "The comparative-only interpretation travels with the value in calculations, tables, figure labels, and report narrative",
+        "The fraction of objects with unavailable width does not differ materially between compared groups"
+      ],
+      "required_roles": [
+        "measurement_geometry",
+        "biological_validity",
+        "software_reproducibility",
+        "statistics_reporting",
+        "visual_evidence"
+      ],
+      "known_limitations": [
+        "Absolute nucleus diameter is not established. At 0.378 um per pixel against an approximately 0.23 um point spread function the image is about 3.3 times below Nyquist, and a deconvolved estimate saturates near 0.6 um, so PSF correction is disabled by default.",
+        "Response compresses below roughly one micron of true width, so a real difference in the thin regime appears reduced.",
+        "Integrated profile signal is far more sensitive to real width but scales directly with staining brightness. This study has no independent staining control, only same-genotype biological replicates, so integrated signal cannot separate a staining difference from a chromatin difference.",
+        "Profiles clipped at the instance boundary are dropped. On KJ-01 and WT-01 planes 34 to 36 this removed about 17 percent of detections, so the measured subset is not the full detection set and its group balance must be checked.",
+        "The measurement scopes profiles to the instance mask, so it still depends on segmentation for which pixels belong to the object, even though it does not depend on the mask boundary for the width value."
+      ],
+      "non_claims": [
+        "This is not a physical or PSF-corrected nucleus diameter.",
+        "Integrated profile signal is not a calibrated chromatin content measurement.",
+        "The signal-profile footprint proxy is not a filled-mask area and not an anatomical volume."
+      ],
+      "validation_evidence": [],
+      "latest_audit": null,
+      "notes": "Supersedes MEAS-BODY-WIDTH-001 as the width presented biologically. Motivation: training annotations have a median width of 1.606 um against an optical nucleus width near 0.643 um, so the learned mask boundary is roughly 2.4 times too wide, and the bias is not constant across specimens. Measured on planes 34 to 36 after profile isolation was hardened, the mask to signal ratio was 2.12x on KJ-01 and 2.29x on WT-01, while the signal width difference between those specimens was 0.029 um against 0.115 um for the mask width. Not accepted: no independent audit run has been recorded against a clean commit."
     },
     {
       "claim_id": "VOL-3DROI-001",
@@ -189,9 +288,19 @@
       "statement": "A reviewed Z-specific seminal-vesicle mask can support sampled SV volume and volume-normalized nucleus density; a repeated 2D ROI cannot.",
       "biological_meaning": "The calibrated tissue volume actually represented by the reviewed slice-specific organ mask.",
       "population": "all calibrated voxels inside the reviewed 3D SV mask",
-      "units": ["um2", "um3", "count per 100000 um3"],
-      "calibration_dependencies": ["Leica XY pixel size", "Leica Z spacing"],
-      "source_dependencies": ["slice-specific SV masks", "source Z index mapping"],
+      "units": [
+        "um2",
+        "um3",
+        "count per 100000 um3"
+      ],
+      "calibration_dependencies": [
+        "Leica XY pixel size",
+        "Leica Z spacing"
+      ],
+      "source_dependencies": [
+        "slice-specific SV masks",
+        "source Z index mapping"
+      ],
       "implementation_evidence": [],
       "acceptance_criteria": [
         "Per-slice masks align with source planes",
@@ -208,8 +317,12 @@
         "statistics_reporting",
         "visual_evidence"
       ],
-      "known_limitations": ["Manual or interpolated organ boundaries require review"],
-      "non_claims": ["A sampled or truncated mask is not necessarily complete anatomical SV volume"],
+      "known_limitations": [
+        "Manual or interpolated organ boundaries require review"
+      ],
+      "non_claims": [
+        "A sampled or truncated mask is not necessarily complete anatomical SV volume"
+      ],
       "supersedes": []
     },
     {
@@ -221,9 +334,21 @@
       "statement": "Below-2-um technical-valid tracks remain in the primary biological population; an automated specimen-level sensitivity calculation reports how counts and summary morphometry would change if they were omitted, without creating a second accepted population or a routine manual-review queue.",
       "biological_meaning": "Preserves genuine short nuclei and terminal optical sections while making potential fragment sensitivity transparent and reproducible.",
       "population": "technical-valid reconstructed tracks below 2 um",
-      "units": ["um", "count", "fraction"],
-      "calibration_dependencies": ["Leica XY pixel size", "Leica Z spacing"],
-      "source_dependencies": ["raw Z context", "U-Net heads", "instance masks", "tracking audit"],
+      "units": [
+        "um",
+        "count",
+        "fraction"
+      ],
+      "calibration_dependencies": [
+        "Leica XY pixel size",
+        "Leica Z spacing"
+      ],
+      "source_dependencies": [
+        "raw Z context",
+        "U-Net heads",
+        "instance masks",
+        "tracking audit"
+      ],
       "implementation_evidence": [
         "sperm_segmentation_saturnv5.7.1.py",
         "tests/test_saturn_v571_dual_head.py",
@@ -249,8 +374,12 @@
         "statistics_reporting",
         "visual_evidence"
       ],
-      "known_limitations": ["Length alone cannot distinguish a genuine short nucleus from an unresolved fragment"],
-      "non_claims": ["Length below 2 um is not automatically technical noise"],
+      "known_limitations": [
+        "Length alone cannot distinguish a genuine short nucleus from an unresolved fragment"
+      ],
+      "non_claims": [
+        "Length below 2 um is not automatically technical noise"
+      ],
       "supersedes": []
     },
     {
@@ -262,8 +391,15 @@
       "statement": "Saturn v5.7.1 biological CSV, JSON, Excel, PDF, PowerPoint, and study-comparison outputs expose only the acquisition-coverage-sensitive estimated nucleus count, representative-section length, apparent central-body mask width, the same-plane length-to-width ratio, and representative-section centerline tortuosity; engineering and PSF-sensitive quantities remain in explicitly separated technical-QC artifacts.",
       "biological_meaning": "A biologist has one unambiguous set of specimen outcomes and is not asked to choose among competing width, thickness, volume, density, or tracking diagnostics.",
       "population": "technical-valid reconstructed nuclei summarized at specimen level",
-      "units": ["count", "um", "ratio"],
-      "calibration_dependencies": ["resolved specimen XY calibration", "resolved specimen Z spacing"],
+      "units": [
+        "count",
+        "um",
+        "ratio"
+      ],
+      "calibration_dependencies": [
+        "resolved specimen XY calibration",
+        "resolved specimen Z spacing"
+      ],
       "source_dependencies": [
         "technical-valid track summary",
         "representative-plane length and width",
@@ -313,7 +449,9 @@
       "biological_meaning": "A biologist can run the same calibrated technical-valid analysis without command-line knowledge or silently changing the population, profile, checkpoint, specimen set, or comparison direction.",
       "population": "GUI single-slice previews, full-stack batches, and multi-specimen studies",
       "units": [],
-      "calibration_dependencies": ["resolved specimen microscope metadata"],
+      "calibration_dependencies": [
+        "resolved specimen microscope metadata"
+      ],
       "source_dependencies": [
         "sperm_segmentation_saturnv5.7.1.py",
         "utils/saturn_v571_gui_services.py",
