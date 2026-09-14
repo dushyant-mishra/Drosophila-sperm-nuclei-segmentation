@@ -77,13 +77,45 @@ result. No parameter, threshold, or gate has been changed since it was seen, and
 none may be. A reviewer should treat any later biological result as independent
 of it and should check that nothing was tuned in between.
 
+## Visual evidence for the new width: DONE (2026-09-14)
+
+`scripts/generate_v571_intensity_width_evidence.py`, twelve panels in
+`audits/evidence/v571_intensity_width_visual_20260914/`, bound into the claim.
+One exemplar per behaviour including refusals and a merge. The widest-mask
+exemplar shows a 3.904 um mask chord against a 0.668 um signal width with three
+peaks in one mask. Categories that cannot render a panel are recorded in the
+manifest rather than dropped.
+
+## Phase 3 pipeline side: DONE (2026-09-14), report side OUTSTANDING
+
+`_study_group_design` returns a reference plus a list of comparison groups.
+`_study_one_metric_contrast` was extracted so the fan-out needs no extra nesting.
+The group-count guard accepts two or more groups.
+
+Verified bit-identical to the previous implementation on a synthetic two-group
+study across all nineteen shared columns, including permutation p-values. This
+required keeping the permutation seed base so the first comparison group
+reproduces the pairwise random stream; `seed_offset` is
+`comparison_index * 10000 + metric_index`. Adding a third group leaves the
+existing contrast's p-values and within-contrast q-values unchanged.
+
+**Two BH families are reported and the primary one is not yet decided.**
+`bh_fdr_q_value` corrects across the metrics within one contrast, which is the
+historical family and is unchanged for a two-group study.
+`bh_fdr_q_value_across_comparisons` corrects across the comparison groups within
+one metric, which is the family requested for multi-group designs. Reporting only
+the latter would silently remove the existing across-metric correction in a
+two-group study and make every q-value smaller. The report generator must present
+one of these as primary, so this needs an explicit decision before the report side
+is written.
+
 ## Open items, in order
 
-1. Regenerate the stratified visual evidence, which currently predates the
-   isolation fix.
-2. Phase 3 of the approved plan: generalize the study design from one reference
-   plus one comparison to one reference plus N comparisons, with
-   Benjamini-Hochberg applied per metric across comparison groups.
+1. Decide which BH family the report presents as primary, then generalize
+   `scripts/generate_v57_biological_comparison.py` to accept several
+   `--comparison-group` values and iterate the figure builders, preserving the
+   single-comparison output exactly. `scripts/generate_v571_biological_comparison.py`
+   then accepts one reference plus one or more comparisons.
 3. Gate and GUI-services hardening (`WORKFLOW-GUI-PRIMARY-001`,
    `REPORT-BIOLOGIST-CONCISE-001`).
 4. Independent acceptance audits on a clean commit for every gate claim.
