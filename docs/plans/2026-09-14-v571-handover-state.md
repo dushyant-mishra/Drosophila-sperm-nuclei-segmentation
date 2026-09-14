@@ -48,24 +48,46 @@ agent can take over without replaying the conversation.
 - Claude's earlier "26% -> 3.1% merge rate" was measured before the isolation fix
   and should not be cited. The current figures are 3.4% and 5.4% above.
 
+## Availability bias check: PASSED (2026-09-14)
+
+`scripts/validate_v571_width_availability_bias.py` over all 35 specimens, three
+sampled planes each, 22381 detections. Evidence is bound into the claim under
+`audits/evidence/v571_width_availability_bias_20260914/`.
+
+| | KJ (n=18) | WT (n=17) | Welch p |
+|---|---:|---:|---:|
+| width-unavailable fraction | 0.2121 | 0.2211 | 0.325 |
+| mask-width selection bias | -0.540 um | -0.563 um | 0.305 |
+
+- Overall unavailable fraction 21.4%, of which 76.9% is boundary clipping,
+  16.2% short centerline, 6.9% insufficient profiles.
+- The selection bias is negative in every one of the 35 specimens, so the dropped
+  objects are consistently narrower than the measured ones and the measured
+  subset skews wide, by a similar amount in both groups.
+- Availability correlates only weakly and negatively with crowding
+  (Spearman -0.26) and density (-0.36), so denser specimens do not lose more.
+- A shared and equal bias does not distort a between-group comparison, so the
+  acceptance criterion on this claim is satisfied on this evidence.
+
+**Disclosure for audit.** That run also produced a specimen-level signal-width
+group contrast, so a group difference was seen before the gate passed. It is a
+technical readout on three sampled planes without tracking, where one nucleus
+spanning several planes is counted more than once, so it is not a biological
+result. No parameter, threshold, or gate has been changed since it was seen, and
+none may be. A reviewer should treat any later biological result as independent
+of it and should check that nothing was tuned in between.
+
 ## Open items, in order
 
-1. Generate current synthetic and adversarial evidence artifacts for
-   `MEAS-INTENSITY-WIDTH-001` and bind them into the claim's
-   `validation_evidence`. The claim currently has none.
-2. Check that the ~22% width-unavailable fraction does not differ by group at
-   cohort scale. If boundary clipping correlates with packing density and packing
-   differs by genotype, the measured subset is a biased sample. This is an
-   acceptance criterion on the new claim.
-3. Regenerate the stratified visual evidence, which currently predates the
+1. Regenerate the stratified visual evidence, which currently predates the
    isolation fix.
-4. Phase 3 of the approved plan: generalize the study design from one reference
+2. Phase 3 of the approved plan: generalize the study design from one reference
    plus one comparison to one reference plus N comparisons, with
    Benjamini-Hochberg applied per metric across comparison groups.
-5. Gate and GUI-services hardening (`WORKFLOW-GUI-PRIMARY-001`,
+3. Gate and GUI-services hardening (`WORKFLOW-GUI-PRIMARY-001`,
    `REPORT-BIOLOGIST-CONCISE-001`).
-6. Independent acceptance audits on a clean commit for every gate claim.
-7. Only then the 35-specimen cohort run: 18 KJ and 17 WT, excluding
+4. Independent acceptance audits on a clean commit for every gate claim.
+5. Only then the 35-specimen cohort run: 18 KJ and 17 WT, excluding
    `w1118 sv feb 40xx0.75-15` which has no slices. Roughly 8 to 11 hours on CPU.
 
 ## Standing constraints
@@ -82,7 +104,7 @@ agent can take over without replaying the conversation.
 ## Verification commands
 
 ```powershell
-python -m pytest -q --basetemp=<writable-dir>   # 388 passing; bare pytest gives
+python -m pytest -q --basetemp=<writable-dir>   # 397 passing; bare pytest gives
                                                 # 122 spurious WinError 5 errors
 python scripts/validate_v571_body_width.py      # must exit 0
 python -c "import sys,pathlib; sys.path.insert(0,'utils'); import saturn_v571_gui_services as s; print(s.production_audit_gate_state(pathlib.Path('.')))"

@@ -275,9 +275,15 @@
         "Integrated profile signal is not a calibrated chromatin content measurement.",
         "The signal-profile footprint proxy is not a filled-mask area and not an anatomical volume."
       ],
-      "validation_evidence": [],
+      "validation_evidence": [
+        "scripts/validate_v571_width_availability_bias.py",
+        "tests/test_v571_width_availability_bias.py",
+        "audits/evidence/v571_width_availability_bias_20260914/width_availability_summary.json",
+        "audits/evidence/v571_width_availability_bias_20260914/width_availability_by_specimen.csv",
+        "audits/evidence/v571_width_availability_bias_20260914/WIDTH_AVAILABILITY_BIAS.md"
+      ],
       "latest_audit": null,
-      "notes": "Supersedes MEAS-BODY-WIDTH-001 as the width presented biologically. Motivation: training annotations have a median width of 1.606 um against an optical nucleus width near 0.643 um, so the learned mask boundary is roughly 2.4 times too wide, and the bias is not constant across specimens. Measured on planes 34 to 36 after profile isolation was hardened, the mask to signal ratio was 2.12x on KJ-01 and 2.29x on WT-01, while the signal width difference between those specimens was 0.029 um against 0.115 um for the mask width. Not accepted: no independent audit run has been recorded against a clean commit."
+      "notes": "Supersedes MEAS-BODY-WIDTH-001 as the width presented biologically. Motivation: training annotations have a median width of 1.606 um against an optical nucleus width near 0.643 um, so the learned mask boundary is roughly 2.4 times too wide, and the bias is not constant across specimens. Measured on planes 34 to 36 after profile isolation was hardened, the mask to signal ratio was 2.12x on KJ-01 and 2.29x on WT-01, while the signal width difference between those specimens was 0.029 um against 0.115 um for the mask width. Not accepted: no independent audit run has been recorded against a clean commit. Availability bias was checked across all 35 specimens on three sampled planes each, 22381 detections. Width is unavailable for 21.4 percent of detections, dominated by boundary-clipped profiles at 76.9 percent of the unavailable set. The unavailable fraction does not differ between groups (KJ 0.2121, WT 0.2211, Welch p 0.325), and the selection bias does not differ either (KJ -0.540 um, WT -0.563 um, Welch p 0.305). The bias is negative in every one of the 35 specimens, meaning the dropped objects are narrower than the measured ones, so the measured subset skews wide by a similar amount in both groups. A shared and equal bias does not distort a between-group comparison, so the availability acceptance criterion is met on this evidence. DISCLOSURE FOR AUDIT: that run also produced a specimen-level signal-width group contrast, which was therefore seen before the audit gate passed. It is a technical readout on sampled planes without tracking, not a biological result, and no parameter, threshold or gate has been changed since it was seen."
     },
     {
       "claim_id": "VOL-3DROI-001",

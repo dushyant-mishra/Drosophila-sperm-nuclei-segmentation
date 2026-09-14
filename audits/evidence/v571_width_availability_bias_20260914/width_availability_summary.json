@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "MEAS-INTENSITY-WIDTH-001",
+  "scope": "Technical quality control on signal-width availability. This is not a biological morphology comparison and must not be used to tune any parameter toward a genotype outcome.",
+  "generated_at_utc": "2026-09-14T19:04:01.237843+00:00",
+  "git_commit": "7160c322743fa6ea7809b5e47ea11a5090d67ce3",
+  "pipeline_sha256": "a115305b1f3937c35885b71edf968868bb6cd9a954dd7391d65c656d450d4c61",
+  "profile_sha256": "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8",
+  "planes_per_specimen": 3,
+  "specimens": 35,
+  "skipped": [],
+  "total_detections": 22381,
+  "overall_unavailable_fraction": 0.21352933291631293,
+  "group_contrast_unavailable_fraction": {
+    "column": "width_unavailable_fraction",
+    "KJ": {
+      "n": 18,
+      "median": 0.21343482222381477,
+      "mean": 0.21213312242026142,
+      "sd": 0.02415704442732467
+    },
+    "WT": {
+      "n": 17,
+      "median": 0.22146739130434778,
+      "mean": 0.221112050856557,
+      "sd": 0.028671786781941044
+    },
+    "difference_of_means": 0.00897892843629558,
+    "welch_p_value": 0.3254221555133919
+  },
+  "group_contrast_selection_bias": {
+    "column": "mask_width_selection_bias_um",
+    "KJ": {
+      "n": 18,
+      "median": -0.541790466308594,
+      "mean": -0.5395777723524307,
+      "sd": 0.04790662962809475
+    },
+    "WT": {
+      "n": 17,
+      "median": -0.5456976318359374,
+      "mean": -0.5633196662454045,
+      "sd": 0.08116690336845453
+    },
+    "difference_of_means": -0.023741893892973875,
+    "welch_p_value": 0.3052487830370014
+  },
+  "group_contrast_median_signal_width": {
+    "column": "median_signal_width_um",
+    "KJ": {
+      "n": 18,
+      "median": 0.7319249999999999,
+      "mean": 0.7319305555555555,
+      "sd": 0.03089708790241684
+    },
+    "WT": {
+      "n": 17,
+      "median": 0.7045,
+      "mean": 0.7059647058823529,
+      "sd": 0.029024110476818913
+    },
+    "difference_of_means": -0.02596584967320259,
+    "welch_p_value": 0.01510080916079135
+  },
+  "availability_vs_crowding_spearman": -0.2596638655462185,
+  "availability_vs_density_spearman": -0.3633053221288516
+}
