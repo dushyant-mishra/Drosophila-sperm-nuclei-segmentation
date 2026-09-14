@@ -1,0 +1,172 @@
+{
+  "schema_version": "1.0",
+  "claim_id": "MEAS-INTENSITY-WIDTH-001",
+  "role": "visual_evidence",
+  "generated_at_utc": "2026-09-14T19:48:47.650327+00:00",
+  "git_commit": "0495b1cf34110a214aa2d53778f1b10a7af6cfb0",
+  "pipeline_sha256": "a115305b1f3937c35885b71edf968868bb6cd9a954dd7391d65c656d450d4c61",
+  "profile_sha256": "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8",
+  "plane": 35,
+  "interpretation_limit": "Relative comparison between groups is valid; absolute nucleus diameter is not established.",
+  "selection_note": "One exemplar per behaviour, deliberately including refused profiles and a bimodal merge. Evidence curated to clean objects cannot falsify the measurement.",
+  "panels": [
+    {
+      "category": "narrowest_signal",
+      "specimen": "kj_sv_40xx0.75-1",
+      "z_index": 35,
+      "instance": 143,
+      "signal_fwhm_width_um": 0.39306488440698356,
+      "mask_chord_width_um": 1.1356954540032844,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/kj_sv_40xx0.75-1_narrowest_signal.png",
+      "artifact_sha256": "f137798c4ea624c18c36e56369b1ba3b4135d4ec414995ae610d52dd20389d02"
+    },
+    {
+      "category": "profile_merge",
+      "specimen": "kj_sv_40xx0.75-1",
+      "z_index": 35,
+      "instance": 24,
+      "signal_fwhm_width_um": 0.7366290812003535,
+      "mask_chord_width_um": 1.2987458812621802,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": true,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/kj_sv_40xx0.75-1_profile_merge.png",
+      "artifact_sha256": "b3f605df6acbb199dc3f8881ccc0f6ba42cc49f0632358addce4dd4c60c3c732"
+    },
+    {
+      "category": "refused_boundary_clipped",
+      "specimen": "kj_sv_40xx0.75-1",
+      "z_index": 35,
+      "instance": 3,
+      "signal_fwhm_width_um": null,
+      "mask_chord_width_um": 0.5431977073530546,
+      "intensity_width_method": "unavailable_boundary_clipped_profiles",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/kj_sv_40xx0.75-1_refused_boundary_clipped.png",
+      "artifact_sha256": "0bcdb6173d71c5546dc498047efc1c1f8a7b8e4048e32a6e6e6c6a934f12e969"
+    },
+    {
+      "category": "typical",
+      "specimen": "kj_sv_40xx0.75-1",
+      "z_index": 35,
+      "instance": 191,
+      "signal_fwhm_width_um": 0.7021022093467182,
+      "mask_chord_width_um": 1.5460664325272795,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/kj_sv_40xx0.75-1_typical.png",
+      "artifact_sha256": "a472f0790849a6ed60945ee9dd0e7747957c1ba4b354b3ab95fbecb1aa3b2f9f"
+    },
+    {
+      "category": "widest_mask",
+      "specimen": "kj_sv_40xx0.75-1",
+      "z_index": 35,
+      "instance": 222,
+      "signal_fwhm_width_um": 0.6683862535555211,
+      "mask_chord_width_um": 3.9043804246729192,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": true,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/kj_sv_40xx0.75-1_widest_mask.png",
+      "artifact_sha256": "f5fcd22ef2520837609b313453800b5d8ab02eb6cd44840e30a8d455a15160b7"
+    },
+    {
+      "category": "widest_signal",
+      "specimen": "kj_sv_40xx0.75-1",
+      "z_index": 35,
+      "instance": 120,
+      "signal_fwhm_width_um": 1.1094726468974496,
+      "mask_chord_width_um": 1.8922744320200762,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/kj_sv_40xx0.75-1_widest_signal.png",
+      "artifact_sha256": "717c522492e6fe17c67ed12e6a8c09318ecc9f5ce6b08eb86324e94fa150dd2c"
+    },
+    {
+      "category": "narrowest_signal",
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "z_index": 35,
+      "instance": 210,
+      "signal_fwhm_width_um": 0.4968478026664037,
+      "mask_chord_width_um": 1.6923511207109,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/w1118_sv_feb_40xx0.75-1_narrowest_signal.png",
+      "artifact_sha256": "85af456fb75e18dfabd398ad410767b6614974e7de353e53e3978569c93d5271"
+    },
+    {
+      "category": "profile_merge",
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "z_index": 35,
+      "instance": 19,
+      "signal_fwhm_width_um": 0.8266946079311773,
+      "mask_chord_width_um": 2.6962208819274083,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": true,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/w1118_sv_feb_40xx0.75-1_profile_merge.png",
+      "artifact_sha256": "5af40b687e11ecbe49086610f91a5b0730ee2c23129c430f482d127cea5bd55a"
+    },
+    {
+      "category": "refused_boundary_clipped",
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "z_index": 35,
+      "instance": 3,
+      "signal_fwhm_width_um": null,
+      "mask_chord_width_um": 0.9202918817130851,
+      "intensity_width_method": "unavailable_boundary_clipped_profiles",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/w1118_sv_feb_40xx0.75-1_refused_boundary_clipped.png",
+      "artifact_sha256": "4c92bf8a7901e6745472e8270812980f111ecb51c4b91a512e3241eb20f115e7"
+    },
+    {
+      "category": "typical",
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "z_index": 35,
+      "instance": 233,
+      "signal_fwhm_width_um": 0.7408986047724815,
+      "mask_chord_width_um": 1.6901558293834167,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/w1118_sv_feb_40xx0.75-1_typical.png",
+      "artifact_sha256": "ca442e1c5c1b6cb4fedb479236f1a3744abf538f27f00005be047345ba9f0fc7"
+    },
+    {
+      "category": "widest_mask",
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "z_index": 35,
+      "instance": 184,
+      "signal_fwhm_width_um": 0.8202241639045517,
+      "mask_chord_width_um": 3.4222597646434756,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": true,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/w1118_sv_feb_40xx0.75-1_widest_mask.png",
+      "artifact_sha256": "f96d1996a29a14c2e92a6d5bfd97af88c0a9d804c5aef3e391e6fccff587ba86"
+    },
+    {
+      "category": "widest_signal",
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "z_index": 35,
+      "instance": 61,
+      "signal_fwhm_width_um": 1.365611232671887,
+      "mask_chord_width_um": 2.112055248457151,
+      "intensity_width_method": "raw_intensity_fwhm_perpendicular_central_body",
+      "suspected_merge": false,
+      "artifact": "audits/evidence/v571_intensity_width_visual_20260914/w1118_sv_feb_40xx0.75-1_widest_signal.png",
+      "artifact_sha256": "f8eddf8e38e1e08a59cac9e4f3b08b2d60319f35134ab525e5fb5efc455e207b"
+    }
+  ],
+  "categories_without_a_panel": [
+    {
+      "specimen": "kj_sv_40xx0.75-1",
+      "category": "refused_short_centerline",
+      "reason": "centerline too short to resample a profile",
+      "intensity_width_method": "unavailable_short_centerline"
+    },
+    {
+      "specimen": "w1118_sv_feb_40xx0.75-1",
+      "category": "refused_short_centerline",
+      "reason": "centerline too short to resample a profile",
+      "intensity_width_method": "unavailable_short_centerline"
+    }
+  ]
+}
