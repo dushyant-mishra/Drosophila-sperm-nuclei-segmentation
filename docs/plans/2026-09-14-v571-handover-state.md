@@ -109,6 +109,26 @@ two-group study and make every q-value smaller. The report generator must presen
 one of these as primary, so this needs an explicit decision before the report side
 is written.
 
+## OPEN DEFECT: merges are counted as single nuclei (2026-09-14)
+
+`audits/findings/2026-09-14-merge-flag-length-gate.md`. The user spotted this on
+the visual evidence panels.
+
+`suspected_multi_object_merge` requires `geodesic_um > 20.0 AND branch_count > 0`.
+Median instance length is 7.91 um, so the length gate almost never opens. On 559
+instances, 7.33% are branched but only 0.18% are flagged, leaving 7.16%
+objectively joined structures counted as one nucleus each. Three of the four
+instances with eight or more branch nodes are missed.
+
+This affects `estimated_unique_nuclei`, a primary biological metric, so it may
+require a superseding run against the accepted `PIPELINE-V571-PRODUCTION-001`
+rather than a silent amendment. Nothing has been changed; the fix is an owner
+decision plus an audit.
+
+Group rates are close, 7.19% KJ against 7.12% WT, so a count comparison is less
+distorted than the absolute count, but that balance is from one plane of one
+specimen per group and must not be assumed cohort-wide.
+
 ## Open items, in order
 
 1. Decide which BH family the report presents as primary, then generalize
