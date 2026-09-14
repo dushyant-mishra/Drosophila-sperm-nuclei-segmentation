@@ -91,6 +91,29 @@ or excuse a defect.
 - Subpixel mask-contour chord width and distance-transform width remain
   explicitly named technical diagnostics. They do not drive biological reports.
 
+## Merge evidence and multiple comparison groups
+
+- Objective evidence that one mask holds several objects is branching of the
+  instance centerline, or a bimodal intensity profile across it. Length is not
+  merge evidence and never triggers the flag on its own.
+- Three or more branch nodes is the threshold, so a single skeletonisation spur
+  does not reclassify a valid nucleus. The previously documented case of any
+  branching above the twenty micron review length is retained, so the rule only
+  ever adds evidence and never unflags a case that was flagged before.
+- The two evidence sources are complementary rather than redundant. Branching
+  catches filaments joined end to end; profile bimodality catches nuclei lying
+  side by side, which are unbranched yet still two objects.
+- A study carries one reference group and one or more comparison groups. Every
+  comparison is contrasted against the single reference, and direction comes only
+  from manifest roles, never from group names.
+- Two multiple-testing families are reported because neither subsumes the other.
+  The headline q-value corrects across the metrics tested within one contrast,
+  which is the historical family and is unchanged for a two-group study. A second
+  q-value corrects across the comparison groups tested for one metric, and
+  becomes meaningful when a study gains a mutant or a rescue line. Reporting only
+  the latter would have silently removed the across-metric correction in a
+  two-group study and made every q-value smaller.
+
 ## Calibration and ROI
 
 - Leica calibration must be resolved before any physical threshold or

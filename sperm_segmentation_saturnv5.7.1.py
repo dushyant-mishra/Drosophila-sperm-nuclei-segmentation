@@ -314,6 +314,7 @@ CONFIG = {
     "INTENSITY_WIDTH_BACKGROUND_OFFSET_PX": 5.0,
     "INTENSITY_WIDTH_MERGE_PEAK_FRACTION": 0.30,
     "INTENSITY_WIDTH_PSF_CORRECTION_ENABLE": False,
+    "MERGE_EVIDENCE_MIN_BRANCH_NODES": 3,
     "UNET_TRACKING_SUPPORT": True,
     "ASSIGNMENT_UNET_SUPPORT_WEIGHT": 0.6,
     "ASSIGNMENT_UNET_CONTINUITY_WEIGHT": 0.25,
@@ -3212,6 +3213,91 @@ def _learned_core_watershed_markers(core_probability, component, path, cfg):
     return markers, int(peaks.size), "separated_learned_core_peaks"
 
 
+MERGE_EVIDENCE_MIN_BRANCH_NODES = 3
+OVERLONG_REVIEW_UM = 20.0
+
+
+def component_branch_node_count(component):
+    """Count skeleton pixels with three or more neighbours in one component.
+
+    Cheap topological evidence that a mask holds more than one filament. Used to
+    decide whether a component is worth the cost of a full geodesic centerline
+    and a split attempt.
+    """
+    component = np.asarray(component, dtype=bool)
+    if not component.any():
+        return 0
+    skeleton = morphology.skeletonize(component)
+    if not skeleton.any():
+        return 0
+    neighbours = ndi.convolve(
+        skeleton.astype(np.uint8),
+        np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8),
+        mode="constant",
+        cval=0,
+    )
+    return int(np.count_nonzero(skeleton & (neighbours >= 3)))
+
+
+def suspected_multi_object_merge_evidence(
+    geodesic_um,
+    branch_count,
+    profile_merge=False,
+    min_branch_nodes=None,
+):
+    """Decide whether objective evidence says one mask holds several objects.
+
+    Branching is the objective evidence; length is not. The previous rule
+    required both, and because the median instance is about 8 um against a 20 um
+    gate, the branch evidence was discarded almost every time. Length is
+    deliberately absent here: the design ledger states that length alone is
+    morphology and never justifies a technical intervention.
+
+    A tolerance of three branch nodes keeps a single skeletonisation spur from
+    reclassifying a valid nucleus. Bimodality across the profile is accepted as
+    independent evidence, because two nuclei lying side by side are unbranched
+    yet still two objects. The previously documented case, any branching above
+    the overlong review length, is retained so this rule only ever adds
+    evidence and never unflags something that was flagged before.
+
+    Args:
+        geodesic_um (float): Centerline length. Recorded for provenance only.
+        branch_count (int): Skeleton branch nodes in this instance.
+        profile_merge (bool): Whether the intensity profile was bimodal.
+        min_branch_nodes (int): Spur tolerance; defaults to the configured value.
+
+    Returns:
+        bool: True when objective evidence indicates a multi-object mask.
+    """
+    threshold = (
+        MERGE_EVIDENCE_MIN_BRANCH_NODES
+        if min_branch_nodes is None
+        else int(min_branch_nodes)
+    )
+    if threshold < 1:
+        raise ValueError("Merge evidence needs at least one branch node to be meaningful")
+    if bool(profile_merge):
+        return True
+    try:
+        branches = int(branch_count)
+    except (TypeError, ValueError):
+        return False
+    if branches >= threshold:
+        return True
+    # The documented rule that a branched component above the overlong review
+    # length is a technical merge is retained, so this change only adds
+    # evidence and never removes a case that was flagged before.
+    try:
+        length_um = float(geodesic_um)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        branches > 0
+        and np.isfinite(length_um)
+        and length_um > OVERLONG_REVIEW_UM
+    )
+
+
 def _refine_overlong_unet_instances(
     probability,
     instance_labels,
@@ -4241,8 +4327,15 @@ def _measure_unet_primary_instances(seg, cfg):
             # objective evidence that instance separation left multiple
             # objects connected.
             "over_20_um_review": bool(geodesic_um > 20.0),
-            "suspected_multi_object_merge": bool(
-                geodesic_um > 20.0 and raw_branch_count > 0
+            "suspected_multi_object_merge": suspected_multi_object_merge_evidence(
+                geodesic_um,
+                raw_branch_count or topology["n_branch_nodes"],
+                profile_merge=bool(
+                    intensity_width.get("intensity_profile_suspected_merge", False)
+                ),
+                min_branch_nodes=cfg.get(
+                    "MERGE_EVIDENCE_MIN_BRANCH_NODES", MERGE_EVIDENCE_MIN_BRANCH_NODES
+                ),
             ),
             "bbox_min_y": float(prop.bbox[0]),
             "bbox_min_x": float(prop.bbox[1]),
