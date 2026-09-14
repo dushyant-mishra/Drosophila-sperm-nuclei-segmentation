@@ -129,13 +129,29 @@ Group rates are close, 7.19% KJ against 7.12% WT, so a count comparison is less
 distorted than the absolute count, but that balance is from one plane of one
 specimen per group and must not be assumed cohort-wide.
 
-## Open items, in order
+## Phase 3 report side: DONE (2026-09-14)
 
-1. Decide which BH family the report presents as primary, then generalize
-   `scripts/generate_v57_biological_comparison.py` to accept several
-   `--comparison-group` values and iterate the figure builders, preserving the
-   single-comparison output exactly. `scripts/generate_v571_biological_comparison.py`
-   then accepts one reference plus one or more comparisons.
+`--comparison-group` takes several values. Rather than refactoring the figure
+builders to merge contrasts, which would have put the validated single-contrast
+report at risk, the driver renders that same report once per comparison into
+`contrast_<group>/` and then writes `cross_contrast_statistical_tests.csv` plus
+`CROSS_CONTRAST_README.md` at the root. Each contrast stays independently
+reviewable.
+
+Verified: for a two-group study, all 26 deterministic outputs are byte-identical
+to the pre-change script. The only differing files are the PDF and Excel hashes,
+and a control rerun of the *unchanged* script shows those are not byte
+reproducible between any two runs, so the difference is inherent.
+
+The cross-contrast table carries `*_bh_fdr_q_across_comparisons` for all three
+test families the report already corrects: permutation, Mann-Whitney and Welch.
+On a synthetic three-group study, KJ length moves from a within-contrast q of
+0.0266 to an across-comparison q of 0.0390, as expected for two comparisons.
+
+BH decision settled by the owner: the headline q-value stays the across-metric
+family inside each contrast; the across-comparison family is reported alongside.
+
+## Open items, in order
 3. Gate and GUI-services hardening (`WORKFLOW-GUI-PRIMARY-001`,
    `REPORT-BIOLOGIST-CONCISE-001`).
 4. Independent acceptance audits on a clean commit for every gate claim.
@@ -156,7 +172,7 @@ specimen per group and must not be assumed cohort-wide.
 ## Verification commands
 
 ```powershell
-python -m pytest -q --basetemp=<writable-dir>   # 397 passing; bare pytest gives
+python -m pytest -q --basetemp=<writable-dir>   # 428 passing; bare pytest gives
                                                 # 122 spurious WinError 5 errors
 python scripts/validate_v571_body_width.py      # must exit 0
 python -c "import sys,pathlib; sys.path.insert(0,'utils'); import saturn_v571_gui_services as s; print(s.production_audit_gate_state(pathlib.Path('.')))"

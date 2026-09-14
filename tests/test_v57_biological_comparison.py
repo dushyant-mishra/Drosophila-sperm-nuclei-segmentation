@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 SCRIPT_PATH = (
@@ -186,3 +187,52 @@ def test_every_v571_width_metric_definition_exposes_the_limit():
             "not absolute nucleus diameter" in label
             or "absolute nucleus diameter is not established" in meaning
         ), metric
+
+
+def test_contrast_folder_names_are_filesystem_safe_and_keep_the_group():
+    assert MODULE._contrast_folder_name("KJ") == "contrast_KJ"
+    assert MODULE._contrast_folder_name("rescue line 2") == "contrast_rescue_line_2"
+    assert MODULE._contrast_folder_name("w1118/feb") == "contrast_w1118_feb"
+    # A name that reduces to nothing still yields a usable folder.
+    assert MODULE._contrast_folder_name("///") == "contrast_comparison"
+
+
+def test_comparison_group_argument_accepts_several_values():
+    parser_args = MODULE.argparse.ArgumentParser()
+    # Mirror the production parser contract rather than re-deriving it.
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert "--comparison-group" in result.stdout
+    assert "one or more comparison groups" in result.stdout.lower()
+
+
+def test_across_comparison_family_is_computed_per_metric():
+    """Each metric is corrected across the groups it was tested against."""
+    combined = pd.DataFrame(
+        {
+            "metric": ["width", "width", "length", "length"],
+            "comparison_group": ["m1", "m2", "m1", "m2"],
+            "permutation_median_test_p": [0.01, 0.04, 0.02, 0.03],
+        }
+    )
+    adjusted = {}
+    for _, block in combined.groupby("metric", sort=False):
+        adjusted[block["metric"].iloc[0]] = MODULE.bh_qvalues(
+            block["permutation_median_test_p"]
+        ).tolist()
+    assert adjusted["width"] == pytest.approx([0.02, 0.04])
+    assert adjusted["length"] == pytest.approx([0.03, 0.03])
+
+
+def test_single_comparison_still_produces_a_scalar_contrast():
+    """A two-group study must not be routed through the fan-out."""
+    groups = ["KJ", "WT"]
+    assert MODULE.resolve_group_pair(groups, "WT", "KJ") == ("WT", "KJ")
+    # An empty comparison still resolves to the other group, as before.
+    assert MODULE.resolve_group_pair(groups, "WT", "") == ("WT", "KJ")

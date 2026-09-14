@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import sys
 import math
 import shutil
 import textwrap
@@ -1272,13 +1273,126 @@ def write_powerpoint(path, title, figures, explanation_pages):
     presentation.save(path)
 
 
+def _contrast_folder_name(comparison):
+    """Filesystem-safe folder for one contrast, preserving the group name."""
+    safe = "".join(
+        character if character.isalnum() or character in "-_." else "_"
+        for character in str(comparison)
+    ).strip("_")
+    return f"contrast_{safe or 'comparison'}"
+
+
+def _run_contrast_fan_out(args, arguments, comparisons):
+    """Render one validated single-contrast report per comparison group.
+
+    Every contrast goes through exactly the path a two-group study uses, so the
+    single-comparison output is untouched and each contrast stays independently
+    reviewable. A combined table then carries the family that spans comparison
+    groups, which no individual contrast can compute on its own.
+    """
+    base_arguments = list(arguments) if arguments is not None else sys.argv[1:]
+    # Strip the caller's comparison and output folder; each contrast supplies
+    # its own.
+    cleaned = []
+    skip = False
+    for token in base_arguments:
+        if skip and not str(token).startswith("--"):
+            continue
+        skip = False
+        if token in {"--comparison-group", "--output-folder"}:
+            skip = True
+            continue
+        cleaned.append(token)
+
+    study_root = Path(args.study_output).resolve()
+    root_output = (
+        Path(args.output_folder).resolve()
+        if args.output_folder
+        else study_root / "between_sample_analysis"
+    )
+    root_output.mkdir(parents=True, exist_ok=True)
+
+    per_contrast = []
+    for comparison in comparisons:
+        folder = root_output / _contrast_folder_name(comparison)
+        main(
+            cleaned
+            + ["--comparison-group", comparison, "--output-folder", str(folder)]
+        )
+        statistics_path = (
+            folder / "01_biological_results" / "data" / "biological_statistical_tests.csv"
+        )
+        if statistics_path.exists():
+            block = pd.read_csv(statistics_path)
+            block["comparison_group"] = comparison
+            per_contrast.append(block)
+
+    if not per_contrast:
+        return 0
+
+    combined = pd.concat(per_contrast, ignore_index=True)
+    # The family that only exists once a study has several comparison groups:
+    # for each metric, correct across the groups it was tested against. The
+    # per-contrast q-value inside each report keeps correcting across metrics.
+    # Mirror every test family the per-contrast report already corrects, so a
+    # reader is never offered an across-comparison q-value for one test and left
+    # without it for another.
+    across_comparison_families = {
+        "permutation_median_test_p": "permutation_bh_fdr_q_across_comparisons",
+        "mann_whitney_p": "mann_whitney_bh_fdr_q_across_comparisons",
+        "welch_t_p": "welch_t_bh_fdr_q_across_comparisons",
+    }
+    if "metric" in combined.columns:
+        for source, target in across_comparison_families.items():
+            if source not in combined.columns:
+                continue
+            combined[target] = np.nan
+            for _, block in combined.groupby("metric", sort=False):
+                combined.loc[block.index, target] = bh_qvalues(block[source])
+    combined.to_csv(root_output / "cross_contrast_statistical_tests.csv", index=False)
+    (root_output / "CROSS_CONTRAST_README.md").write_text(
+        "\n".join(
+            [
+                "# Cross-contrast summary",
+                "",
+                f"Reference group: {args.reference_group}",
+                "Comparison groups: " + ", ".join(comparisons),
+                "",
+                "Each contrast has its own full report in its own folder, produced by",
+                "the same path a two-group study uses.",
+                "",
+                "`cross_contrast_statistical_tests.csv` adds a",
+                "`*_bh_fdr_q_across_comparisons` column for each test family, which",
+                "corrects within each metric across the comparison groups it was",
+                "tested against. The q-value inside each individual report corrects",
+                "across the metrics of that contrast instead. The two families answer",
+                "different questions and neither replaces the other.",
+                "",
+                WIDTH_INTERPRETATION_CAVEAT,
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return 0
+
+
 def main(arguments=None):
     global BIOLOGICAL_METRICS, QC_METRICS, CONCISE_REPORT
     parser = argparse.ArgumentParser()
     parser.add_argument("--study-output", required=True)
     parser.add_argument("--output-folder", default="")
     parser.add_argument("--reference-group", default="")
-    parser.add_argument("--comparison-group", default="")
+    parser.add_argument(
+        "--comparison-group",
+        nargs="*",
+        default=[],
+        help=(
+            "One or more comparison groups, each contrasted against the single "
+            "reference. Several groups produce one report per contrast plus a "
+            "combined cross-contrast table."
+        ),
+    )
     parser.add_argument(
         "--metric-profile",
         choices=("legacy_v57", "concise_v571"),
@@ -1286,6 +1400,15 @@ def main(arguments=None):
         help="Keep frozen v5.7 metrics or use the concise v5.7.1 biological contract.",
     )
     args = parser.parse_args(arguments)
+    requested_comparisons = [
+        str(group).strip() for group in args.comparison_group if str(group).strip()
+    ]
+    if len(requested_comparisons) > 1:
+        # Each contrast is rendered by the same single-contrast path that is
+        # already validated, so a study with one comparison group is entirely
+        # unaffected and a multi-group study gets one reviewable report per
+        # contrast rather than a merged figure nobody can check.
+        return _run_contrast_fan_out(args, arguments, requested_comparisons)
     CONCISE_REPORT = args.metric_profile == "concise_v571"
     if args.metric_profile == "concise_v571":
         BIOLOGICAL_METRICS = (
@@ -1340,6 +1463,23 @@ def main(arguments=None):
     )
     common_path = study_root / "common_depth_sensitivity.csv"
     common_depth = pd.read_csv(common_path) if common_path.exists() else None
+    # A study may carry several comparison groups while this report renders one
+    # contrast. Narrow to the two groups of this contrast before the pairwise
+    # check, so a multi-group study is supported without loosening that check.
+    single_comparison = requested_comparisons[0] if requested_comparisons else ""
+    if args.reference_group and single_comparison:
+        contrast_groups = {str(args.reference_group).strip(), single_comparison}
+        specimens = specimens[
+            specimens["group"].astype(str).isin(contrast_groups)
+        ].copy()
+        if "group" in specimen_qc.columns:
+            specimen_qc = specimen_qc[
+                specimen_qc["group"].astype(str).isin(contrast_groups)
+            ].copy()
+        if "group" in tracks.columns:
+            tracks = tracks[
+                tracks["group"].astype(str).isin(contrast_groups)
+            ].copy()
     groups = sorted(specimens["group"].dropna().astype(str).unique())
     if len(groups) != 2:
         raise ValueError(
@@ -1349,7 +1489,7 @@ def main(arguments=None):
         reference, comparison = resolve_group_pair(
             groups,
             args.reference_group,
-            args.comparison_group,
+            single_comparison,
         )
         group_direction_source = "explicit command arguments"
     else:
