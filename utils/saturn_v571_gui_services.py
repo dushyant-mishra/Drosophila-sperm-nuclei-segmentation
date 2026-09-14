@@ -54,9 +54,23 @@ def production_audit_gate_state(
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
     except Exception as exc:
         return False, f"Claims registry is unavailable: {type(exc).__name__}: {exc}"
+    # A gate that raises is not fail-closed: the caller sees a crash rather than
+    # a refusal. Every malformed shape must still produce a verdict, so the
+    # registry and each claim are type-checked instead of assumed.
+    if not isinstance(registry, dict):
+        return False, (
+            "Claims registry is unreadable: expected an object, found "
+            f"{type(registry).__name__}"
+        )
+    raw_claims = registry.get("claims")
+    if not isinstance(raw_claims, list):
+        return False, (
+            "Claims registry is unreadable: 'claims' must be a list, found "
+            f"{type(raw_claims).__name__}"
+        )
     claims = {
         str(claim.get("claim_id", "")): claim
-        for claim in registry.get("claims", [])
+        for claim in raw_claims
         if isinstance(claim, dict)
     }
     blockers = []
@@ -65,7 +79,11 @@ def production_audit_gate_state(
         if claim is None:
             blockers.append(f"{claim_id}: missing")
             continue
-        audit = claim.get("latest_audit") or {}
+        audit = claim.get("latest_audit")
+        # A latest_audit of the wrong type carries no gate verdict, so it must
+        # never be read as a passing one.
+        if not isinstance(audit, dict):
+            audit = {}
         if not (
             str(claim.get("status", "")).lower() == "accepted"
             and bool(audit.get("gate_passed", False))
