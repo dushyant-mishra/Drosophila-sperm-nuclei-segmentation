@@ -14931,8 +14931,14 @@ _STUDY_COMPARISON_METRICS = {
 }
 
 
-def _study_explicit_group_pair(specimen_frame):
-    """Resolve report direction only from manifest-provenance study roles."""
+def _study_group_design(specimen_frame):
+    """Resolve one reference group and one or more comparison groups.
+
+    Direction comes only from manifest-provenance study roles, never from the
+    group names, so a group literally named "control" cannot become the
+    reference by label. The design is a star: every comparison group is
+    contrasted against the single reference.
+    """
     if not {"group", "group_role"}.issubset(specimen_frame.columns):
         raise ValueError("Study manifest must declare group_role for pairwise reporting")
     design = specimen_frame[["group", "group_role"]].copy()
@@ -14950,13 +14956,32 @@ def _study_explicit_group_pair(specimen_frame):
         raise ValueError("A biological group cannot have conflicting study roles")
     references = sorted(pairs.loc[pairs["group_role"] == "reference", "group"].unique())
     comparisons = sorted(pairs.loc[pairs["group_role"] == "comparison", "group"].unique())
-    if len(references) != 1 or len(comparisons) != 1:
+    if len(references) != 1:
         raise ValueError(
-            "Pairwise reporting requires exactly one reference group and one comparison group"
+            "Study reporting requires exactly one reference group, found "
+            f"{references}"
         )
-    if references[0] == comparisons[0]:
+    if not comparisons:
+        raise ValueError("Study reporting requires at least one comparison group")
+    if references[0] in comparisons:
         raise ValueError("Reference and comparison groups must differ")
-    return references[0], comparisons[0]
+    return references[0], comparisons
+
+
+def _study_explicit_group_pair(specimen_frame):
+    """Resolve a strictly pairwise design, for callers that cannot fan out.
+
+    Kept for report paths that render a single contrast. A study carrying more
+    than one comparison group must use :func:`_study_group_design` instead of
+    silently reporting only the first contrast.
+    """
+    reference, comparisons = _study_group_design(specimen_frame)
+    if len(comparisons) != 1:
+        raise ValueError(
+            "Pairwise reporting requires exactly one comparison group, found "
+            f"{comparisons}"
+        )
+    return reference, comparisons[0]
 
 
 def _study_cliffs_delta(reference, comparison):
@@ -14983,13 +15008,133 @@ def _study_bh_qvalues(p_values):
     return adjusted
 
 
+def _study_bh_qvalues_by_metric(frame, p_column, metric_column="metric"):
+    """Benjamini-Hochberg within each metric, across that metric's comparisons.
+
+    With several comparison groups the multiple-testing family for a metric is
+    the set of contrasts made for it. Correcting within the metric keeps each
+    measure interpretable on its own and means adding a metric does not move the
+    q-values of unrelated metrics. A metric contrasted against a single group is
+    a family of one and is returned uncorrected, which is why this does not
+    replace the across-metric family.
+    """
+    adjusted = pd.Series(np.nan, index=frame.index, dtype=float)
+    if frame.empty or p_column not in frame.columns:
+        return adjusted
+    if metric_column not in frame.columns:
+        adjusted[:] = _study_bh_qvalues(frame[p_column])
+        return adjusted
+    for _, block in frame.groupby(metric_column, sort=False):
+        adjusted.loc[block.index] = _study_bh_qvalues(block[p_column])
+    return adjusted
+
+
+def _study_one_metric_contrast(
+    complete,
+    metric,
+    label,
+    reference_group,
+    comparison_group,
+    seed_offset,
+    random_seed,
+    bootstrap_resamples,
+    permutation_resamples,
+):
+    """Contrast one metric between the reference and one comparison group.
+
+    Extracted so a study can fan out over several comparison groups without
+    nesting the whole measurement body one level deeper.
+    """
+    # seed_offset is comparison_index * 10000 + metric_index, so the first
+    # comparison group reproduces the seeds the pairwise implementation used
+    # and its published numbers do not move when a group is added.
+    from scipy.stats import permutation_test
+
+    reference = pd.to_numeric(
+        complete.loc[complete["group"] == reference_group, metric],
+        errors="coerce",
+    ).dropna().to_numpy(dtype=float)
+    comparison = pd.to_numeric(
+        complete.loc[complete["group"] == comparison_group, metric],
+        errors="coerce",
+    ).dropna().to_numpy(dtype=float)
+    if reference.size == 0 and comparison.size == 0:
+        return None
+
+    reference_median = float(np.median(reference)) if reference.size else np.nan
+    comparison_median = float(np.median(comparison)) if comparison.size else np.nan
+    median_difference = comparison_median - reference_median
+    record = {
+        "metric": metric,
+        "metric_label": label,
+        "analysis_unit": "biological specimen",
+        "reference_group": reference_group,
+        "comparison_group": comparison_group,
+        "reference_n": int(reference.size),
+        "comparison_n": int(comparison.size),
+        "reference_mean": float(np.mean(reference)) if reference.size else np.nan,
+        "comparison_mean": float(np.mean(comparison)) if comparison.size else np.nan,
+        "reference_median": reference_median,
+        "comparison_median": comparison_median,
+        "median_difference_comparison_minus_reference": median_difference,
+        "median_percent_difference": (
+            float(100.0 * median_difference / reference_median)
+            if np.isfinite(reference_median) and reference_median != 0
+            else np.nan
+        ),
+        "cliffs_delta_comparison_minus_reference": _study_cliffs_delta(
+            reference, comparison
+        ),
+        "bootstrap_95ci_low": np.nan,
+        "bootstrap_95ci_high": np.nan,
+        "permutation_p_value": np.nan,
+        "inference_status": "insufficient_specimens",
+    }
+
+    if reference.size >= 3 and comparison.size >= 3:
+        rng = np.random.default_rng(random_seed + seed_offset)
+        bootstrap_differences = np.empty(bootstrap_resamples, dtype=float)
+        for index in range(bootstrap_resamples):
+            reference_sample = rng.choice(reference, size=reference.size, replace=True)
+            comparison_sample = rng.choice(comparison, size=comparison.size, replace=True)
+            bootstrap_differences[index] = (
+                np.median(comparison_sample) - np.median(reference_sample)
+            )
+        record["bootstrap_95ci_low"], record["bootstrap_95ci_high"] = [
+            float(value)
+            for value in np.quantile(bootstrap_differences, [0.025, 0.975])
+        ]
+        permutation = permutation_test(
+            (reference, comparison),
+            lambda ref, comp: np.median(comp) - np.median(ref),
+            permutation_type="independent",
+            vectorized=False,
+            n_resamples=permutation_resamples,
+            alternative="two-sided",
+            rng=np.random.default_rng(random_seed + 1000 + seed_offset),
+        )
+        record["permutation_p_value"] = float(permutation.pvalue)
+        record["inference_status"] = (
+            "exploratory_small_sample"
+            if min(reference.size, comparison.size) < 5
+            else "exploratory"
+        )
+    return record
+
+
 def _study_specimen_group_comparisons(
     specimen_frame,
     random_seed=57057,
     bootstrap_resamples=5000,
     permutation_resamples=9999,
 ):
-    """Compare two groups using specimens, never individual nuclei, as replicates."""
+    """Contrast each comparison group against the reference, specimen-wise.
+
+    Specimens are the replicates; individual nuclei are nested observations
+    and never independent. The design is a star, so a study may carry one
+    comparison group or several without changing how any single contrast is
+    computed.
+    """
     complete = specimen_frame.copy()
     if "status" in complete.columns:
         complete = complete[complete["status"] == "complete"].copy()
@@ -15011,9 +15156,10 @@ def _study_specimen_group_comparisons(
         "comparison_status": "not_run",
         "warnings": [],
     }
-    if len(groups) != 2:
+    if len(groups) < 2:
         qc["warnings"].append(
-            f"Specimen comparison requires exactly two non-empty groups; found {len(groups)}."
+            "Specimen comparison requires a reference group and at least one "
+            f"comparison group; found {len(groups)} non-empty group(s)."
         )
         return pd.DataFrame(
             columns=[
@@ -15036,10 +15182,19 @@ def _study_specimen_group_comparisons(
             ]
         ), qc
 
-    reference_group, comparison_group = _study_explicit_group_pair(complete)
+    reference_group, comparison_groups = _study_group_design(complete)
     qc["reference_group"] = reference_group
-    qc["comparison_group"] = comparison_group
-    qc["effect_direction"] = f"{comparison_group} minus {reference_group}"
+    qc["comparison_groups"] = list(comparison_groups)
+    # Retained for consumers written against the pairwise design. A study with
+    # several comparison groups has no single comparison, so this stays empty
+    # rather than silently naming only the first contrast.
+    qc["comparison_group"] = (
+        comparison_groups[0] if len(comparison_groups) == 1 else ""
+    )
+    qc["effect_direction"] = "; ".join(
+        f"{group} minus {reference_group}" for group in comparison_groups
+    )
+    qc["comparison_status"] = "exploratory"
     qc["comparison_status"] = "exploratory"
     if min(qc["specimen_counts"].values()) < 3:
         qc["warnings"].append(
@@ -15050,88 +15205,49 @@ def _study_specimen_group_comparisons(
             "At least one group has fewer than five specimens; intervals and p-values are highly uncertain."
         )
 
-    from scipy.stats import permutation_test
 
     records = []
-    for metric_index, (metric, label) in enumerate(_STUDY_COMPARISON_METRICS.items()):
-        if metric not in complete.columns:
-            continue
-        reference = pd.to_numeric(
-            complete.loc[complete["group"] == reference_group, metric],
-            errors="coerce",
-        ).dropna().to_numpy(dtype=float)
-        comparison = pd.to_numeric(
-            complete.loc[complete["group"] == comparison_group, metric],
-            errors="coerce",
-        ).dropna().to_numpy(dtype=float)
-        if reference.size == 0 and comparison.size == 0:
-            continue
-
-        reference_median = float(np.median(reference)) if reference.size else np.nan
-        comparison_median = float(np.median(comparison)) if comparison.size else np.nan
-        median_difference = comparison_median - reference_median
-        record = {
-            "metric": metric,
-            "metric_label": label,
-            "analysis_unit": "biological specimen",
-            "reference_group": reference_group,
-            "comparison_group": comparison_group,
-            "reference_n": int(reference.size),
-            "comparison_n": int(comparison.size),
-            "reference_mean": float(np.mean(reference)) if reference.size else np.nan,
-            "comparison_mean": float(np.mean(comparison)) if comparison.size else np.nan,
-            "reference_median": reference_median,
-            "comparison_median": comparison_median,
-            "median_difference_comparison_minus_reference": median_difference,
-            "median_percent_difference": (
-                float(100.0 * median_difference / reference_median)
-                if np.isfinite(reference_median) and reference_median != 0
-                else np.nan
-            ),
-            "cliffs_delta_comparison_minus_reference": _study_cliffs_delta(
-                reference, comparison
-            ),
-            "bootstrap_95ci_low": np.nan,
-            "bootstrap_95ci_high": np.nan,
-            "permutation_p_value": np.nan,
-            "inference_status": "insufficient_specimens",
-        }
-
-        if reference.size >= 3 and comparison.size >= 3:
-            rng = np.random.default_rng(random_seed + metric_index)
-            bootstrap_differences = np.empty(bootstrap_resamples, dtype=float)
-            for index in range(bootstrap_resamples):
-                reference_sample = rng.choice(reference, size=reference.size, replace=True)
-                comparison_sample = rng.choice(comparison, size=comparison.size, replace=True)
-                bootstrap_differences[index] = (
-                    np.median(comparison_sample) - np.median(reference_sample)
-                )
-            record["bootstrap_95ci_low"], record["bootstrap_95ci_high"] = [
-                float(value)
-                for value in np.quantile(bootstrap_differences, [0.025, 0.975])
-            ]
-            permutation = permutation_test(
-                (reference, comparison),
-                lambda ref, comp: np.median(comp) - np.median(ref),
-                permutation_type="independent",
-                vectorized=False,
-                n_resamples=permutation_resamples,
-                alternative="two-sided",
-                rng=np.random.default_rng(random_seed + 1000 + metric_index),
+    for comparison_index, comparison_group in enumerate(comparison_groups):
+        for metric_index, (metric, label) in enumerate(
+            _STUDY_COMPARISON_METRICS.items()
+        ):
+            if metric not in complete.columns:
+                continue
+            # Seed per contrast as well as per metric so adding a comparison
+            # group cannot change the resampling of contrasts already reported.
+            record = _study_one_metric_contrast(
+                complete,
+                metric,
+                label,
+                reference_group,
+                comparison_group,
+                comparison_index * 10_000 + metric_index,
+                random_seed,
+                bootstrap_resamples,
+                permutation_resamples,
             )
-            record["permutation_p_value"] = float(permutation.pvalue)
-            record["inference_status"] = (
-                "exploratory_small_sample"
-                if min(reference.size, comparison.size) < 5
-                else "exploratory"
-            )
-        records.append(record)
+            if record is not None:
+                records.append(record)
 
     result = pd.DataFrame(records)
     if not result.empty:
-        result["bh_fdr_q_value"] = _study_bh_qvalues(result["permutation_p_value"])
+        # Two families, both reported, because they answer different questions
+        # and neither subsumes the other. Within a contrast, correct across the
+        # metrics tested for it: this is the historical family and is unchanged
+        # for a study with one comparison group. Within a metric, correct across
+        # the comparison groups it was tested against: this is the family that
+        # grows when a study gains a mutant or a rescue line.
+        result["bh_fdr_q_value"] = np.nan
+        for _, block in result.groupby("comparison_group", sort=False):
+            result.loc[block.index, "bh_fdr_q_value"] = _study_bh_qvalues(
+                block["permutation_p_value"]
+            )
+        result["bh_fdr_q_value_across_comparisons"] = _study_bh_qvalues_by_metric(
+            result, "permutation_p_value"
+        )
+        result["bh_family_within_contrast"] = "metrics_tested_in_this_contrast"
+        result["bh_family_across_comparisons"] = "comparison_groups_for_this_metric"
     return result, qc
-
 
 def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, output_path):
     """Plot every specimen and append a plain-language methods page."""
