@@ -109,7 +109,7 @@ two-group study and make every q-value smaller. The report generator must presen
 one of these as primary, so this needs an explicit decision before the report side
 is written.
 
-## OPEN DEFECT: merges are counted as single nuclei (2026-09-14)
+## Merges counted as single nuclei: REMEDIATED (2026-09-14), pending audit
 
 `audits/findings/2026-09-14-merge-flag-length-gate.md`. The user spotted this on
 the visual evidence panels.
@@ -120,10 +120,15 @@ instances, 7.33% are branched but only 0.18% are flagged, leaving 7.16%
 objectively joined structures counted as one nucleus each. Three of the four
 instances with eight or more branch nodes are missed.
 
-This affects `estimated_unique_nuclei`, a primary biological metric, so it may
-require a superseding run against the accepted `PIPELINE-V571-PRODUCTION-001`
-rather than a silent amendment. Nothing has been changed; the fix is an owner
-decision plus an audit.
+Remediated with owner approval. Flagging now uses three or more branch nodes,
+or profile bimodality, or the previously documented overlong-branched case,
+which makes the rule purely additive. Splitting is triggered by objective
+evidence rather than length, with branch-topology markers supplying the
+evidence the learned core head cannot. Counts rose 12.7 percent in KJ-01 and
+7.1 percent in WT-01 on plane 35, so the correction is not balanced between
+groups and the old under-counting was differentially suppressing KJ.
+`estimated_unique_nuclei` is a primary biological metric, so this still needs a
+superseding run against the accepted `PIPELINE-V571-PRODUCTION-001`.
 
 Group rates are close, 7.19% KJ against 7.12% WT, so a count comparison is less
 distorted than the absolute count, but that balance is from one plane of one
@@ -151,12 +156,59 @@ On a synthetic three-group study, KJ length moves from a within-contrast q of
 BH decision settled by the owner: the headline q-value stays the across-metric
 family inside each contrast; the across-comparison family is reported alongside.
 
+## Gate and GUI hardening: DONE (2026-09-15)
+
+- `production_audit_gate_state` read `registry.get("claims")` outside the try
+  guarding parsing and assumed `latest_audit` was a mapping, so a registry that
+  parsed to a list, null, string or number raised `AttributeError` instead of
+  returning a verdict. A gate that raises is not fail-closed. Both are
+  type-checked now; 8 of 20 new tests failed before the fix.
+- `MEAS-INTENSITY-WIDTH-001` added to `PRODUCTION_REQUIRED_CLAIM_IDS`, which
+  previously named only the superseded mask-width claim, so the gate could have
+  opened while the width actually presented biologically was unaudited.
+- Overlay read-only is asserted behaviourally now, not by grepping a warning
+  string: `on_click` is driven in review, view and ROI modes with a control
+  proving the check can detect a mutation, plus an AST check that no GUI method
+  calls a correction entry point.
+- `correction_label_state_sha256` folded the array dtype into the digest, so the
+  same labels as uint8 and int32 hashed differently and a correction could look
+  like it changed state it did not. Canonicalised to int64; nothing stored
+  depended on the old values.
+- First failure coverage for `reduce_study_progress`.
+
+## Validation report: corrected (2026-09-15)
+
+`V5_7_1_VALIDATION_REPORT.md` still presented the mask chord as the primary
+width, carried counts predating merge splitting, and reported 205 passing tests.
+Superseded sections are marked in place rather than deleted, the width section is
+rewritten, and the live gate state is stated at the top.
+`tests/test_v571_validation_report_currency.py` guards it against going stale by
+checking it against the repository's own records rather than fixed figures; 6 of
+its 7 checks fail against the previous report.
+
 ## Open items, in order
-3. Gate and GUI-services hardening (`WORKFLOW-GUI-PRIMARY-001`,
-   `REPORT-BIOLOGIST-CONCISE-001`).
-4. Independent acceptance audits on a clean commit for every gate claim.
-5. Only then the 35-specimen cohort run: 18 KJ and 17 WT, excluding
+
+1. Regenerate the stratified body-width visual evidence. It predates both the
+   profile isolation fix and evidence-based merge splitting, so it currently
+   shows numbers the pipeline no longer produces.
+2. Independent acceptance audits on a clean commit: `MEAS-INTENSITY-WIDTH-001`,
+   `MEAS-BODY-WIDTH-001`, `REPORT-BIOLOGIST-CONCISE-001`,
+   `WORKFLOW-GUI-PRIMARY-001`, and a superseding run for the accepted
+   `PIPELINE-V571-PRODUCTION-001` whose behaviour has changed.
+3. Only then the 35-specimen cohort run: 18 KJ and 17 WT, excluding
    `w1118 sv feb 40xx0.75-15` which has no slices. Roughly 8 to 11 hours on CPU.
+
+## Acquisition guidance given to the owner (2026-09-15)
+
+For any future imaging, the Z step of 0.346 um is already correct against a
+0.729 um axial FWHM. The limitation is lateral: 0.378 um per pixel against a
+0.228 um lateral FWHM is 3.3 times below Nyquist, and a 0.5 um nucleus spans
+1.3 pixels, which is why width saturates. Zoom 2.5 to 3.0 would reach Nyquist.
+Also recommended: 12-bit rather than 8-bit, line averaging 2 to 4, pinhole held
+at 1.0 Airy, and identical laser, gain and zoom across every specimen. A stable
+second channel or a sub-resolution bead would lift the two limits software
+cannot: integrated signal has no staining reference, and PSF correction is
+unvalidated and therefore disabled.
 
 ## Standing constraints
 
@@ -172,7 +224,7 @@ family inside each contrast; the across-comparison family is reported alongside.
 ## Verification commands
 
 ```powershell
-python -m pytest -q --basetemp=<writable-dir>   # 428 passing; bare pytest gives
+python -m pytest -q --basetemp=<writable-dir>   # 466 passing; bare pytest gives
                                                 # 122 spurious WinError 5 errors
 python scripts/validate_v571_body_width.py      # must exit 0
 python -c "import sys,pathlib; sys.path.insert(0,'utils'); import saturn_v571_gui_services as s; print(s.production_audit_gate_state(pathlib.Path('.')))"
