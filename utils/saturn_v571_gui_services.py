@@ -571,11 +571,15 @@ def correction_label_state_sha256(
         )
     digest = hashlib.sha256()
     for name, array in (("instances", instances), ("centerlines", centerlines)):
-        contiguous = np.ascontiguousarray(array)
+        # Hash the label state, not its storage type. The same labels held as
+        # uint8 and as int32 are the same state, and folding the dtype and its
+        # raw byte width into the digest made them hash differently, so a
+        # correction could appear to have changed something it did not.
+        canonical = np.ascontiguousarray(array.astype(np.int64, copy=False))
         digest.update(name.encode("ascii"))
-        digest.update(str(contiguous.dtype).encode("ascii"))
-        digest.update(json.dumps(list(contiguous.shape)).encode("ascii"))
-        digest.update(contiguous.tobytes(order="C"))
+        digest.update(b"int64")
+        digest.update(json.dumps(list(canonical.shape)).encode("ascii"))
+        digest.update(canonical.tobytes(order="C"))
     return digest.hexdigest()
 
 

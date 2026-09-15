@@ -1002,4 +1002,7 @@ def test_gui_exposes_metadata_repair_and_read_only_review_notice():
     assert "Locate Microscope Metadata XML" in source
     assert "Set Metadata XML" in source
     assert "Reference controls report direction" in source
+    # The read-only guarantee is asserted behaviourally in
+    # tests/test_saturn_v571_overlay_read_only.py. A string in the source only
+    # proves a label exists, not that review cannot mutate state.
     assert "Overlay review is read-only" in source

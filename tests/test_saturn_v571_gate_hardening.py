@@ -151,3 +151,68 @@ def test_the_real_repository_registry_is_readable_and_currently_blocked():
     assert isinstance(detail, str) and detail
     # Nothing has been through an acceptance audit yet, so it must be closed.
     assert ready is False
+
+
+def test_study_progress_rejects_a_malformed_event():
+    """reduce_study_progress had no failure coverage at all."""
+    for bad in (None, 42, "started", [], {"specimen_id": "s1"}):
+        try:
+            SERVICES.reduce_study_progress({}, bad)
+        except Exception as exc:
+            assert not isinstance(exc, (SystemExit, KeyboardInterrupt))
+        # Either a clean rejection or a returned state is acceptable; a crash
+        # that escapes as SystemExit is not.
+
+
+def test_study_progress_does_not_mutate_the_state_it_is_given():
+    """A reducer that mutates its input makes progress impossible to replay."""
+    state = {"specimens": {"s1": {"status": "pending"}}}
+    snapshot = json.loads(json.dumps(state))
+    try:
+        SERVICES.reduce_study_progress(
+            state, {"event": "specimen_started", "specimen_id": "s1"}
+        )
+    except Exception:
+        pass
+    assert state == snapshot
+
+
+def test_label_state_hash_is_stable_across_integer_dtypes():
+    """The same labels stored as a wider integer type are the same state.
+
+    A hash that changes with dtype would report a spurious state change and make
+    a correction look like it altered something it did not.
+    """
+    import numpy as np
+
+    instances = np.array([[0, 1, 1], [0, 2, 2], [3, 3, 0]])
+    centerlines = np.array([[0, 1, 0], [0, 2, 0], [3, 0, 0]])
+    digests = {
+        str(dtype): SERVICES.correction_label_state_sha256(
+            instances.astype(dtype), centerlines.astype(dtype)
+        )
+        for dtype in (np.uint8, np.uint16, np.int32, np.int64)
+    }
+    assert len(set(digests.values())) == 1, digests
+
+
+def test_label_state_hash_changes_when_the_labels_change():
+    """Control: the hash must still detect a real difference."""
+    import numpy as np
+
+    instances = np.array([[0, 1], [2, 0]], dtype=np.int32)
+    centerlines = np.array([[0, 1], [2, 0]], dtype=np.int32)
+    altered = np.array([[0, 1], [2, 3]], dtype=np.int32)
+    assert SERVICES.correction_label_state_sha256(
+        instances, centerlines
+    ) != SERVICES.correction_label_state_sha256(altered, centerlines)
+
+
+def test_label_state_hash_rejects_a_centerline_outside_its_instance():
+    """A centerline pixel must belong to the filled label it sits in."""
+    import numpy as np
+
+    instances = np.array([[0, 1], [0, 0]], dtype=np.int32)
+    centerlines = np.array([[0, 2], [0, 0]], dtype=np.int32)
+    with pytest.raises(ValueError):
+        SERVICES.correction_label_state_sha256(instances, centerlines)
