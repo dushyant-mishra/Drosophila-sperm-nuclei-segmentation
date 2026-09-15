@@ -1,6 +1,40 @@
 # Saturn v5.7.1 Validation Report
 
-Date: 2026-08-21
+Original date: 2026-08-21
+Superseded in part: 2026-09-15
+
+## Status: partly superseded, do not cite the measurements below as current
+
+This report records the 2026-08-21 two-specimen replay. Several measurement
+definitions have changed since, so the numbers in the body describe behaviour the
+pipeline no longer produces. Sections that are superseded say so where they
+appear. What remains valid is the description of the population rules, the
+calibration and provenance requirements, and the conclusion that an independent
+audit is still required.
+
+The production gate is closed. `production_audit_gate_state` reports four
+unaccepted claims:
+
+| claim | status |
+|---|---|
+| `MEAS-BODY-WIDTH-001` | implemented, not accepted |
+| `MEAS-INTENSITY-WIDTH-001` | implemented, not audited |
+| `REPORT-BIOLOGIST-CONCISE-001` | implemented, not audited |
+| `WORKFLOW-GUI-PRIMARY-001` | implemented, not audited |
+
+Changes since this report that invalidate parts of it:
+
+- Biological width is now the background-corrected raw-signal FWHM, not the
+  mask contour chord. The mask boundary follows the training annotation
+  convention and is roughly 2.4 times the optical width of a nucleus.
+- Area and the observed-slice footprint are derived from the profile width, with
+  the filled-mask slab retained separately as a technical diagnostic.
+- Merges are flagged and split on objective branch or profile evidence rather
+  than behind a 20 um length gate, which changes `estimated_unique_nuclei`.
+- The study design accepts one reference group and several comparison groups.
+
+A superseding audit run is required against `PIPELINE-V571-PRODUCTION-001`,
+which is accepted but no longer describes current behaviour.
 
 ## Production candidate
 
@@ -58,6 +92,12 @@ Evidence:
 
 ## Final post-audit full-specimen replay
 
+> **Superseded.** These counts predate evidence-based merge splitting. On plane
+> 35 that change raised instance counts by 12.7 percent in KJ-01 and 7.1 percent
+> in WT-01, and the widths below are mask-derived. Treat the table as a record of
+> the 2026-08-21 behaviour, not as current values.
+
+
 Fresh outputs are under `scratch/v571_post_audit_remediation_pilot_run3`.
 This replay replaces length-only marker placement with objective learned-core
 evidence. A component above 20 um is split only when the core head supplies
@@ -100,23 +140,41 @@ The biological comparison is descriptive only because this pilot has one
 specimen per group. Inferential statistics are unavailable until each group
 contains at least three independent specimens.
 
-## Width plateau validation
+## Width measurement: superseded
 
-The primary track width is the subpixel perpendicular contour-chord width from
-the representative observed Z plane, not the quantized distance-transform
-median.
+> **Superseded.** This section described the subpixel mask contour chord as the
+> primary width. It is now an explicitly named technical diagnostic and does not
+> drive biological reports.
 
-| Check | KJ-01 | WT-01 |
+Primary comparative width is the background-corrected full width at half maximum
+of the raw intensity profile, sampled perpendicular to the centerline and
+restricted to the object's own instance mask. The reason for the change is that
+the mask boundary reproduces the training annotation convention rather than the
+nucleus: annotations in this project have a median width of 1.606 um against an
+optical nucleus width near 0.643 um, and the resulting bias is not constant
+between specimens.
+
+Measured on planes 34 to 36 after profile isolation was hardened:
+
+| Measurement | KJ-01 | WT-01 |
 | --- | ---: | ---: |
-| Distinct primary widths at 4 decimals | 2,362 | 1,615 |
-| Primary-width modal fraction | 3.07% | 3.84% |
-| Distinct legacy widths at 4 decimals | 52 | 52 |
-| Legacy-width modal fraction | 41.55% | 31.90% |
-| Spearman correlation with area/length width | 0.815 | 0.816 |
+| Signal-profile FWHM width, median | 0.701 um | 0.730 um |
+| Mask contour-chord width, median | 1.514 um | 1.629 um |
+| Mask to signal ratio | 2.12x | 2.29x |
 
-The legacy field retains its pixel-grid plateau for reproducibility. It is not
-the primary biological width. The new field is continuous and agrees strongly
-with an independent filled-area/length estimate.
+That the ratio differs between specimens is why the mask width cannot carry a
+genotype comparison. These figures are from three sampled planes, not a full
+stack replay, and are not a substitute for a fresh audited run.
+
+Absolute nucleus diameter is not established and must not be reported. At
+0.378 um per pixel against a 0.23 um point spread function the image is about
+3.3 times below Nyquist laterally, and a deconvolved estimate saturates near
+0.6 um, so PSF correction is disabled by default. Comparison between groups is
+supported; an absolute width claim is not.
+
+Integrated profile signal is recorded as technical quality control only. It is
+far more sensitive to real width than the half maximum but scales directly with
+staining brightness, and this study has no independent staining control.
 
 ## Report and study behavior
 
@@ -129,16 +187,35 @@ with an independent filled-area/length estimate.
 
 ## Automated validation
 
+As of 2026-09-15:
+
 - Python compilation: passed
-- Full test suite: `205 passed in 25.33s`
-- Focused gap-recovery and merge-classification tests: passed
-- Tuner self-check: passed
-- `git diff --check`: passed; line-ending conversion warnings only
+- Full test suite: `448 passed`
+- Frozen v5.7 pipeline source: unchanged, line-ending differences only
+
+Note for anyone reproducing this: a bare `python -m pytest -q` on the
+development machine reports 122 spurious errors because pytest cannot create its
+temporary directory. Pass `--basetemp` to a writable path to get a true result.
+
+The 2026-08-21 run recorded `205 passed in 25.33s`, which is retained here only
+as the historical figure.
 
 ## Decision
 
-The corrected v5.7.1 segmentation, learned-core instance separation,
-calibration, body-width measurement, morphology-neutral tracking, gap recovery,
-and report population logic pass the two-specimen production replay. A fresh
-independent seven-role audit is still required on a clean pushed commit before
-release tagging or a full biological rerun.
+**2026-08-21 decision, retained for the record.** The corrected v5.7.1
+segmentation, learned-core instance separation, calibration, body-width
+measurement, morphology-neutral tracking, gap recovery, and report population
+logic passed the two-specimen production replay, with a fresh independent
+seven-role audit still required before release tagging or a full biological
+rerun.
+
+**2026-09-15 status.** That audit has still not been run, and more now requires
+it. Biological width, area, volume, merge handling and the study design have all
+changed since, so the replay above no longer describes the pipeline. The
+production gate is closed on four unaccepted claims, and
+`PIPELINE-V571-PRODUCTION-001` needs a superseding run because its accepted state
+predates the merge-splitting change to `estimated_unique_nuclei`.
+
+No biological conclusion may rest on the numbers in this report. The current
+state of the work, including what is verified and what remains, is recorded in
+`docs/plans/2026-09-14-v571-handover-state.md`.
