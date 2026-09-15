@@ -188,10 +188,24 @@ its 7 checks fail against the previous report.
 
 ## Open items, in order
 
-1. Regenerate the stratified body-width visual evidence. It predates both the
-   profile isolation fix and evidence-based merge splitting, so it currently
-   shows numbers the pipeline no longer produces.
-2. Independent acceptance audits on a clean commit: `MEAS-INTENSITY-WIDTH-001`,
+1. The stratified body-width evidence cannot be refreshed by re-running its
+   generator. See `audits/findings/2026-09-15-stratified-evidence-is-archive-bound.md`.
+   It takes every number from a frozen replay archive last changed 2026-08-27 and
+   re-segments only to draw masks, so regenerating on commit `48977a3` produced
+   byte-identical output. The regenerated directory was deleted rather than
+   committed, because a folder stamped with a current commit but carrying August
+   numbers is worse than none. The durable fix is to have that generator measure
+   from fresh segmentation the way the intensity-width generator already does.
+   `MEAS-INTENSITY-WIDTH-001` evidence is unaffected and is current.
+2. Independent acceptance audits on a clean commit. **Claude cannot run these.**
+   The launcher requires the `codex` CLI, which is not installed on this machine,
+   and more fundamentally `AGENTS.md` forbids an implementing agent from being the
+   sole validator of its own high-risk claim. Claude implemented all of these, so
+   the audits must be run by Codex or another independent reviewer. Readiness was
+   verified instead: all five claims have required roles, all seven charters
+   exist, every evidence path resolves, and zero are dead. The working tree must
+   be clean at the time of the run or the launcher records `pre_commit` mode,
+   which cannot pass the gate. Claims to audit: `MEAS-INTENSITY-WIDTH-001`,
    `MEAS-BODY-WIDTH-001`, `REPORT-BIOLOGIST-CONCISE-001`,
    `WORKFLOW-GUI-PRIMARY-001`, and a superseding run for the accepted
    `PIPELINE-V571-PRODUCTION-001` whose behaviour has changed.
