@@ -65,3 +65,4 @@ unet25d/**/*.pth
 unet25d/**/*.npz
 training_packages/
 Kaggle notebook outputs/
+.audit_pytest_tmp/
