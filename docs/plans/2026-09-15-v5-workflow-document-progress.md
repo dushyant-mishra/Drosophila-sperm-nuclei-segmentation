@@ -104,6 +104,54 @@ Claims in the document were checked rather than assumed:
 - At the current 0.378 um pixel a 0.65 um nucleus spans under two pixels, not
   one, so the zoom guidance was corrected.
 
+## Figure-versus-caption audit, 2026-09-16
+
+The user found that in the joining figure one of the four nuclei had its link
+line drawn but none of its coloured pixels visible anywhere, and that the image
+planes were too dark to read. Both were real defects, and a review of every
+figure against its caption and the paragraph introducing it found several more.
+
+The joining figure's nucleus was being painted onto all five planes, sixty-five
+to seventy-three pixels each time. It was hidden: at a z box aspect of 0.80 the
+stacked planes overlapped so heavily that each plane concealed the far corner of
+the one below, and that nucleus sat in the concealed corner. The planes are now
+separated by construction. The code computes the box aspect from the elevation,
+azimuth and plane span so that a plane's vertical extent on screen is smaller
+than the gap to the next plane, which makes occlusion impossible rather than
+merely unlikely. Selection additionally requires every detection in a shown track
+to exceed thirty pixels, so a track that dwindles to a speck on one slice cannot
+leave its link line drawn over nothing.
+
+The darkness had the same root cause as the illegibility: the display stretch ran
+from the second to the 99.6th percentile of a mostly empty dark field. It now
+runs from the 25th to the 99.3rd with a 0.65 display gamma, which is a display
+choice only and touches nothing measured.
+
+A third defect surfaced while fixing those two. The caption claimed the slice
+spacing was drawn eleven times larger than life, but `set_box_aspect`
+renormalises the z axis, so the `exaggeration = 11.0` factor the code multiplied
+into the z data never reached the screen at all; the displayed factor was 21.9.
+The multiplier has been removed, the z data now carries true microns, and the
+caption states a factor derived from the rendered geometry, so it cannot drift
+again.
+
+Also corrected:
+
+- The clump figure's caption said recognising clumps "evens out" the correction.
+  The bars show the opposite, plus 12.7 percent in KJ against plus 7.1 percent in
+  WT. It now says the correction is larger in KJ, so recognising clumps removes a
+  shortfall that fell unevenly between the groups. Its middle panel was titled
+  "Most clumps are two nuclei", which did not describe a length histogram of all
+  559 objects; it now states that two joined nuclei land below the old trigger.
+- The withheld-width figure used internal reason codes as axis labels. They are
+  now plain language, and the caption covers both panels.
+- The hero caption claimed the neighbouring nuclei sit "barely a micron apart".
+  Measured edge to edge, the closest pair are 1.89 um apart, so the caption now
+  says under two microns.
+- Section 6.3 attributed every withheld width to a close neighbour. That is 77
+  percent of them; 16 percent are centrelines too short to sample.
+- The region figure's scale-bar label was clipped against the frame edge.
+
 ## Deferred or blocked, unchanged
 
 - The 35-specimen cohort run is deferred until the user has reviewed how the

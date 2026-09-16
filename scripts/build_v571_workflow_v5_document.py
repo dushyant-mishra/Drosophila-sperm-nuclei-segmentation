@@ -277,8 +277,8 @@ def build(output=OUTPUT):
     )
     figure(document, NEW_FIGS, "v5_fig_hero_neighbourhood.png",
            "Figure 5.2. Five neighbouring nuclei in a crowded field of KJ-01, each "
-           "measured on its own perpendicular cut. Despite sitting barely a micron "
-           "apart, they give separate and closely agreeing widths.",
+           "measured on its own perpendicular cut. The closest pair are under two "
+           "microns apart, and they still give separate, closely agreeing widths.",
            width=6.9)
     figure(document, NEW_FIGS, "v5_fig00_clean_examples.png",
            "Figure 5.3. Six well-separated nuclei with the measurement applied. "
@@ -327,12 +327,12 @@ def build(output=OUTPUT):
         "slices ends the object, and what follows is treated as a separate nucleus."
     )
     figure(document, NEW_FIGS, "v5_fig21_joining_depth.png",
-           "Figure 6.2. Left: four nuclei of KJ-01 followed through five "
-           "consecutive slices, with the detections that were judged to be the "
-           "same nucleus linked by a dashed line. Right: the movement between "
-           "neighbouring slices sits far inside the limit allowed, and joining "
-           "turns 26,651 slice-level detections into 5,766 counted nuclei in this "
-           "specimen.", width=6.9)
+           "Figure 6.2. Left: individual nuclei of KJ-01 followed through five "
+           "consecutive slices, each coloured on every plane it appears on, "
+           "with the detections judged to be the same nucleus linked by a "
+           "dashed line. Right: the movement between neighbouring slices sits "
+           "far inside the limit allowed, and joining turns 26,651 slice-level "
+           "detections into 5,766 counted nuclei in this specimen.", width=6.9)
     body(
         document,
         "Deliberately, size and shape play no part in the decision. Length, width "
@@ -377,15 +377,19 @@ def build(output=OUTPUT):
     heading(document, "6.3 Only clean measurements are reported", level=2)
     body(
         document,
-        "Where a neighbouring nucleus sits too close for a clean brightness "
-        "profile, Saturn reports no width for that object rather than reporting a "
-        "contaminated one. This affects about one object in five in this densely "
-        "packed tissue. Length and counting are unaffected, and the objects are "
-        "still counted; only the width is withheld."
+        "A width is only reported when the brightness is seen to fall to half "
+        "its peak on both sides while still inside the nucleus. Where it does "
+        "not, usually because a neighbour sits inside the profile window, "
+        "Saturn reports no width for that object rather than a contaminated "
+        "one. This affects about one object in five in this densely packed "
+        "tissue. Length and counting are unaffected and the object is still "
+        "counted; only the width is withheld."
     )
     figure(document, NEW_FIGS, "v5_fig06_availability_bias.png",
-           "Figure 6.4. The same proportion is set aside in both groups, so "
-           "comparisons between them remain balanced.")
+           "Figure 6.4. Left: why a width is withheld. In three cases out of "
+           "four the signal has not fallen to half by the edge of the nucleus, "
+           "which is what a close neighbour does. Right: the same proportion is "
+           "withheld in both groups, so comparisons between them stay balanced.")
 
     # ------------------------------------------------------------------ 7
     heading(document, "7. Every Number Saturn Reports, and How to Use It")

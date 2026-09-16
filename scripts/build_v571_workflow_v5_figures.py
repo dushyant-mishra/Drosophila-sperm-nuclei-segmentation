@@ -126,10 +126,10 @@ def fig_region_across_slices(out):
         axis.set_title("slice {}".format(z), fontsize=10, color=ACCENT)
         axis.axis("off")
     bar = 20.0 / um
-    axes[0].plot([30, 30 + bar], [first.shape[0] - 40] * 2, color="white", lw=3,
+    axes[0].plot([70, 70 + bar], [first.shape[0] - 45] * 2, color="white", lw=3,
                  solid_capstyle="butt")
-    axes[0].text(30 + bar / 2, first.shape[0] - 60, "20 um", color="white",
-                 fontsize=9, ha="center")
+    axes[0].text(70 + bar / 2, first.shape[0] - 60, "20 um", color="white",
+                 fontsize=9, ha="center", va="bottom")
     fig.suptitle(
         "The same drawn region applied to four consecutive slices",
         fontsize=12, color=ACCENT, fontweight="bold",
@@ -552,9 +552,27 @@ def fig_joining_through_depth(out):
     full = summary[summary["n_slices"] == len(planes)]["track_id"].tolist()
     members = tracked[tracked["track_id"].isin(full)]
 
-    # A window holding several nuclei that persist through the whole slab, as
-    # far apart from one another as the field allows.
-    size = 100
+    # Only tracks that are clearly visible on every plane can illustrate joining.
+    # A track whose detection shrinks to a few pixels on one slice would leave the
+    # link line drawn with nothing under it, which is exactly what the figure
+    # claims cannot happen.
+    min_pixels = 30
+    solid = []
+    for track_id, block in members.groupby("track_id"):
+        keep = True
+        for _, detection in block.iterrows():
+            z = int(detection["z_slice"])
+            if int(np.count_nonzero(labels[z] == int(detection["sperm_id"]))) < min_pixels:
+                keep = False
+                break
+        if keep:
+            solid.append(int(track_id))
+    members = members[members["track_id"].isin(solid)]
+    if members.empty:
+        return None
+
+    # A window holding several of those nuclei, as far apart as the field allows.
+    size = 72
     half = size // 2
     best = None
     for track_id, block in members.groupby("track_id"):
@@ -566,8 +584,8 @@ def fig_joining_through_depth(out):
             continue
         inside = []
         for other, other_block in members.groupby("track_id"):
-            if (other_block["centroid_y"].between(y0 + 10, y1 - 10).all()
-                    and other_block["centroid_x"].between(x0 + 10, x1 - 10).all()):
+            if (other_block["centroid_y"].between(y0 + 8, y1 - 8).all()
+                    and other_block["centroid_x"].between(x0 + 8, x1 - 8).all()):
                 inside.append(int(other))
         if len(inside) < 3:
             continue
@@ -597,14 +615,31 @@ def fig_joining_through_depth(out):
                             wspace=0.16, hspace=0.62)
 
     ax = fig.add_subplot(grid[:, 0], projection="3d")
-    exaggeration = 11.0
+    elev, azim = 14.0, -60.0
+    # Stacked image planes hide one another unless drawn far enough apart, and a
+    # nucleus lost behind the plane above would leave its link line drawn over
+    # nothing. Separate them by construction: a plane's vertical extent on screen
+    # must be smaller than the gap to the next plane.
+    radians_elev, radians_azim = np.radians(elev), np.radians(azim)
+    plane_screen_extent = np.sin(radians_elev) * (
+        abs(np.sin(radians_azim)) + abs(np.cos(radians_azim))
+    )
+    box_z = float(
+        plane_screen_extent * 1.15 * (len(planes) - 1) / np.cos(radians_elev)
+    )
     nx, ny = x1 - x0, y1 - y0
+    # How much larger than life the slice spacing appears, derived from the
+    # geometry rather than asserted, so the caption cannot drift from the figure.
+    z_exaggeration = box_z * (nx * um) / ((len(planes) - 1) * um_z)
     gx, gy = np.meshgrid((np.arange(nx) - nx / 2) * um,
                          (np.arange(ny) - ny / 2) * um)
     stack = np.stack([images[z][y0:y1, x0:x1] for z in planes])
-    lo, hi = np.percentile(stack, (2.0, 99.6))
+    lo, hi = np.percentile(stack, (25.0, 99.3))
     for position, z in enumerate(planes):
         shade = np.clip((images[z][y0:y1, x0:x1] - lo) / max(hi - lo, 1e-9), 0, 1)
+        # Display gamma only. It lifts the dim mid-tones so the nuclei are
+        # legible against the noise floor; nothing measured passes through here.
+        shade = shade ** 0.65
         colours = plt.cm.gray(shade)
         # Paint each tracked nucleus into the plane itself. Drawn as a separate
         # three-dimensional artist it disappears behind the surface at almost
@@ -618,9 +653,9 @@ def fig_joining_through_depth(out):
             if not mask.any():
                 continue
             rgb = np.array(matplotlib.colors.to_rgb(colour_of[track_id]))
-            colours[mask, :3] = rgb[None, :] * (0.55 + 0.45 * shade[mask])[:, None]
-        colours[..., 3] = 0.96
-        ax.plot_surface(gx, gy, np.full_like(gx, position * um_z * exaggeration),
+            colours[mask, :3] = rgb[None, :] * (0.65 + 0.35 * shade[mask])[:, None]
+        colours[..., 3] = 1.0
+        ax.plot_surface(gx, gy, np.full_like(gx, position * um_z),
                         facecolors=colours, shade=False, rstride=1, cstride=1,
                         linewidth=0, antialiased=False)
 
@@ -632,7 +667,7 @@ def fig_joining_through_depth(out):
             z = int(detection["z_slice"])
             px.append((float(detection["centroid_x"]) - x0 - nx / 2) * um)
             py.append((float(detection["centroid_y"]) - y0 - ny / 2) * um)
-            pz.append(planes.index(z) * um_z * exaggeration)
+            pz.append(planes.index(z) * um_z)
         # Thin and dashed: the join is the point, but it must not hide the
         # nucleus it is joining.
         line, = ax.plot(px, py, pz, "--", color=colour, lw=1.3, alpha=0.95,
@@ -641,17 +676,19 @@ def fig_joining_through_depth(out):
         dots = ax.scatter(px, py, pz, s=22, c=colour, depthshade=False,
                           edgecolors="white", linewidths=0.7)
         dots.set_zorder(21)
-        ax.text(px[-1], py[-1], pz[-1] + 0.55, str(position + 1), color="white",
+        # Label at the bottom plane: at the top the badges collide with the
+        # panel title.
+        ax.text(px[0], py[0], pz[0] - 0.09, str(position + 1), color="white",
                 fontsize=9, fontweight="bold", ha="center", va="center", zorder=30,
                 bbox=dict(boxstyle="circle,pad=0.2", fc=colour, ec="white", lw=0.8))
 
     ax.set_xlabel("x (um)", labelpad=-2, fontsize=9)
     ax.set_ylabel("y (um)", labelpad=-2, fontsize=9)
-    ax.set_zticks([i * um_z * exaggeration for i in range(len(planes))])
+    ax.set_zticks([i * um_z for i in range(len(planes))])
     ax.set_zticklabels(["slice {}".format(z) for z in planes], fontsize=8)
     ax.tick_params(axis="z", pad=6)
-    ax.view_init(elev=17, azim=-60)
-    ax.set_box_aspect((1.0, 1.0, 0.80), zoom=1.18)
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_box_aspect((1.0, 1.0, box_z), zoom=1.05)
     ax.tick_params(labelsize=8, pad=-1)
     ax.set_title("{} nuclei followed through {} slices, close up".format(
         len(order), len(planes)), fontsize=10.5, color=ACCENT, y=0.97)
@@ -714,12 +751,12 @@ def fig_joining_through_depth(out):
         "Specimen KJ-01. Left: slices {}-{}, segmented and joined with the "
         "pipeline's own code. The coloured pixels are the nucleus found on each "
         "slice and the dashed line links the ones judged to be the same nucleus. "
-        "The slice spacing is drawn {:.0f} times larger than life so the planes "
-        "can be told apart; every measurement uses the true {:.2f} um spacing. "
-        "Right: the recorded production run for the whole {}-slice stack. A "
-        "nucleus missing from a single slice can be bridged across the gap, and "
-        "nothing is invented for the missing slice.".format(
-            planes[0], planes[-1], exaggeration, um_z,
+        "The slice spacing is drawn about {:.0f} times larger than life so that "
+        "no plane can hide the one below it; every measurement uses the true "
+        "{:.2f} um spacing. Right: the recorded production run for the whole "
+        "{}-slice stack. A nucleus missing from a single slice can be bridged "
+        "across the gap, and nothing is invented for the missing slice.".format(
+            planes[0], planes[-1], z_exaggeration, um_z,
             int(run_detections["z_slice"].nunique())),
         fontsize=8.5, color=MUTED, ha="center", va="top", wrap=True)
     fig.savefig(out / "v5_fig21_joining_depth.png", dpi=225, bbox_inches="tight")
@@ -1324,7 +1361,8 @@ def fig_merge_correction(out):
     axes[1].text(5.6, 150, "old 20 um\ntrigger", fontsize=8, color=WARN)
     axes[1].set_xlabel("length of the detected object (um)")
     axes[1].set_ylabel("number of objects")
-    axes[1].set_title("Most clumps are two nuclei, not one long one", fontsize=10, color=ACCENT)
+    axes[1].set_title("Two joined nuclei land below the old 20 um trigger",
+                      fontsize=10, color=ACCENT)
     axes[1].annotate("a pair of ~8 um nuclei\nlands here", xy=(4.4, 40),
                      xytext=(1.4, 120), fontsize=8, color=ACCENT,
                      arrowprops=dict(arrowstyle="->", color=ACCENT, lw=1.1))
@@ -1336,17 +1374,19 @@ def fig_merge_correction(out):
     axes[2].set_xticks(x, ["KJ-01", "WT-01"])
     axes[2].set_ylabel("nuclei counted on one slice")
     axes[2].set_title("A more accurate count", fontsize=10, color=ACCENT)
-    axes[2].set_ylim(0, 400)
-    axes[2].legend(fontsize=8, frameon=False, loc="lower right")
+    axes[2].set_ylim(0, 470)
+    axes[2].legend(fontsize=8, frameon=False, loc="upper left")
     for i, (b, a) in enumerate(zip([292, 267], [329, 286])):
         axes[2].text(i + w / 2, a + 6, f"+{100*(a-b)/b:.1f}%", ha="center",
                      fontsize=9, fontweight="bold", color=WARN)
     return finish(
         fig, out / "v5_fig05_merge_correction.png",
-        "Median object length is 7.91 um, so a pair of touching nuclei seldom "
-        "reached the old 20 um trigger. Recognising clumps from their shape also "
-        "evens out a correction that would otherwise have been larger in one "
-        "group than the other.",
+        "Measured on 559 objects, plane 35 of one specimen per group. Median "
+        "object length is 7.91 um, so two nuclei joined end to end land near "
+        "16 um and seldom reached the old 20 um trigger: 42 objects sit in the "
+        "14 to 20 um band against 3 above it. The correction is larger in KJ "
+        "than in WT, so recognising clumps also removes a shortfall that fell "
+        "unevenly between the groups.",
     )
 
 
@@ -1354,7 +1394,9 @@ def fig_availability_bias(out):
     """The fail-closed measurement drops objects; the QC asks whether that biases groups."""
     fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.4), constrained_layout=True)
 
-    reasons = ["boundary\nclipped", "short\ncenterline", "insufficient\nprofiles"]
+    reasons = ["signal still bright\nat the edge of the nucleus",
+               "nucleus too short\nto sample",
+               "too few usable cuts"]
     shares = [76.9, 16.2, 6.9]
     axes[0].bar(reasons, shares, color=[MASK, "#f59e0b", "#fbbf24"], width=0.55)
     axes[0].set_ylabel("% of the withheld ones")
