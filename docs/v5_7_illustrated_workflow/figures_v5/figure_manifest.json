@@ -1,0 +1,114 @@
+{
+  "schema_version": "1.1",
+  "role": "document_figures",
+  "document": "Saturn_V5.7.1_Illustrated_Technical_Workflow_v5.docx",
+  "built_by": "scripts/build_v571_workflow_v5_figures.py",
+  "consumed_by": "scripts/build_v571_workflow_v5_document.py",
+  "generated_at_utc": "2026-09-17T17:58:42.039542+00:00",
+  "git_commit": "9923c573f4ded471b245cf21a316f3a79be49dfe",
+  "pipeline_sha256": "b368c7f59f353ef399a4466a196ecc47d592daaef7b3bca05288ef84b3dad445",
+  "profile_sha256": "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8",
+  "figures": [
+    {
+      "figure": "v5_fig10_region_across_slices.png",
+      "sha256": "59237aef4d4823da1584e94a987a516b45925f4fd105ab5186bbb2a0063e50c1",
+      "computed": "live",
+      "inputs": "KJ-01 slices 34-37 and its saved ROI mask",
+      "numbers": "none plotted; raw images and the drawn region only"
+    },
+    {
+      "figure": "v5_fig20_how_measured.png",
+      "sha256": "3655397864b4a74f48b046023b5ae4d5ad446d2ab1422fdd3b63f582c9b4b7cf",
+      "computed": "live",
+      "inputs": "KJ-01 slice 35, segmented by the current pipeline",
+      "numbers": "centre-line length, straight tip-to-tip distance, curvature and reported width of one selected object, all read from measure_spermatids on that plane"
+    },
+    {
+      "figure": "v5_fig21_joining_depth.png",
+      "sha256": "6e66b3e85698c69883f0c78a5957e0c497d7b66cf9af4da28fd9a353a308df92",
+      "computed": "live for the left panel, archived for the right",
+      "inputs": "KJ-01 slices 33-37 segmented and linked by track_across_slices; right-hand panels read audits/evidence/v571_rc6_candidate/provenance/tracking_replay_inputs_outputs.zip",
+      "numbers": "TRACK_MAX_DIST_UM from the production profile; 26,651 detections and 5,766 tracks counted from the recorded replay for kj_sv_40xx0.75-1"
+    },
+    {
+      "figure": "v5_fig11_processing_stages.png",
+      "sha256": "7ac3bf750fc16c0d5dc3f3b04f4c4202e2c65e95a0502140d89374e9abe0b5bc",
+      "computed": "live",
+      "inputs": "KJ-01 slice 35, intermediate arrays returned by segment_slice",
+      "numbers": "none plotted"
+    },
+    {
+      "figure": "v5_fig12_network_context.png",
+      "sha256": "5a02b87497cf1c8e1c2623f7b43d3d08587201486546fa838b902c02b7d448d7",
+      "computed": "live",
+      "inputs": "KJ-01 slices 34-36 and both network probability heads",
+      "numbers": "none plotted"
+    },
+    {
+      "figure": "v5_fig13_through_depth.png",
+      "sha256": "2c33f4c9590e884562c0c2a5eb80fef308c28c266e7a33283ef91a659b42d6bc",
+      "computed": "live",
+      "inputs": "KJ-01 slices 33-37, one small window",
+      "numbers": "none plotted"
+    },
+    {
+      "figure": "v5_fig_hero_neighbourhood.png",
+      "sha256": "7152a2b299d8d89fc6a89ca4c9d4edfd87563939f65df1e70a2185f7f5dde65b",
+      "computed": "live",
+      "inputs": "KJ-01 slice 35, segmented by the current pipeline",
+      "numbers": "reported intensity_fwhm_width_um for each nucleus shown, plus the per-cut profiles recomputed with the same rule as measure_intensity_profile_width"
+    },
+    {
+      "figure": "v5_fig00_clean_examples.png",
+      "sha256": "b927732cfd422b2bf2ccfe0ff3d2d0fbfde698fc596d23497950c5082a60571b",
+      "computed": "live",
+      "inputs": "KJ-01 and WT-01 slice 35",
+      "numbers": "reported intensity_fwhm_width_um for each panel"
+    },
+    {
+      "figure": "v5_fig01_mask_versus_signal.png",
+      "sha256": "3467aeae5c2d1350fad276d2c70baf210f394a09265ec6a1616240878840b821",
+      "computed": "archived",
+      "inputs": "docs/plans/2026-09-14-v571-handover-state.md, planes 34-36 table",
+      "numbers": "mask chord and signal FWHM medians per specimen"
+    },
+    {
+      "figure": "v5_fig02_annotation_convention.png",
+      "sha256": "434d51ce9c711d21357ef40220d74b4d58d06fc52000fc290986f6d88dc01b35",
+      "computed": "archived",
+      "inputs": "MEAS-INTENSITY-WIDTH-001 evidence and the annotation study",
+      "numbers": "optical width, human annotation median, learned mask width"
+    },
+    {
+      "figure": "v5_fig03_sampling_limit.png",
+      "sha256": "718bb1e771a52e411e464d06a084e176d4bc61a276f9d15dac6074c45635b9b5",
+      "computed": "archived",
+      "inputs": "Leica metadata for the objective; synthetic-rod recovery curve",
+      "numbers": "lateral and axial point-spread widths computed in the figure from NA 1.30, n 1.518 and 0.580 um; measured recovery of synthetic rods"
+    },
+    {
+      "figure": "v5_fig04_two_measures.png",
+      "sha256": "a3fea9db734b7fd1a9f73449212ad123d6e92f24f504672f6016705670ad47f6",
+      "computed": "archived",
+      "inputs": "sensitivity analysis recorded with MEAS-INTENSITY-WIDTH-001",
+      "numbers": "percentage response of FWHM and integrated signal"
+    },
+    {
+      "figure": "v5_fig05_merge_correction.png",
+      "sha256": "2c22befdc43e7f98652bc60fb6016a801d30ab43ecc80336272664b36af6faec",
+      "computed": "archived",
+      "inputs": "audits/findings/2026-09-14-merge-flag-length-gate.md",
+      "numbers": "0.18 and 7.51 percent flagged; the 559-object length histogram; 292 to 329 and 267 to 286 counts, all from that finding"
+    },
+    {
+      "figure": "v5_fig06_availability_bias.png",
+      "sha256": "40b630037c33da771bdb326136d51caae169ec70abf5d7d5bf0cb77d4347db04",
+      "computed": "archived",
+      "inputs": "audits/evidence/v571_width_availability_bias_20260914/, produced by scripts/validate_v571_width_availability_bias.py",
+      "numbers": "withheld fractions 0.2121 and 0.2211 with Welch p 0.325, reason shares 76.9, 16.2 and 6.9 percent over 22,381 detections"
+    }
+  ],
+  "figures_without_provenance": [],
+  "provenance": "Every value plotted was measured during the 2026-09 v5.7.1 measurement work. Figures marked live are recomputed from the named specimen and plane on each build; figures marked archived take their numbers from the audits/ record named in the entry. No value is illustrative.",
+  "audit_note": "Figures are git-ignored with the rest of the microscopy-derived imagery, so a reviewer regenerates them and compares these digests. See docs/v5_7_illustrated_workflow/README.md."
+}
