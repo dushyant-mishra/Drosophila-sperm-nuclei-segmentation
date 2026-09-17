@@ -254,7 +254,7 @@
         "Representative width and the paired centerline length come from the same observed Z plane",
         "Integrated profile signal is reported only as technical QC and never as a biological endpoint or acceptance gate",
         "The comparative-only interpretation travels with the value in calculations, tables, figure labels, and report narrative",
-        "The fraction of objects with unavailable width does not differ materially between compared groups"
+        "No differential availability is detected between compared groups: the fraction of objects with unavailable width is tested per specimen and no group difference is found, with the confidence interval on the difference reported alongside the test so the detectable effect size is visible"
       ],
       "required_roles": [
         "measurement_geometry",
@@ -268,7 +268,8 @@
         "Response compresses below roughly one micron of true width, so a real difference in the thin regime appears reduced.",
         "Integrated profile signal is far more sensitive to real width but scales directly with staining brightness. This study has no independent staining control, only same-genotype biological replicates, so integrated signal cannot separate a staining difference from a chromatin difference.",
         "Profiles clipped at the instance boundary are dropped. On KJ-01 and WT-01 planes 34 to 36 this removed about 17 percent of detections, so the measured subset is not the full detection set and its group balance must be checked.",
-        "The measurement scopes profiles to the instance mask, so it still depends on segmentation for which pixels belong to the object, even though it does not depend on the mask boundary for the width value."
+        "The measurement scopes profiles to the instance mask, so it still depends on segmentation for which pixels belong to the object, even though it does not depend on the mask boundary for the width value.",
+        "Criterion 10 requires that no differential availability is detected, not that the groups are equivalent. Two non-significant Welch tests cannot establish equivalence. On the 2026-09-14 cohort evidence the unavailable fraction differs by 0.90 percentage points with a 95 percent interval of -2.73 to +0.93, and the design detects roughly 2.5 percentage points at 80 percent power, so a smaller real imbalance would not have been found. Criterion 10 previously read 'does not differ materially', which has no defined margin and therefore could not be judged; the owner narrowed it on 2026-09-17 rather than declare a margin. Recorded in AGENT_CHANNEL.md [002] to [004]."
       ],
       "non_claims": [
         "This is not a physical or PSF-corrected nucleus diameter.",

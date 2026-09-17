@@ -282,15 +282,20 @@ What can honestly be said:
 - Availability correlates only weakly and negatively with crowding
   (Spearman -0.26) and density (-0.36), so denser specimens do not lose more.
 
-**The acceptance criterion needs a number before this can be judged.** Criterion
-10 of `MEAS-INTENSITY-WIDTH-001` reads "The fraction of objects with unavailable
-width does not differ materially between compared groups". Nobody has defined
-"materially". Until someone does, this evidence cannot be said to satisfy or fail
-it. Two ways forward, and the choice is the owner's rather than either agent's:
-declare a margin and test against it, in which case anything from plus or minus
-3 points is already supported; or narrow the criterion to "no differential
-availability detected", which this evidence does support, and say so in the
-criterion rather than leaving the stronger word standing.
+**The acceptance criterion was undefined and has now been narrowed.** Criterion
+10 of `MEAS-INTENSITY-WIDTH-001` read "The fraction of objects with unavailable
+width does not differ materially between compared groups". Nobody had defined
+"materially", so it could not be judged either way. The owner narrowed it on
+2026-09-17 rather than declare an equivalence margin. It now requires that **no
+differential availability is detected**, with the confidence interval on the
+difference reported alongside the test so the detectable effect size is visible.
+
+That is a weaker guarantee than equivalence and is recorded as such in the
+claim's `known_limitations`: a real imbalance smaller than about 2.5 percentage
+points would not have been caught by this design. The evidence above satisfies
+the criterion as it now reads. If a future study needs equivalence rather than
+absence of detection, it needs a declared margin and more sampling, not a
+reinterpretation of this evidence.
 
 **Disclosure for audit.** That run also produced a specimen-level signal-width
 group contrast, so a group difference was seen before the gate passed. It is a
