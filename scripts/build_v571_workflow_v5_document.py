@@ -388,8 +388,10 @@ def build(output=OUTPUT):
     figure(document, NEW_FIGS, "v5_fig06_availability_bias.png",
            "Figure 6.4. Left: why a width is withheld. In three cases out of "
            "four the signal has not fallen to half by the edge of the nucleus, "
-           "which is what a close neighbour does. Right: the same proportion is "
-           "withheld in both groups, so comparisons between them stay balanced.")
+           "which is what a close neighbour does. Right: the two groups lose a "
+           "similar share, within 0.9 percentage points of each other, so the "
+           "comparison between them is not being skewed by one group losing "
+           "more objects than the other.")
 
     # ------------------------------------------------------------------ 7
     heading(document, "7. Every Number Saturn Reports, and How to Use It")

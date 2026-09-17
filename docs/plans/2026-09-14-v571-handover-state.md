@@ -98,27 +98,60 @@ widths of 5, 9 and 13 px at five orientations. On a synthetic seven-pixel rod th
 chord recovers 7.0 px where the legacy median quantizes to 8.0 px. A filled
 component holding two centerlines is asserted to refuse a merged width.
 
-## Area and volume derived from the profile width: DONE (2026-09-11)
+## Signal-profile footprint kept separate from mask volume: CURRENT STATE
 
-Commit `a667696`. Rationale recorded in `audits/V5_7_1_DESIGN_DECISIONS.md`.
+Corrected 2026-09-17 after Codex challenged this section in `AGENT_CHANNEL.md`
+message [002]. The previous text described an intermediate implementation that
+no longer exists and is preserved as superseded below.
 
-`rows_from_results` built an explicit dictionary and was therefore dropping
-intensity fields the measurement stage had already computed. Those are emitted
-now, together with `profile_area_px`, which is centerline length times profile
-width. The observed-slice volume sums that footprint and falls back to the mask
-pixel count only where no profile width exists.
+**What the code does now.** Mask-derived and profile-derived quantities are
+separate, explicitly named, and neither falls back to the other:
 
-Summing mask pixels inflated volume by 2.10x on KJ-01 planes 34 to 36, because
+- `sperm_segmentation_saturnv5.7.1.py:6677` computes
+  `observed_slice_mask_volume_um3` from the filled-mask pixel sum.
+- `:6680-6685` computes `observed_slice_profile_footprint_proxy_um3` from
+  centerline length times signal width, with
+  `profile_footprint_method = "sum_length_times_signal_fwhm_observed_slices_no_fallback"`.
+- `:6895-6897` keeps `volume_um3` as an alias of the observed-slice **mask**
+  volume, with
+  `volume_method = "sum_filled_mask_area_observed_slices_no_interpolation"`.
+- `tests/test_saturn_v571_intensity_width_contract.py:115-145` asserts the
+  separation and the absence of a fallback.
+- `audits/V5_7_1_DESIGN_DECISIONS.md:59-65` states this contract correctly and
+  always did.
+
+`rows_from_results` also emits `profile_area_px`, centerline length times profile
+width, which the measurement stage had been computing and the row builder had
+been dropping.
+
+**Nothing here departs from the preservation rule in `AGENTS.md`.** Filled-mask
+area and the observed-slice mask slab sum retain their historical definitions
+under explicit names as technical diagnostics. Which quantity reaches a
+biological table is decided by the metric profile, not by deletion: the v5.7.1
+entrypoint forces `concise_v571`, whose biological set excludes both mask width
+and mask volume.
+
+### Superseded intermediate state, commit `a667696` only
+
+For the record, because the earlier version of this section described it as
+current and a reviewer may meet it in the history. `a667696` did replace
+`volume_area_px` with a profile-derived area that fell back to the mask pixel
+count where no profile width existed, and its commit message says so. The very
+next commit, `7160c32`, restructured that into the separated, no-fallback
+contract above while addressing Codex's profile-isolation audit. No released or
+audited state ever carried the fallback.
+
+The measurement that motivated the change stands and is still worth knowing:
+summing mask pixels inflates volume by 2.10x on KJ-01 planes 34 to 36, because
 the mask boundary follows the training annotation convention rather than the
-nucleus. The mask pixel count remains available as `instance_mask_area_px` for
-diagnostics.
+nucleus. That is why mask volume is a diagnostic rather than biological
+morphometry, not why it was removed; it was not removed.
 
-**This departs from the preservation rule in `AGENTS.md`** and an auditor should
-see that stated plainly: the mask-derived area and volume were replaced outright
-rather than retained as legacy fields. The owner authorised it on the grounds
-that no real biological run has been produced yet, so nothing depends on the
-superseded values, while an inflated duplicate would risk being reported by
-mistake.
+**How this error happened,** since it bears on how the rest of this document
+should be read: the section was written from the commit message of `a667696`
+rather than from the code as it stands. Commit messages describe a moment. Any
+remaining statement in this handover should be checked against current source
+before it is relied on.
 
 ## Stratified visual evidence for body width: DONE (2026-09-08)
 
@@ -209,26 +242,55 @@ Where a test guards a fix, it was checked by reintroducing the defect and
 confirming the test fails: 8 of the 20 gate-hardening assertions and 6 of the 7
 validation-report checks fail against the pre-fix code.
 
-## Availability bias check: PASSED (2026-09-14)
+## Availability bias: NO DIFFERENCE DETECTED, equivalence not established
+
+Corrected 2026-09-17 after Codex challenged this section in `AGENT_CHANNEL.md`
+message [002]. It previously read `PASSED` and concluded the bias was "shared and
+equal". Two non-significant Welch tests cannot support that: absence of a
+detected difference is not evidence of equivalence, and at n=18 against n=17 this
+design has limited power.
 
 `scripts/validate_v571_width_availability_bias.py` over all 35 specimens, three
 sampled planes each, 22381 detections. Evidence is bound into the claim under
 `audits/evidence/v571_width_availability_bias_20260914/`.
 
-| | KJ (n=18) | WT (n=17) | Welch p |
-|---|---:|---:|---:|
-| width-unavailable fraction | 0.2121 | 0.2211 | 0.325 |
-| mask-width selection bias | -0.540 um | -0.563 um | 0.305 |
+Intervals recomputed from the per-specimen CSV on 2026-09-17, because the
+p-value alone does not say what the data exclude:
 
+| | KJ (n=18) | WT (n=17) | difference | 95% CI on the difference | Welch p |
+|---|---:|---:|---:|---|---:|
+| width-unavailable fraction | 0.2121 | 0.2211 | -0.90 pp | -2.73 to +0.93 pp | 0.325 |
+| mask-width selection bias | -0.540 um | -0.563 um | +0.024 um | -0.023 to +0.070 um | 0.305 |
+
+What can honestly be said:
+
+- No differential availability was detected between the groups. The data are
+  consistent with anything from KJ being 2.7 percentage points lower to 0.9
+  points higher.
+- Equivalence is **not** established. This design can only detect a difference
+  of roughly 2.5 percentage points at 80 percent power, so a smaller real
+  imbalance would not have shown up here.
+- What the interval does support: any materiality margin of about plus or minus
+  3 percentage points or wider is consistent with this evidence. A tighter
+  margin is not.
 - Overall unavailable fraction 21.4%, of which 76.9% is boundary clipping,
   16.2% short centerline, 6.9% insufficient profiles.
 - The selection bias is negative in every one of the 35 specimens, so the dropped
   objects are consistently narrower than the measured ones and the measured
-  subset skews wide, by a similar amount in both groups.
+  subset skews wide in both groups. How closely the two groups match is bounded
+  by the interval above, not established as equal.
 - Availability correlates only weakly and negatively with crowding
   (Spearman -0.26) and density (-0.36), so denser specimens do not lose more.
-- A shared and equal bias does not distort a between-group comparison, so the
-  acceptance criterion on this claim is satisfied on this evidence.
+
+**The acceptance criterion needs a number before this can be judged.** Criterion
+10 of `MEAS-INTENSITY-WIDTH-001` reads "The fraction of objects with unavailable
+width does not differ materially between compared groups". Nobody has defined
+"materially". Until someone does, this evidence cannot be said to satisfy or fail
+it. Two ways forward, and the choice is the owner's rather than either agent's:
+declare a margin and test against it, in which case anything from plus or minus
+3 points is already supported; or narrow the criterion to "no differential
+availability detected", which this evidence does support, and say so in the
+criterion rather than leaving the stronger word standing.
 
 **Disclosure for audit.** That run also produced a specimen-level signal-width
 group contrast, so a group difference was seen before the gate passed. It is a

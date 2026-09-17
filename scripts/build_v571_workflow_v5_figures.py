@@ -1414,16 +1414,21 @@ def fig_availability_bias(out):
                 width=0.45)
     axes[1].set_ylabel("fraction withheld")
     axes[1].set_ylim(0, 0.33)
-    axes[1].set_title("Withheld at the same rate in both groups,"
-                      " so comparisons stay balanced",
+    axes[1].set_title("No difference between the groups detected",
                       fontsize=10, color=ACCENT)
-    axes[1].text(0.5, 0.29, "Welch p = 0.33", ha="center", fontsize=9, color=SIGNAL,
-                 fontweight="bold")
+    # Report the interval rather than the p-value alone. A non-significant test
+    # says a difference was not detected; only the interval says how large a
+    # difference the data still allow.
+    axes[1].text(0.5, 0.30, "difference 0.9 points, 95% CI -2.7 to +0.9",
+                 ha="center", fontsize=8.5, color=SIGNAL, fontweight="bold")
     return finish(
         fig, out / "v5_fig06_availability_bias.png",
-        "All 35 specimens of the study, 22,381 detections. The rate is the same "
-        "in both groups, which is what keeps a between-group comparison balanced; "
-        "the check is run on every study rather than assumed.",
+        "All 35 specimens of the study, 22,381 detections. The two groups lose a "
+        "similar share: the difference is 0.9 percentage points, and the data "
+        "allow anything from 2.7 points lower to 0.9 points higher. That is "
+        "small next to the effects being looked for, and the check is re-run on "
+        "every study rather than assumed, but it is a bound rather than proof "
+        "that the two rates are identical.",
     )
 
 
