@@ -9,7 +9,9 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1425,6 +1427,121 @@ def fig_availability_bias(out):
     )
 
 
+# Where each figure's numbers come from. An auditor should be able to check any
+# plotted value without reading the plotting code: either it is recomputed live
+# from the named specimen and plane, or it is a figure already recorded under
+# audits/. Figures that plot no numbers say so.
+FIGURE_PROVENANCE = {
+    "v5_fig10_region_across_slices.png": {
+        "computed": "live",
+        "inputs": "KJ-01 slices 34-37 and its saved ROI mask",
+        "numbers": "none plotted; raw images and the drawn region only",
+    },
+    "v5_fig20_how_measured.png": {
+        "computed": "live",
+        "inputs": "KJ-01 slice 35, segmented by the current pipeline",
+        "numbers": (
+            "centre-line length, straight tip-to-tip distance, curvature and "
+            "reported width of one selected object, all read from "
+            "measure_spermatids on that plane"
+        ),
+    },
+    "v5_fig21_joining_depth.png": {
+        "computed": "live for the left panel, archived for the right",
+        "inputs": (
+            "KJ-01 slices 33-37 segmented and linked by track_across_slices; "
+            "right-hand panels read "
+            "audits/evidence/v571_rc6_candidate/provenance/"
+            "tracking_replay_inputs_outputs.zip"
+        ),
+        "numbers": (
+            "TRACK_MAX_DIST_UM from the production profile; 26,651 detections "
+            "and 5,766 tracks counted from the recorded replay for "
+            "kj_sv_40xx0.75-1"
+        ),
+    },
+    "v5_fig11_processing_stages.png": {
+        "computed": "live",
+        "inputs": "KJ-01 slice 35, intermediate arrays returned by segment_slice",
+        "numbers": "none plotted",
+    },
+    "v5_fig12_network_context.png": {
+        "computed": "live",
+        "inputs": "KJ-01 slices 34-36 and both network probability heads",
+        "numbers": "none plotted",
+    },
+    "v5_fig13_through_depth.png": {
+        "computed": "live",
+        "inputs": "KJ-01 slices 33-37, one small window",
+        "numbers": "none plotted",
+    },
+    "v5_fig_hero_neighbourhood.png": {
+        "computed": "live",
+        "inputs": "KJ-01 slice 35, segmented by the current pipeline",
+        "numbers": (
+            "reported intensity_fwhm_width_um for each nucleus shown, plus the "
+            "per-cut profiles recomputed with the same rule as "
+            "measure_intensity_profile_width"
+        ),
+    },
+    "v5_fig00_clean_examples.png": {
+        "computed": "live",
+        "inputs": "KJ-01 and WT-01 slice 35",
+        "numbers": "reported intensity_fwhm_width_um for each panel",
+    },
+    "v5_fig01_mask_versus_signal.png": {
+        "computed": "archived",
+        "inputs": "docs/plans/2026-09-14-v571-handover-state.md, planes 34-36 table",
+        "numbers": "mask chord and signal FWHM medians per specimen",
+    },
+    "v5_fig02_annotation_convention.png": {
+        "computed": "archived",
+        "inputs": "MEAS-INTENSITY-WIDTH-001 evidence and the annotation study",
+        "numbers": "optical width, human annotation median, learned mask width",
+    },
+    "v5_fig03_sampling_limit.png": {
+        "computed": "archived",
+        "inputs": "Leica metadata for the objective; synthetic-rod recovery curve",
+        "numbers": (
+            "lateral and axial point-spread widths computed in the figure from "
+            "NA 1.30, n 1.518 and 0.580 um; measured recovery of synthetic rods"
+        ),
+    },
+    "v5_fig04_two_measures.png": {
+        "computed": "archived",
+        "inputs": "sensitivity analysis recorded with MEAS-INTENSITY-WIDTH-001",
+        "numbers": "percentage response of FWHM and integrated signal",
+    },
+    "v5_fig05_merge_correction.png": {
+        "computed": "archived",
+        "inputs": "audits/findings/2026-09-14-merge-flag-length-gate.md",
+        "numbers": (
+            "0.18 and 7.51 percent flagged; the 559-object length histogram; "
+            "292 to 329 and 267 to 286 counts, all from that finding"
+        ),
+    },
+    "v5_fig06_availability_bias.png": {
+        "computed": "archived",
+        "inputs": (
+            "audits/evidence/v571_width_availability_bias_20260914/, produced by "
+            "scripts/validate_v571_width_availability_bias.py"
+        ),
+        "numbers": (
+            "withheld fractions 0.2121 and 0.2211 with Welch p 0.325, reason "
+            "shares 76.9, 16.2 and 6.9 percent over 22,381 detections"
+        ),
+    },
+}
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1048576), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default=str(ROOT / "docs" / "v5_7_illustrated_workflow" / "figures_v5"))
@@ -1448,22 +1565,60 @@ def main(argv=None):
         fig_merge_correction(out),
         fig_availability_bias(out),
     ]
+    built = [name for name in built if name]
+
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+    except Exception:  # a checkout without git is still worth a manifest
+        commit = "unavailable"
+    pipeline = ROOT / "sperm_segmentation_saturnv5.7.1.py"
+    profile = ROOT / "production_profiles" / "saturn_v5_7_1_model_c_epoch003.json"
+
+    records = []
+    for name in built:
+        entry = {"figure": name, "sha256": _sha256(out / name)}
+        entry.update(FIGURE_PROVENANCE.get(name, {"computed": "unrecorded"}))
+        records.append(entry)
+    missing = sorted(set(built) - set(FIGURE_PROVENANCE))
+    if missing:
+        # A figure with no provenance entry cannot be audited, so say so loudly
+        # in the manifest rather than letting it pass unnoticed.
+        print("  WARNING: no provenance recorded for", ", ".join(missing))
+
     (out / "figure_manifest.json").write_text(
         json.dumps(
             {
+                "schema_version": "1.1",
+                "role": "document_figures",
+                "document": "Saturn_V5.7.1_Illustrated_Technical_Workflow_v5.docx",
+                "built_by": "scripts/build_v571_workflow_v5_figures.py",
+                "consumed_by": "scripts/build_v571_workflow_v5_document.py",
                 "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-                "figures": built,
+                "git_commit": commit,
+                "pipeline_sha256": _sha256(pipeline) if pipeline.is_file() else None,
+                "profile_sha256": _sha256(profile) if profile.is_file() else None,
+                "figures": records,
+                "figures_without_provenance": missing,
                 "provenance": (
                     "Every value plotted was measured during the 2026-09 v5.7.1 "
-                    "measurement work and is recorded under audits/evidence or "
-                    "audits/findings. No value is illustrative."
+                    "measurement work. Figures marked live are recomputed from "
+                    "the named specimen and plane on each build; figures marked "
+                    "archived take their numbers from the audits/ record named "
+                    "in the entry. No value is illustrative."
+                ),
+                "audit_note": (
+                    "Figures are git-ignored with the rest of the "
+                    "microscopy-derived imagery, so a reviewer regenerates them "
+                    "and compares these digests. See "
+                    "docs/v5_7_illustrated_workflow/README.md."
                 ),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    built = [name for name in built if name]
     for name in built:
         print("  wrote", name)
     print(f"\n{len(built)} figures in {out}")

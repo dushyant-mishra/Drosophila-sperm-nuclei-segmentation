@@ -186,6 +186,52 @@ rewritten, and the live gate state is stated at the top.
 checking it against the repository's own records rather than fixed figures; 6 of
 its 7 checks fail against the previous report.
 
+## Illustrated workflow document v5: DONE (2026-09-16), reviewable
+
+`Saturn_V5.7.1_Illustrated_Technical_Workflow_v5.docx` replaces the v4 document.
+It is generated, never hand-edited, by exactly two files:
+
+- `scripts/build_v571_workflow_v5_figures.py` renders every figure into
+  `docs/v5_7_illustrated_workflow/figures_v5/` and writes `figure_manifest.json`.
+- `scripts/build_v571_workflow_v5_document.py` assembles the tracked `.docx`;
+  the section text lives inline in that script.
+
+Figures must be built first, because the document builder raises
+`FileNotFoundError` on a missing figure. The figure build takes about six
+minutes on CPU; close the document in Word first or the save fails with
+`PermissionError`.
+
+`docs/v5_7_illustrated_workflow/README.md` is the audit entry point. It names the
+inputs, the build commands, and the four checks a reviewer should run. The
+figures stay git-ignored with the rest of the microscopy-derived imagery, so a
+reviewer regenerates them and compares the SHA-256 digests the manifest records,
+alongside the git commit and the digests of the pipeline and production profile
+the figures were built from. The manifest also records, per figure, whether its
+numbers are recomputed live from a named specimen and plane or transcribed from a
+named record under `audits/`.
+
+`docs/plans/2026-09-15-v5-workflow-document-progress.md` records what changed
+from v4 figure by figure, and which claims in the text were checked against the
+code before they were written. Several first drafts were wrong and are recorded
+there, notably that area similarity contributes to joining, which it does not
+because `ASSIGNMENT_LENGTH_WEIGHT`, `ASSIGNMENT_WIDTH_WEIGHT` and
+`ASSIGNMENT_AREA_WEIGHT` are zero whenever `ANALYSIS_MODE` is comparative.
+
+`audits/findings/2026-09-16-v5-document-figure-caption-audit.md` records a defect
+class worth carrying forward: a figure script exiting zero proves only that a
+file was written, not that the picture supports its caption. One nucleus was
+being painted onto all five planes of the joining figure and then hidden behind
+the plane above, and the caption's stated depth exaggeration was wrong by a
+factor of two because `set_box_aspect` renormalises the z axis. Both are fixed by
+construction rather than by tuning.
+
+No pipeline measurement changed for any of this, so no entry in
+`audits/claims_registry.json` is affected and no claim state moved. What the
+document needs is an editorial and provenance review rather than a measurement
+audit: that every figure supports its caption, that every plotted number traces
+to the record the manifest names, and that the absolute-versus-comparison
+classification in section 7 matches what the code computes.
+
 ## Open items, in order
 
 1. The stratified body-width evidence cannot be refreshed by re-running its
