@@ -1,8 +1,28 @@
-# Saturn v5.7.1 handover state (2026-09-14)
+# Saturn v5.7.1 handover state (2026-09-14, extended through 2026-09-17)
 
 Peer agents: Claude and Codex alternate implementation and independent audit.
 This file records what is done, what is verified, and what remains, so either
-agent can take over without replaying the conversation.
+agent can take over without replaying the conversation. Everything below was
+implemented by Claude, so under the `AGENTS.md` rule that an implementing agent
+cannot be the sole validator of its own high-risk claim, all of it needs an
+independent reviewer.
+
+## Where to start, in order of risk
+
+| What | Section | Why it needs a look |
+|---|---|---|
+| Merge flagging and splitting | Merges counted as single nuclei | Changes `estimated_unique_nuclei`, a primary biological metric, against an already accepted claim. Needs a superseding run. |
+| Area and volume from profile width | Area and volume derived from the profile width | Replaces mask-derived values outright rather than keeping them as legacy fields, which departs from `AGENTS.md` with owner authorisation. |
+| Intensity-profile width | Completed and verified since the Codex audit | The primary width now presented biologically. Registered as `MEAS-INTENSITY-WIDTH-001`, never audited. |
+| Classical body width by chord | Classical body width measured by chord | Removes a silent legacy fallback from unqualified width fields. |
+| Multi-group study design | Phase 3 pipeline side, then Phase 3 report side | Changes a group-comparison estimand and the BH family. |
+| Production gate hardening | Gate and GUI hardening | A gate that raised instead of returning a verdict was not fail-closed. |
+| The v5 illustrated document | Illustrated workflow document v5 | Needs editorial and provenance review, not a measurement audit. |
+
+Findings raised and remediated, each with its own record under
+`audits/findings/`: the merge-flag length gate (2026-09-14), the stratified
+evidence being archive-bound (2026-09-15), and figures asserting what their
+captions claimed (2026-09-16).
 
 ## Completed and verified since the Codex audit
 
@@ -47,6 +67,147 @@ agent can take over without replaying the conversation.
   volume. No fix was needed.
 - Claude's earlier "26% -> 3.1% merge rate" was measured before the isolation fix
   and should not be cited. The current figures are 3.4% and 5.4% above.
+
+## Classical body width measured by chord: DONE (2026-09-08), validated
+
+Commit `982f038`, with geometry validation in `646af0d`.
+
+`rows_from_results` previously wrote the quantized distance-transform median
+into the unqualified `width_px`, `width_um` and `length_width_ratio` whenever a
+classical detection had no contour chord, so a consumer reading "width" could
+receive either definition without being told which. The subpixel contour-chord
+measurement now covers classical detections too, and the fallback is gone:
+
+```python
+primary_width_px = body_width_px if body_width_available else np.nan
+```
+
+A filled mask holding more than one pruned centerline, a degenerate mask, or a
+disabled measurement now report the width as unavailable with a stated reason
+rather than substituting the legacy value. The slender-area estimate follows the
+same primary width, so it can no longer mix a chord length with a
+distance-transform width, and the legacy back-fill no longer relabels a chord
+value as distance-transform legacy.
+
+Verified against known geometry rather than only against the existing suite.
+`scripts/validate_v571_body_width.py` now drives `measure_spermatids` over
+rotated rectangles of known width through the classical path, not just the chord
+kernel on bare masks. The classical path clears the bar the U-Net path already
+met: maximum absolute error 0.435 px and maximum rotation spread 0.441 px across
+widths of 5, 9 and 13 px at five orientations. On a synthetic seven-pixel rod the
+chord recovers 7.0 px where the legacy median quantizes to 8.0 px. A filled
+component holding two centerlines is asserted to refuse a merged width.
+
+## Area and volume derived from the profile width: DONE (2026-09-11)
+
+Commit `a667696`. Rationale recorded in `audits/V5_7_1_DESIGN_DECISIONS.md`.
+
+`rows_from_results` built an explicit dictionary and was therefore dropping
+intensity fields the measurement stage had already computed. Those are emitted
+now, together with `profile_area_px`, which is centerline length times profile
+width. The observed-slice volume sums that footprint and falls back to the mask
+pixel count only where no profile width exists.
+
+Summing mask pixels inflated volume by 2.10x on KJ-01 planes 34 to 36, because
+the mask boundary follows the training annotation convention rather than the
+nucleus. The mask pixel count remains available as `instance_mask_area_px` for
+diagnostics.
+
+**This departs from the preservation rule in `AGENTS.md`** and an auditor should
+see that stated plainly: the mask-derived area and volume were replaced outright
+rather than retained as legacy fields. The owner authorised it on the grounds
+that no real biological run has been produced yet, so nothing depends on the
+superseded values, while an inflated duplicate would risk being reported by
+mistake.
+
+## Stratified visual evidence for body width: DONE (2026-09-08)
+
+Commit `b50347f`, closing the third blocker from
+`20260828-v571-body-width-acceptance-rc2`.
+
+The generator rendered a single cleanest track per specimen, chosen by excluding
+branched centerlines, morphology warnings, suspected merges and anything outside
+a narrow area and ratio band. Evidence curated to well-behaved objects cannot
+falsify a measurement. Selection is now one exemplar per category: clean,
+morphology warning, branched centerline, suspected merge, width unavailable,
+short track, and the narrowest and widest measured widths. A category with no
+eligible track is recorded as absent rather than quietly skipped, and a track
+that fresh segmentation does not reproduce is recorded rather than aborting the
+run.
+
+Coverage went from two tracks and four panels to sixteen tracks and thirty-two
+panels across both specimens, spanning widths from 0.379 to 6.118 um.
+
+The widest exemplar is itself a finding for review: WT-01 track 2372 at 6.118 um
+is several overlapping filaments in one filled mask and was **not** flagged as a
+suspected merge, so the upper tail of the width distribution can contain
+unflagged merges. That observation is what later led to the merge-flag finding
+below.
+
+Note the limitation recorded separately in
+`audits/findings/2026-09-15-stratified-evidence-is-archive-bound.md`: this
+generator takes its numbers from a frozen replay archive and re-segments only to
+draw masks, so it cannot be refreshed by re-running it.
+
+## Unattended reporting, and the PDF error the owner kept seeing: FIXED (2026-09-08)
+
+Also commit `982f038`. The owner reported a recurring "PDF Report failed to
+generate completely" dialog during runs.
+
+Two distinct defects sat behind it, both in paths reachable from batch and
+multi-sample study runs:
+
+- **Modal dialogs in unattended runs.** The Excel, PDF and PowerPoint generators
+  raised `messagebox` warnings unconditionally. In an overnight cohort run that
+  blocks until somebody dismisses it, and in a test run it pushes dialogs onto
+  the operator's screen. `notify_report_warning` now prints the warning always
+  and shows a modal only when a Tk root already exists.
+- **A viewer lock discarding a completed report.** On Windows an open PDF viewer
+  holds an exclusive lock, and matplotlib opens the file lazily on the first
+  `savefig`, so the `PermissionError` surfaced deep inside rendering and threw
+  away the report of an analysis that had already finished.
+  `resolve_writable_pdf_path` probes the target first and falls back to a
+  timestamped sibling. A missing parent directory is deliberately not treated as
+  a lock; it is left to raise with its own context.
+
+## Audit evidence images were being dropped by .gitignore: FIXED (2026-09-14)
+
+Commit `0a0011c`. `.gitignore` excluded `*.png` with only a
+`docs/readme_assets` exception, so every figure written into `audits/evidence`
+was dropped by a plain `git add` and only the manifests describing them were
+committed. Fifty-four evidence images from earlier work are tracked, so they must
+have been force-added individually, which is why the omission went unnoticed.
+
+This was not cosmetic. `visual_evidence` is a required review role for both width
+claims, the manifests reference each figure by SHA-256, and
+`scripts/validate_v571_evidence_provenance.py` checks those hashes against git
+blobs, so an auditor cloning the repository would have found manifests describing
+figures that were not there. Negations for `audits/evidence/**/*.png` and
+`audits/runs/**/*.png` prevent a recurrence, and the sixty missing figures were
+committed. Verified before committing that all 104 manifest-referenced artifacts
+resolve and every recorded SHA-256 matches the file on disk.
+
+## Test coverage added alongside this work
+
+The suite is 466 passing tests. Ten files were added, 88 test functions, each
+covering a path that previously had none:
+
+| File | Tests | Covers |
+|---|---:|---|
+| `test_saturn_v571_classical_body_width.py` | 9 | chord routing on the classical path, refusal instead of legacy fallback |
+| `test_saturn_v571_intensity_width_contract.py` | 5 | the emitted intensity-width fields and their unavailable reasons |
+| `test_v571_width_availability_bias.py` | 9 | the cohort availability-bias validator |
+| `test_saturn_v571_merge_evidence.py` | 13 | branch-node and bimodal merge evidence, and the additive rule |
+| `test_saturn_v571_multigroup_design.py` | 14 | one reference and N comparisons, and both BH families |
+| `test_saturn_v571_gate_hardening.py` | 16 | the production gate against every malformed registry shape |
+| `test_saturn_v571_overlay_read_only.py` | 6 | overlay review cannot mutate state, asserted behaviourally |
+| `test_saturn_v571_pdf_report_locking.py` | 5 | the viewer-lock fallback |
+| `test_saturn_v571_report_notifications.py` | 4 | no modal dialogs without an interactive session |
+| `test_v571_validation_report_currency.py` | 7 | the validation report against the repository's own records |
+
+Where a test guards a fix, it was checked by reintroducing the defect and
+confirming the test fails: 8 of the 20 gate-hardening assertions and 6 of the 7
+validation-report checks fail against the pre-fix code.
 
 ## Availability bias check: PASSED (2026-09-14)
 
@@ -280,6 +441,36 @@ unvalidated and therefore disabled.
   study; same-genotype specimens are biological replicates, not a calibration.
 - No genotype name may be hard-coded. Group identity comes from the manifest.
 - Nothing is pushed, merged, or tagged until the audit gate genuinely passes.
+
+## Registry and gate state as of 2026-09-17
+
+Verified live, not transcribed from memory:
+
+```
+PIPELINE-V571-PRODUCTION-001     accepted      latest_audit accepted
+MEAS-BODY-WIDTH-001              implemented   latest_audit not_accepted
+MEAS-INTENSITY-WIDTH-001         implemented   never audited
+REPORT-BIOLOGIST-CONCISE-001     implemented   never audited
+WORKFLOW-GUI-PRIMARY-001         implemented   never audited
+POP-SHORTTRACK-001               implemented   never audited
+WORKFLOW-MANUAL-CORRECTION-001   proposed      never audited, disabled by design
+VOL-3DROI-001                    proposed      never audited, unimplemented
+```
+
+`production_audit_gate_state(Path('.'))` returns:
+
+```
+(False, 'Required scientific claims are not accepted: MEAS-BODY-WIDTH-001:
+implemented (not_accepted); MEAS-INTENSITY-WIDTH-001: implemented (not audited);
+REPORT-BIOLOGIST-CONCISE-001: implemented (not audited); WORKFLOW-GUI-PRIMARY-001:
+implemented (not audited)')
+```
+
+The gate is correctly closed. `PIPELINE-V571-PRODUCTION-001` still reads
+`accepted`, but the behaviour behind it has changed since that acceptance:
+merge flagging and splitting now alter `estimated_unique_nuclei`, and area and
+volume are derived from the profile width rather than mask pixels. That claim
+therefore needs a superseding run rather than resting on the existing verdict.
 
 ## Verification commands
 
