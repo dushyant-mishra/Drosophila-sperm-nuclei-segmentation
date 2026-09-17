@@ -24,6 +24,12 @@ optical planes with the production network. The document build takes seconds.
 Word holds an exclusive lock on the `.docx` while it is open, so close the
 document before rebuilding or the save fails with `PermissionError`.
 
+Rebuild deliberately rather than habitually. The figures are tracked binaries of
+about six megabytes in total, and PNGs do not delta well, so every regeneration
+that gets committed adds roughly that much to history whether or not the pixels
+changed. Regenerate when the code or the data behind a figure changes, not to
+refresh a timestamp.
+
 ## What the figures are built from
 
 Inputs, all resolved by the scripts themselves:
@@ -48,12 +54,20 @@ and `segment_plane`, so figures and audit evidence segment the same way.
 
 ## Auditing the figures
 
-The figures are git-ignored, along with the rest of the microscopy-derived
-imagery in this repository, so there is nothing to diff in a pull request. The
-embedded copies inside the tracked `.docx` are the shipped artifact. To audit:
+The figures and their manifest are tracked, so a clean clone carries the review
+evidence and a change to a figure shows up as a diff. That was not always so:
+until 2026-09-17 this directory was git-ignored, which left the README telling an
+auditor to verify artifacts that a clone did not contain. To audit:
 
-1. Regenerate with the command above.
-2. Compare each digest against `figures[].sha256` in `figure_manifest.json`.
+1. Read the tracked figures directly, and for a change, diff them. The digests in
+   `figure_manifest.json` must match the tracked files, and
+   `tests/test_v571_workflow_figure_manifest.py` enforces that plus the fact that
+   every figure is known to Git.
+2. To confirm the figures still follow from the code rather than only from each
+   other, regenerate with the command above and compare each digest against
+   `figures[].sha256`. The test cannot do this for you: it checks that the
+   manifest matches the files on disk, not that either follows from the current
+   figure script, because regenerating takes about six minutes.
    Rendering is byte-reproducible: re-running a figure in the same environment
    reproduces the recorded digest exactly, and this was confirmed on both an
    archived figure and a live-segmented one, so network inference on CPU is
