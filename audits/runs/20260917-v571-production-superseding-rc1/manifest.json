@@ -1,0 +1,32 @@
+﻿{
+    "schema_version":  "1.0",
+    "audit_run_id":  "20260917-v571-production-superseding-rc1",
+    "claim_id":  "PIPELINE-V571-PRODUCTION-001",
+    "reviewed_commit":  "f2c754f092eb348885ff15e9b6408dd77bc1ed3c",
+    "branch":  "feature/v5.7.1-annotation-tolerant-unet",
+    "dirty_worktree":  false,
+    "working_tree_status":  [
+
+                            ],
+    "mode":  "acceptance_candidate",
+    "roles":  [
+                  "measurement_geometry",
+                  "biological_validity",
+                  "calibration_provenance",
+                  "software_reproducibility",
+                  "statistics_reporting",
+                  "visual_evidence",
+                  "repository_release"
+              ],
+    "started_at_utc":  "2026-09-17T18:20:30.2239668Z",
+    "completed_at_utc":  "2026-09-17T18:24:08.4381996Z",
+    "role_exit_codes":  {
+                            "measurement_geometry":  1,
+                            "biological_validity":  1,
+                            "calibration_provenance":  1,
+                            "software_reproducibility":  1,
+                            "statistics_reporting":  1,
+                            "visual_evidence":  1,
+                            "repository_release":  1
+                        }
+}
