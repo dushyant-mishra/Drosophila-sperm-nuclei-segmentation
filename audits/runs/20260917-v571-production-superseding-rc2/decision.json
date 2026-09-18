@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260917-v571-production-superseding-rc2",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "681a5f341709262d6ed2d473846d6432f7b7a03f",
+  "gate_result": "failed",
+  "decision": "not_accepted",
+  "decided_by": "audit-gate-coordinator",
+  "decision_date": "2026-09-18",
+  "review_files": [
+    "reviews/measurement_geometry.json",
+    "reviews/biological_validity.json",
+    "reviews/calibration_provenance.json",
+    "reviews/software_reproducibility.json",
+    "reviews/statistics_reporting.json",
+    "reviews/visual_evidence.json",
+    "reviews/repository_release.json"
+  ],
+  "accepted_limitations": [],
+  "blocking_findings": [
+    "Largest-area representative-plane policy and primary length-width pairing are inconsistent when signal width is unavailable",
+    "Production wrapper, CLI, and programmatic entry points do not enforce one canonical audit gate",
+    "Leica metadata and source TIFF, ROI, exclusion-mask, profile, and checkpoint identities are not all frozen in run provenance",
+    "The study workflow rejects multiple comparison groups supported by the reporting design",
+    "Retained visual, tracking, full-stack, and cross-format report evidence predates geometry-changing production behavior",
+    "The reviewed candidate is not yet bound to a completed superseding decision and published immutable release identity"
+  ],
+  "required_follow_up": [
+    "Keep this failed audit append-only and do not treat the prior acceptance as current",
+    "Repair representative-plane selection and ensure primary signal width and length come from the same observed Z plane",
+    "Enforce the canonical production gate consistently in GUI, CLI, batch, study, and programmatic entry points",
+    "Require or explicitly override Leica metadata and freeze hashes for metadata, ordered source images, ROI, exclusion mask, profile, and checkpoint",
+    "Route all declared comparison groups through the production report generator",
+    "Generate focused current-commit merge, split, tracking, and report-consistency evidence before a new full-stack replay",
+    "Run a clean-commit superseding audit after remediation; do not merge or tag a production release until it passes"
+  ],
+  "supersedes_decision": "audits/runs/20260827-v571-remediation-acceptance-rc7/decision.json"
+}

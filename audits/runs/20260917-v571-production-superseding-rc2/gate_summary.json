@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "audit_run_id": "20260917-v571-production-superseding-rc2",
+  "claim_id": "PIPELINE-V571-PRODUCTION-001",
+  "reviewed_commit": "681a5f341709262d6ed2d473846d6432f7b7a03f",
+  "mode": "acceptance_candidate",
+  "gate_passed": false,
+  "required_roles": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "received_roles": [
+    "biological_validity",
+    "calibration_provenance",
+    "measurement_geometry",
+    "repository_release",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence"
+  ],
+  "verdicts": {
+    "biological_validity": "conditional",
+    "calibration_provenance": "fail",
+    "measurement_geometry": "fail",
+    "repository_release": "fail",
+    "software_reproducibility": "fail",
+    "statistics_reporting": "fail",
+    "visual_evidence": "fail"
+  },
+  "required_roles_not_passed": [
+    "measurement_geometry",
+    "biological_validity",
+    "calibration_provenance",
+    "software_reproducibility",
+    "statistics_reporting",
+    "visual_evidence",
+    "repository_release"
+  ],
+  "blocking_findings": [
+    {
+      "role": "measurement_geometry",
+      "title": "Largest-area representative plane is bypassed when its signal width is missing"
+    },
+    {
+      "role": "measurement_geometry",
+      "title": "Primary summaries can pair signal width with length from a different Z plane"
+    },
+    {
+      "role": "measurement_geometry",
+      "title": "Cited validation evidence predates the current measurement implementation"
+    },
+    {
+      "role": "biological_validity",
+      "title": "Current production semantics lack a commit-bound full-stack biological replay and report package"
+    },
+    {
+      "role": "calibration_provenance",
+      "title": "Retained execution evidence is not bound to the reviewed production pipeline"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Production wrapper weakens the canonical audit gate"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "CLI and programmatic execution bypass the GUI production gate"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "Retained image evidence is not bound to the reviewed pipeline blob"
+    },
+    {
+      "role": "software_reproducibility",
+      "title": "The live production gate is closed"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "Production study workflow rejects the supported multigroup design"
+    },
+    {
+      "role": "statistics_reporting",
+      "title": "Cross-format validation evidence is stale relative to the reviewed reporting contract"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Visual evidence predates geometry-changing merge and split logic"
+    },
+    {
+      "role": "visual_evidence",
+      "title": "Tracking panels replay obsolete 2D detections"
+    },
+    {
+      "role": "repository_release",
+      "title": "The reviewed commit is not published to its configured upstream"
+    },
+    {
+      "role": "repository_release",
+      "title": "No completed superseding audit gate or decision exists"
+    },
+    {
+      "role": "repository_release",
+      "title": "Validation is not durably bound to reviewed commit 681a5f3"
+    }
+  ],
+  "validation_errors": []
+}
