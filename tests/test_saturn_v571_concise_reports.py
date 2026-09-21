@@ -29,6 +29,7 @@ def primary_tracks():
             "representative_signal_profile_fwhm_width_um": [0.8, 0.9, 1.4],
             "length_signal_width_ratio": [10.0, 11.1, 14.3],
             "representative_section_tortuosity": [1.0, 1.1, 2.0],
+            "representative_signal_profile_tortuosity": [1.0, 1.1, 2.0],
             "tortuosity_3d": [1.8, 2.0, 3.0],
             "projection_z_extent_um": [9.0, 11.0, 22.0],
             "observed_slab_effective_thickness_um": [3.0, 3.2, 6.0],

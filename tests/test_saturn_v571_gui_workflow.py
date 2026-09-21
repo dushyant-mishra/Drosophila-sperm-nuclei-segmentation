@@ -524,6 +524,9 @@ def test_completion_inventory_authenticates_every_settings_manifest_file(tmp_pat
 def test_batch_lifecycle_marker_records_complete_and_stopped(tmp_path, monkeypatch):
     saturn = load_saturn_v571()
     monkeypatch.setattr(
+        saturn, "production_audit_gate_state", lambda: (True, "accepted")
+    )
+    monkeypatch.setattr(
         saturn,
         "_pipeline_runtime_identity",
         lambda: {"runtime_identity_sha256": "a" * 64},
@@ -811,6 +814,9 @@ def test_preview_output_directory_never_reuses_prior_run(tmp_path):
 
 def test_stopped_slice_never_marks_specimen_complete(tmp_path, monkeypatch):
     saturn = load_saturn_v571()
+    monkeypatch.setattr(
+        saturn, "production_audit_gate_state", lambda: (True, "accepted")
+    )
     row = {
         "include": True,
         "sample_id": "sample-01",
@@ -878,6 +884,9 @@ def test_failed_specimen_blocks_group_comparison_and_complete_status(
     tmp_path, monkeypatch
 ):
     saturn = load_saturn_v571()
+    monkeypatch.setattr(
+        saturn, "production_audit_gate_state", lambda: (True, "accepted")
+    )
     row = {
         "include": True,
         "sample_id": "sample-01",

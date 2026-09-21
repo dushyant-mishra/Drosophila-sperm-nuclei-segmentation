@@ -62,6 +62,68 @@ def test_multiple_comparison_groups_are_accepted_and_ordered():
     assert comparisons == ["mutantA", "mutantB", "rescue"]
 
 
+def test_report_command_repeats_each_comparison_group(tmp_path):
+    saturn = load_saturn_v571()
+    frame = design_frame(
+        [
+            ("WT", "reference"),
+            ("mutantB", "comparison"),
+            ("mutantA", "comparison"),
+        ]
+    )
+
+    command = saturn._study_report_command(
+        tmp_path / "generator.py",
+        tmp_path / "study",
+        frame,
+    )
+
+    assert command.count("--reference-group") == 1
+    assert command[command.index("--reference-group") + 1] == "WT"
+    comparison_positions = [
+        index for index, value in enumerate(command) if value == "--comparison-group"
+    ]
+    assert [command[index + 1] for index in comparison_positions] == [
+        "mutantA",
+        "mutantB",
+    ]
+
+
+def test_gui_preflight_accepts_one_reference_and_multiple_comparisons(monkeypatch):
+    saturn = load_saturn_v571()
+    gui = object.__new__(saturn.SpermGUI)
+    gui.study_rows = [
+        {
+            "include": True,
+            "group": group,
+            "group_role": role,
+            "roi_path": "missing-roi.npy",
+            "calibration_metadata_path": "missing.xml",
+            "slice_count": 1,
+            "xy_um_per_pixel": 1.0,
+            "z_um_per_slice": 1.0,
+        }
+        for group, role in (
+            ("WT", "reference"),
+            ("mutantA", "comparison"),
+            ("mutantB", "comparison"),
+        )
+    ]
+    gui._study_output_is_separate = lambda: (True, "separate")
+    monkeypatch.setattr(
+        saturn,
+        "build_gui_preflight_report",
+        lambda *_args, **_kwargs: saturn.PreflightReport(()),
+    )
+
+    report = gui._study_preflight_report({})
+
+    role_issue = next(issue for issue in report.issues if issue.code.startswith("GROUP_ROLES"))
+    assert role_issue.code == "GROUP_ROLES_READY"
+    assert "mutantA" in role_issue.detail
+    assert "mutantB" in role_issue.detail
+
+
 def test_group_names_are_arbitrary_and_never_inferred_from_labels():
     """A group literally named 'control' must not become the reference by name."""
     saturn = load_saturn_v571()

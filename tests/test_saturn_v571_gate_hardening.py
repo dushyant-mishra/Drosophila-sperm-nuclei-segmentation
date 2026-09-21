@@ -7,7 +7,10 @@ verdict, and only a genuinely complete registry may produce True.
 """
 
 import json
+import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -15,6 +18,16 @@ from utils import saturn_v571_gui_services as SERVICES
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_saturn():
+    spec = importlib.util.spec_from_file_location(
+        "saturn_v571_gate_hardening_test",
+        ROOT / "sperm_segmentation_saturnv5.7.1.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def write_registry(root, payload):
@@ -151,6 +164,54 @@ def test_the_real_repository_registry_is_readable_and_currently_blocked():
     assert isinstance(detail, str) and detail
     # Nothing has been through an acceptance audit yet, so it must be closed.
     assert ready is False
+
+
+def test_pipeline_wrapper_uses_the_service_canonical_claim_set():
+    saturn = load_saturn()
+
+    assert saturn._PRODUCTION_REQUIRED_CLAIM_IDS is SERVICES.PRODUCTION_REQUIRED_CLAIM_IDS
+
+
+def test_public_runners_refuse_a_closed_production_gate_before_writing(
+    tmp_path, monkeypatch
+):
+    saturn = load_saturn()
+    monkeypatch.setattr(
+        saturn,
+        "production_audit_gate_state",
+        lambda: (False, "synthetic closed gate"),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic closed gate"):
+        saturn.process_one_image(
+            tmp_path / "missing.tif",
+            saturn.CONFIG.copy(),
+            tmp_path / "single",
+        )
+    with pytest.raises(RuntimeError, match="synthetic closed gate"):
+        saturn.process_batch({"OUTPUT_DIR": str(tmp_path / "batch")})
+    with pytest.raises(RuntimeError, match="synthetic closed gate"):
+        saturn.run_multisample_study([], tmp_path / "study")
+
+    assert not (tmp_path / "single").exists()
+    assert not (tmp_path / "batch").exists()
+    assert not (tmp_path / "study").exists()
+
+
+def test_cli_refuses_closed_gate_before_selecting_a_batch_output():
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "sperm_segmentation_saturnv5.7.1.py"), "--batch"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    output = completed.stdout + completed.stderr
+
+    assert completed.returncode != 0
+    assert "blocked by the scientific audit gate" in output
+    assert "CLI BATCH MODE" not in output
 
 
 def test_study_progress_rejects_a_malformed_event():

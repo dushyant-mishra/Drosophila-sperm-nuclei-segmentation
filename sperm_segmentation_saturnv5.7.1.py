@@ -186,6 +186,7 @@ from utils.saturn_v571_gui_services import (
     active_correction_events,
     PreflightIssue,
     PreflightReport,
+    PRODUCTION_REQUIRED_CLAIM_IDS as _PRODUCTION_REQUIRED_CLAIM_IDS,
     production_audit_gate_state as _service_production_audit_gate_state,
     reduce_study_progress,
 )
@@ -497,18 +498,20 @@ _REVIEWED_PRODUCTION_PROFILE_SHA256 = {
         "a5bf553851c44a47772b70b1a08d95a532e1582714346010e33b6d98cf384dd8"
     ),
 }
-_PRODUCTION_REQUIRED_CLAIM_IDS = (
-    "PIPELINE-V571-PRODUCTION-001",
-    "MEAS-BODY-WIDTH-001",
-    "WORKFLOW-GUI-PRIMARY-001",
-)
-
-
 def production_audit_gate_state():
     """Read the durable registry and report whether required claims are accepted."""
     return _service_production_audit_gate_state(
         PROJECT_ROOT, _PRODUCTION_REQUIRED_CLAIM_IDS
     )
+
+
+def require_production_audit_gate(operation):
+    """Refuse every supported execution path while the canonical gate is closed."""
+    audit_ready, audit_detail = production_audit_gate_state()
+    if not audit_ready:
+        raise RuntimeError(
+            f"{operation} is blocked by the scientific audit gate. {audit_detail}"
+        )
 
 
 # =============================================================================
@@ -6155,12 +6158,14 @@ def _attach_representative_signal_width(df, track_summary):
     defaults = {
         "representative_signal_profile_length_um": np.nan,
         "representative_signal_profile_fwhm_width_um": np.nan,
+        "representative_signal_profile_tortuosity": np.nan,
         "representative_signal_profile_signal_au_qc": np.nan,
         "representative_signal_width_z": np.nan,
         "representative_signal_width_sample_count": 0,
         "representative_signal_width_method": "unavailable",
         "representative_signal_width_selection": (
-            "largest_filled_mask_area_then_unet_support_then_lowest_z"
+            "largest_filled_mask_area_among_signal_width_available_planes_"
+            "then_unet_support_then_lowest_z"
         ),
         "length_signal_width_ratio": np.nan,
     }
@@ -6226,6 +6231,7 @@ def _attach_representative_signal_width(df, track_summary):
     mappings = {
         "representative_signal_profile_length_um": "length_um_geodesic",
         "representative_signal_profile_fwhm_width_um": "intensity_fwhm_width_um",
+        "representative_signal_profile_tortuosity": "tortuosity",
         "representative_signal_profile_signal_au_qc": "intensity_profile_signal_au",
         "representative_signal_width_z": "z_slice",
         "representative_signal_width_sample_count": "intensity_width_sample_count",
@@ -8825,7 +8831,7 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
         "representative_signal_profile_length_um": "representative_section_length_um",
         "representative_signal_profile_fwhm_width_um": "signal_profile_fwhm_width_um",
         "length_signal_width_ratio": "length_signal_width_ratio",
-        "representative_section_tortuosity": "representative_section_tortuosity",
+        "representative_signal_profile_tortuosity": "representative_section_tortuosity",
     }
     available = [column for column in column_map if column in primary.columns]
     nuclei = primary[available].rename(columns=column_map)
@@ -8841,14 +8847,14 @@ def export_biologist_results(out_dir, track_summary, version_label=None):
         "analysis_population": "included estimated nuclei",
         "estimated_unique_nuclei": int(len(primary)),
         "median_representative_section_length_um": median(
-            "representative_body_length_um"
+            "representative_signal_profile_length_um"
         ),
         "median_signal_profile_fwhm_width_um": median(
             "representative_signal_profile_fwhm_width_um"
         ),
         "median_length_signal_width_ratio": median("length_signal_width_ratio"),
         "median_representative_section_tortuosity": median(
-            "representative_section_tortuosity"
+            "representative_signal_profile_tortuosity"
         ),
     }])
     summary_path = os.path.join(result_dir, f"sample_summary{suffix}.csv")
@@ -9009,7 +9015,7 @@ def build_analysis_summary(
         "median_maximum_2d_length_um": median(primary, "max_length_2d"),
         "median_representative_section_length_um": median(
             primary,
-            "representative_body_length_um",
+            "representative_signal_profile_length_um",
         ),
         "median_signal_profile_fwhm_width_um": median(
             primary,
@@ -9030,7 +9036,7 @@ def build_analysis_summary(
         ),
         "median_effective_thickness_um_psf_sensitive": median(primary, "thickness_um"),
         "median_representative_section_tortuosity": median(
-            primary, "representative_section_tortuosity"
+            primary, "representative_signal_profile_tortuosity"
         ),
         "median_3d_tortuosity_qc": median(primary, "tortuosity_3d"),
         "median_z_span_um": median(primary, "z_span_um"),
@@ -9584,6 +9590,7 @@ def process_one_image(image_path, cfg, output_dir):
             - ``seg``     - full segmentation dict from :func:`segment_slice`
               including ``mask_clean``, ``skel_pruned``, ``skel_label``, etc.
     """
+    require_production_audit_gate("Single-image analysis")
     ensure_dir(output_dir)
     calibration = resolve_stack_microscope_calibration(
         cfg,
@@ -10060,6 +10067,7 @@ def _process_batch_impl(cfg, progress_callback=None, stop_requested=None):
 
 def process_batch(cfg, progress_callback=None, stop_requested=None):
     """Run one batch with an atomic machine-readable lifecycle marker."""
+    require_production_audit_gate("Batch analysis")
     output_dir = pl.Path(cfg["OUTPUT_DIR"]).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     status_path = output_dir / "run_status.json"
@@ -10571,7 +10579,7 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
         "representative_signal_profile_length_um",
         "representative_signal_profile_fwhm_width_um",
         "length_signal_width_ratio",
-        "representative_section_tortuosity",
+        "representative_signal_profile_tortuosity",
     )
     missing = [column for column in required if column not in primary.columns]
     if missing and not primary.empty:
@@ -10591,7 +10599,7 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
                 ("Median representative-section length", f"{primary['representative_signal_profile_length_um'].median():.2f} um"),
                 ("Median apparent signal-profile FWHM width", f"{primary['representative_signal_profile_fwhm_width_um'].median():.2f} um"),
                 ("Median length / signal width", f"{primary['length_signal_width_ratio'].median():.2f}"),
-                ("Median representative-section tortuosity", f"{primary['representative_section_tortuosity'].median():.3f}"),
+                ("Median representative-section tortuosity", f"{primary['representative_signal_profile_tortuosity'].median():.3f}"),
             )
             y = 0.92
             for label, value in metrics:
@@ -10627,7 +10635,7 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
             ("representative_signal_profile_length_um", "Representative-section length (um)", "#16a34a"),
             ("representative_signal_profile_fwhm_width_um", "Apparent signal-profile FWHM width (um)", "#0284c7"),
             ("length_signal_width_ratio", "Length / signal width", "#7c3aed"),
-            ("representative_section_tortuosity", "Representative-section centerline tortuosity", "#ca8a04"),
+            ("representative_signal_profile_tortuosity", "Representative-section centerline tortuosity", "#ca8a04"),
         )
         for index, (column, title, color) in enumerate(fields, start=1):
             axis = morphology.add_subplot(2, 2, index)
@@ -15009,7 +15017,7 @@ def summarize_study_sample(row, output_dir):
         ),
         "median_representative_section_length_um": median(
             analysis_tracks,
-            "representative_body_length_um",
+            "representative_signal_profile_length_um",
         ),
         "median_body_width_p90_um": median(
             analysis_tracks,
@@ -15025,7 +15033,7 @@ def summarize_study_sample(row, output_dir):
         ),
         "median_representative_section_tortuosity": median(
             analysis_tracks,
-            "representative_section_tortuosity",
+            "representative_signal_profile_tortuosity",
         ),
         "signal_profile_width_available_fraction": float(
             pd.to_numeric(
@@ -15156,6 +15164,22 @@ def _study_explicit_group_pair(specimen_frame):
             f"{comparisons}"
         )
     return reference, comparisons[0]
+
+
+def _study_report_command(generator, study_output, specimen_frame):
+    """Build one deterministic report command for every declared comparison."""
+    reference, comparisons = _study_group_design(specimen_frame)
+    command = [
+        sys.executable,
+        str(generator),
+        "--study-output",
+        str(study_output),
+        "--reference-group",
+        reference,
+    ]
+    for comparison in comparisons:
+        command.extend(["--comparison-group", comparison])
+    return command
 
 
 def _study_cliffs_delta(reference, comparison):
@@ -16066,6 +16090,8 @@ def run_multisample_study(
     """Run validated specimens sequentially and resume completed sample attempts."""
     from datetime import datetime
 
+    require_production_audit_gate("Multi-sample study")
+
     def should_stop():
         if stop_requested is None:
             return False
@@ -16500,17 +16526,7 @@ def generate_study_between_sample_analysis(
             f"Between-sample report generator was not found: {generator}"
         )
     specimens = pd.read_csv(study_output / "specimen_summary.csv")
-    reference_group, comparison_group = _study_explicit_group_pair(specimens)
-    command = [
-        sys.executable,
-        str(generator),
-        "--study-output",
-        str(study_output),
-        "--reference-group",
-        reference_group,
-        "--comparison-group",
-        comparison_group,
-    ]
+    command = _study_report_command(generator, study_output, specimens)
     if progress_callback:
         progress_callback(
             {
@@ -18512,12 +18528,13 @@ class SpermGUI:
         role_ready = False
         role_detail = "No included specimens are available."
         try:
-            reference_group, comparison_group = _study_explicit_group_pair(
+            reference_group, comparison_groups = _study_group_design(
                 pd.DataFrame(included)
             )
             role_ready = True
             role_detail = (
-                f"Reference: {reference_group}; comparison: {comparison_group}. "
+                f"Reference: {reference_group}; comparisons: "
+                f"{', '.join(comparison_groups)}. "
                 "Every specimen within each group has the same role."
             )
         except Exception as exc:
@@ -19778,6 +19795,8 @@ if __name__ == "__main__":
     if args.gui or not (args.batch or args.single or args.z is not None):
         launch_gui()
         raise SystemExit
+
+    require_production_audit_gate("CLI analysis")
 
     if args.batch:
         CONFIG["RUN_MODE"] = "batch"

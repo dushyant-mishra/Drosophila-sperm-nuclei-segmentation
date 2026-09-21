@@ -98,6 +98,7 @@ def test_representative_signal_width_uses_same_largest_area_plane_for_ratio():
             "intensity_width_sample_count": [20, 20],
             "intensity_width_method": ["fwhm", "fwhm"],
             "intensity_profile_signal_au": [10.0, 20.0],
+            "tortuosity": [1.05, 1.40],
             "unet_mean_probability": [0.90, 0.95],
             "centerline_within_instance_mask": [True, True],
         }
@@ -109,6 +110,7 @@ def test_representative_signal_width_uses_same_largest_area_plane_for_ratio():
     assert result.loc[0, "representative_signal_width_z"] == 4
     assert result.loc[0, "representative_signal_profile_fwhm_width_um"] == pytest.approx(0.8)
     assert result.loc[0, "representative_signal_profile_length_um"] == pytest.approx(8.0)
+    assert result.loc[0, "representative_signal_profile_tortuosity"] == pytest.approx(1.05)
     assert result.loc[0, "length_signal_width_ratio"] == pytest.approx(10.0)
 
 
@@ -155,9 +157,11 @@ def test_primary_summary_routes_signal_width_and_keeps_mask_width_as_qc():
             "max_length_2d": [8.0, 10.0],
             "representative_signal_profile_length_um": [7.5, 9.5],
             "representative_signal_profile_fwhm_width_um": [0.7, 0.9],
+            "representative_signal_profile_tortuosity": [1.02, 1.04],
             "length_signal_width_ratio": [7.5 / 0.7, 9.5 / 0.9],
+            "representative_body_length_um": [20.0, 30.0],
             "representative_body_width_um": [1.5, 1.7],
-            "representative_section_tortuosity": [1.05, 1.10],
+            "representative_section_tortuosity": [1.40, 1.60],
         }
     )
 
@@ -168,6 +172,8 @@ def test_primary_summary_routes_signal_width_and_keeps_mask_width_as_qc():
     )
 
     assert summary["median_signal_profile_fwhm_width_um"] == pytest.approx(0.8)
+    assert summary["median_representative_section_length_um"] == pytest.approx(8.5)
+    assert summary["median_representative_section_tortuosity"] == pytest.approx(1.03)
     assert summary["median_length_signal_width_ratio"] == pytest.approx(
         np.median([7.5 / 0.7, 9.5 / 0.9])
     )
