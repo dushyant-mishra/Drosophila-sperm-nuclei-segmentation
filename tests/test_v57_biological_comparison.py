@@ -162,6 +162,13 @@ def test_width_metrics_carry_the_interpretation_limit():
     )
 
 
+def test_representative_length_definition_names_the_signal_width_plane():
+    meaning = MODULE.METRICS["median_representative_section_length_um"]["meaning"]
+
+    assert "usable signal-profile width" in meaning
+    assert "primary apparent body width" not in meaning
+
+
 def test_interpretation_limit_states_comparison_is_valid_and_diameter_is_not():
     caveat = MODULE.WIDTH_INTERPRETATION_CAVEAT
     assert "Relative comparison between groups is valid" in caveat

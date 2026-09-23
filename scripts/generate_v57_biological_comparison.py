@@ -65,8 +65,9 @@ METRICS = {
         "short": "Representative length",
         "question": "Are nuclei typically longer in their representative optical section?",
         "meaning": (
-            "The centerline length measured on the same largest-area technical-valid "
-            "Z plane used for the primary apparent body width."
+            "The centerline length measured on the largest filled-mask-area "
+            "technical-valid Z plane among those that yielded a usable "
+            "signal-profile width."
         ),
         "role": "morphology",
     },
