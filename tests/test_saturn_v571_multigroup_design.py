@@ -28,6 +28,16 @@ def load_saturn_v571():
     return module
 
 
+def load_report_generator():
+    spec = importlib.util.spec_from_file_location(
+        "saturn_v57_report_receiver_test",
+        ROOT / "scripts" / "generate_v57_biological_comparison.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def design_frame(pairs):
     """pairs: sequence of (group, role) repeated per specimen."""
     rows = []
@@ -62,8 +72,11 @@ def test_multiple_comparison_groups_are_accepted_and_ordered():
     assert comparisons == ["mutantA", "mutantB", "rescue"]
 
 
-def test_report_command_repeats_each_comparison_group(tmp_path):
+def test_report_command_survives_the_receiver_parser_with_every_comparison(
+    tmp_path, monkeypatch
+):
     saturn = load_saturn_v571()
+    receiver = load_report_generator()
     frame = design_frame(
         [
             ("WT", "reference"),
@@ -78,15 +91,27 @@ def test_report_command_repeats_each_comparison_group(tmp_path):
         frame,
     )
 
-    assert command.count("--reference-group") == 1
-    assert command[command.index("--reference-group") + 1] == "WT"
-    comparison_positions = [
-        index for index, value in enumerate(command) if value == "--comparison-group"
-    ]
-    assert [command[index + 1] for index in comparison_positions] == [
-        "mutantA",
-        "mutantB",
-    ]
+    observed = {}
+
+    def capture(args, arguments, comparisons):
+        observed["reference"] = args.reference_group
+        observed["comparisons"] = list(comparisons)
+        return 0
+
+    monkeypatch.setattr(receiver, "_run_contrast_fan_out", capture)
+    monkeypatch.setattr(
+        receiver.pd,
+        "read_csv",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("receiver did not enter multigroup fan-out")
+        ),
+    )
+
+    assert receiver.main(command[2:]) == 0
+    assert observed == {
+        "reference": "WT",
+        "comparisons": ["mutantA", "mutantB"],
+    }
 
 
 def test_gui_preflight_accepts_one_reference_and_multiple_comparisons(monkeypatch):

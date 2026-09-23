@@ -10374,7 +10374,7 @@ def generate_excel_report(out_dir, df, df_summary, df_tracks=None):
                 biologist_metrics = [
                     ("Analysis population", "Included estimated nuclei"),
                     ("Estimated unique nuclei", int(len(primary))),
-                    ("Median representative-section length (um)", primary_median("representative_body_length_um")),
+                    ("Median representative-section length (um)", primary_median("representative_signal_profile_length_um")),
                     ("Median apparent signal-profile FWHM width (um)", primary_median("representative_signal_profile_fwhm_width_um")),
                     ("Median length / signal width", primary_median("length_signal_width_ratio")),
                     ("Median 3D tortuosity", primary_median("tortuosity_3d")),
@@ -10848,7 +10848,7 @@ def generate_batch_report(
                 ax_metrics.axis("off")
                 metric_lines = [
                     ("Estimated unique nuclei", f"{len(primary):,}"),
-                    ("Median representative-section length", f"{report_median('representative_body_length_um'):.2f} um"),
+                    ("Median representative-section length", f"{report_median('representative_signal_profile_length_um'):.2f} um"),
                     ("Median apparent signal-profile FWHM width", f"{report_median('representative_signal_profile_fwhm_width_um'):.2f} um"),
                     ("Median length/signal width", f"{report_median('length_signal_width_ratio'):.2f}"),
                     ("Median 3D tortuosity", f"{report_median('tortuosity_3d'):.3f}"),
@@ -10860,18 +10860,18 @@ def generate_batch_report(
                     y -= 0.135
                 ax_length = fig_dyn.add_subplot(1, 2, 2)
                 ax_length.hist(
-                    primary["representative_body_length_um"].dropna(),
+                    primary["representative_signal_profile_length_um"].dropna(),
                     bins=25,
                     color="#2ca02c",
                     edgecolor="black",
                     alpha=0.8,
                 )
                 ax_length.axvline(
-                    primary["representative_body_length_um"].median(),
+                    primary["representative_signal_profile_length_um"].median(),
                     color="black",
                     linestyle="--",
                     linewidth=1.5,
-                    label=f"Median {primary['representative_body_length_um'].median():.2f} um",
+                    label=f"Median {primary['representative_signal_profile_length_um'].median():.2f} um",
                 )
                 ax_length.set_title("Representative-Section Length")
                 ax_length.set_xlabel("Representative-section length (um)")
@@ -15177,8 +15177,7 @@ def _study_report_command(generator, study_output, specimen_frame):
         "--reference-group",
         reference,
     ]
-    for comparison in comparisons:
-        command.extend(["--comparison-group", comparison])
+    command.extend(["--comparison-group", *comparisons])
     return command
 
 

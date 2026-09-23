@@ -1,9 +1,12 @@
 import importlib.util
 from pathlib import Path
+import xml.etree.ElementTree as ET
+import zipfile
 
 import numpy as np
 import pandas as pd
 import pytest
+from pypdf import PdfReader
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,6 +182,82 @@ def test_primary_summary_routes_signal_width_and_keeps_mask_width_as_qc():
     )
     assert summary["median_body_mask_chord_width_um_qc"] == pytest.approx(1.6)
     assert "median_body_width_um" not in summary
+
+
+def divergent_plane_tracks():
+    return pd.DataFrame(
+        {
+            "track_id": [1, 2],
+            "technical_valid": [True, True],
+            "representative_body_length_um": [20.0, 30.0],
+            "representative_signal_profile_length_um": [7.5, 9.5],
+            "representative_signal_profile_fwhm_width_um": [0.7, 0.9],
+            "length_signal_width_ratio": [7.5 / 0.7, 9.5 / 0.9],
+            "representative_signal_profile_tortuosity": [1.02, 1.04],
+            "tortuosity_3d": [1.10, 1.20],
+            "projection_z_extent_um": [8.0, 10.0],
+            "z_span_um": [1.0, 2.0],
+            "z_covered_um": [2.0, 3.0],
+            "observed_slice_mask_volume_um3": [20.0, 24.0],
+            "observed_slab_effective_thickness_um": [1.4, 1.8],
+            "thickness_um": [1.0, 1.2],
+            "pitch_deg": [5.0, 10.0],
+            "taper_ratio": [1.1, 1.2],
+            "nearest_neighbor_um": [4.0, 5.0],
+        }
+    )
+
+
+def test_excel_biologist_sheet_uses_signal_plane_length(tmp_path):
+    saturn = load_saturn()
+    saturn.generate_excel_report(
+        tmp_path,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        divergent_plane_tracks(),
+    )
+    workbook = tmp_path / f"batch_analysis_results_{saturn._VERSION}.xlsx"
+    with zipfile.ZipFile(workbook) as archive:
+        sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+    namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    length_cell = sheet.find(".//x:c[@r='B5']/x:v", namespace)
+
+    assert length_cell is not None
+    assert float(length_cell.text) == pytest.approx(8.5)
+
+
+def test_batch_pdf_uses_signal_plane_length(tmp_path):
+    saturn = load_saturn()
+    detections = pd.DataFrame(
+        {
+            "z_slice": [0],
+            "length_um_geodesic": [8.0],
+            "width_um": [1.0],
+            "length_width_ratio": [8.0],
+            "detection_source": ["unet_primary"],
+        }
+    )
+    slice_summary = pd.DataFrame(
+        {"z_slice": [0], "n_spermatids": [1], "median_length_um": [8.0]}
+    )
+
+    saturn.generate_batch_report(
+        tmp_path,
+        detections,
+        slice_summary,
+        {"xy": 1.0, "z": 1.0},
+        divergent_plane_tracks(),
+        generate_pptx=False,
+    )
+    report = (
+        tmp_path
+        / "technical_qc"
+        / f"batch_technical_qc_report_{saturn._VERSION}.pdf"
+    )
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(report).pages)
+
+    assert "8.50 um" in text
+    assert "25.00 um" not in text
 
 
 def test_concise_report_contract_uses_one_signal_width(tmp_path):
