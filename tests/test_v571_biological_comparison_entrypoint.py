@@ -75,6 +75,20 @@ def test_v571_direct_report_rejects_partial_cohort(tmp_path):
         module._require_complete_cohort(["--study-output", str(output)])
 
 
+def test_v571_report_refuses_audit_candidate_tables(tmp_path):
+    module = load_entrypoint()
+    output = tmp_path / "study"
+    output.mkdir()
+    (output / "specimen_summary.csv").write_text(
+        "sample_id,audit_candidate_only\nWT-01,true\n", encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit, match="audit-candidate"):
+        module._require_non_audit_candidate_input(
+            ["--study-output", str(output)]
+        )
+
+
 def test_v571_entrypoint_forces_concise_metric_profile(monkeypatch):
     module = load_entrypoint()
     calls = []

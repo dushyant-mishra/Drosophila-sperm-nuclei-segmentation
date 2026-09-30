@@ -1,6 +1,7 @@
 """Fail-closed v5.7.1 entry point for specimen-level biological reports."""
 
 import importlib.util
+import csv
 import sys
 from pathlib import Path
 
@@ -74,9 +75,32 @@ def _require_complete_cohort(arguments):
         ) from exc
 
 
+def _require_non_audit_candidate_input(arguments):
+    study_output = _argument_value(arguments, "--study-output")
+    if not study_output:
+        return
+    summary_path = Path(study_output) / "specimen_summary.csv"
+    if not summary_path.is_file():
+        return
+    with summary_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if "audit_candidate_only" not in (reader.fieldnames or []):
+            return
+        if any(
+            str(row.get("audit_candidate_only", "")).strip().lower()
+            in {"1", "true", "yes"}
+            for row in reader
+        ):
+            raise SystemExit(
+                "Saturn v5.7.1 refuses audit-candidate tables in the normal "
+                "biological report path. Complete acceptance review first."
+            )
+
+
 def _main(arguments=None):
     arguments = sys.argv[1:] if arguments is None else list(arguments)
     _require_explicit_group_direction(arguments)
+    _require_non_audit_candidate_input(arguments)
     _require_production_audit_gate()
     _require_complete_cohort(arguments)
     _generate_report_main(arguments + ["--metric-profile", "concise_v571"])
