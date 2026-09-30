@@ -344,11 +344,14 @@ def build(output=OUTPUT):
     )
     body(
         document,
-        "The joined object is what carries the reported measurements. Its length "
-        "and width are taken from the one slice on which it appeared largest, so a "
-        "plane that caught only its edge cannot dilute the value, and the slice "
-        "used is recorded alongside the number. Its depth extent comes from how "
-        "many slices it spanned."
+        "The joined object is what carries the reported measurements. Its "
+        "length, width and curvature all come from one slice: the one where it "
+        "appeared largest, among those on which a width could actually be "
+        "measured. That qualifier matters, because about one detection in five "
+        "yields no usable width, and taking the length from one slice and the "
+        "width from another would mean quoting two numbers that never described "
+        "the same cross-section. The slice used is recorded alongside the "
+        "numbers. Depth extent comes from how many slices it spanned."
     )
 
     heading(document, "6.2 Separating touching nuclei", level=2)
@@ -422,8 +425,8 @@ def build(output=OUTPUT):
         document,
         ["Measure", "What it is", "Use"],
         [
-            ["Length", "Distance along the centre line, on the slice where the "
-                       "nucleus appeared largest, in microns.", "Absolute"],
+            ["Length", "Distance along the centre line, on the same slice the "
+                       "width came from, in microns.", "Absolute"],
             ["Curvature", "Centre-line length divided by straight tip-to-tip "
                           "distance. 1.00 is straight.", "Absolute"],
             ["3D curvature", "The same ratio applied to the path the nucleus's "
@@ -673,7 +676,7 @@ def build(output=OUTPUT):
             ["Width", "The width of the nucleus's fluorescence at half its peak."],
             ["Morphology note", "A flag that a nucleus is unusual. It is kept and measured."],
             ["Joining", "Deciding that detections on neighbouring slices are the same nucleus."],
-            ["Representative slice", "The slice on which a nucleus appeared largest. Its length and width are taken from there."],
+            ["Representative slice", "The slice where a nucleus appeared largest among those giving a usable width. Its length, width and curvature all come from there."],
             ["Curvature", "Centre-line length divided by straight tip-to-tip distance. 1.00 is straight."],
         ],
     )
