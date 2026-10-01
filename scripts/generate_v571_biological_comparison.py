@@ -79,7 +79,20 @@ def _require_non_audit_candidate_input(arguments):
     study_output = _argument_value(arguments, "--study-output")
     if not study_output:
         return
-    summary_path = Path(study_output) / "specimen_summary.csv"
+    study_output = Path(study_output)
+
+    def refuse():
+        raise SystemExit(
+            "Saturn v5.7.1 refuses audit-candidate tables in the normal "
+            "biological report path. Complete acceptance review first."
+        )
+
+    if "audit_candidate_only" in study_output.name.lower():
+        refuse()
+    if (study_output / "AUDIT_CANDIDATE_ONLY.json").is_file():
+        refuse()
+
+    summary_path = study_output / "specimen_summary.csv"
     if not summary_path.is_file():
         return
     with summary_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -91,10 +104,7 @@ def _require_non_audit_candidate_input(arguments):
             in {"1", "true", "yes"}
             for row in reader
         ):
-            raise SystemExit(
-                "Saturn v5.7.1 refuses audit-candidate tables in the normal "
-                "biological report path. Complete acceptance review first."
-            )
+            refuse()
 
 
 def _main(arguments=None):

@@ -136,3 +136,17 @@ or excuse a defect.
   insufficient.
 - Detailed visual evidence exists for software validation and adversarial audit;
   it must not become a routine manual-review queue for the biologist.
+
+## Audit-candidate execution boundary
+
+- While the production gate is closed, acceptance evidence may be generated
+  only by the separately named audit-candidate runner after the owner supplies
+  the exact acknowledgement required by that runner.
+- The ordinary v5.7.1 biological-report wrapper refuses an audit candidate when
+  any of three independent signals is present: its output-directory marker,
+  its pre-run `AUDIT_CANDIDATE_ONLY.json` record, or its stamped aggregate
+  tables. The pre-run signals keep a crashed or interrupted partial run from
+  being mistaken for production output before table stamping occurs.
+- The shared frozen v5.7 report engine is deliberately unchanged. Supported
+  v5.7.1 report paths reach it through the fail-closed v5.7.1 wrapper; direct
+  invocation of the frozen engine is not a supported v5.7.1 production path.

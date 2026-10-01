@@ -89,6 +89,37 @@ def test_v571_report_refuses_audit_candidate_tables(tmp_path):
         )
 
 
+def test_v571_report_refuses_unstamped_partial_audit_run_with_marker(tmp_path):
+    module = load_entrypoint()
+    output = tmp_path / "partial_study"
+    output.mkdir()
+    (output / "specimen_summary.csv").write_text(
+        "sample_id,status\nWT-01,complete\n", encoding="utf-8"
+    )
+    (output / "AUDIT_CANDIDATE_ONLY.json").write_text(
+        '{"audit_candidate_only": true, "status": "running"}', encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit, match="audit-candidate"):
+        module._require_non_audit_candidate_input(
+            ["--study-output", str(output)]
+        )
+
+
+def test_v571_report_refuses_unstamped_audit_candidate_directory(tmp_path):
+    module = load_entrypoint()
+    output = tmp_path / "run_AUDIT_CANDIDATE_ONLY"
+    output.mkdir()
+    (output / "specimen_summary.csv").write_text(
+        "sample_id,status\nWT-01,complete\n", encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit, match="audit-candidate"):
+        module._require_non_audit_candidate_input(
+            ["--study-output", str(output)]
+        )
+
+
 def test_v571_entrypoint_forces_concise_metric_profile(monkeypatch):
     module = load_entrypoint()
     calls = []
