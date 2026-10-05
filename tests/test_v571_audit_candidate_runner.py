@@ -31,6 +31,7 @@ class FakePipeline:
         self._profile_path = Path(profile_path)
         self._checkpoint_path = Path(checkpoint_path)
         self.gate_calls = []
+        self.run_rows = None
         self.require_production_audit_gate = self._closed_gate
 
     @staticmethod
@@ -50,10 +51,19 @@ class FakePipeline:
                 "slice_count": 2,
                 "xy_um_per_pixel": 0.5,
                 "z_um_per_slice": 1.0,
-            }
+            },
+            {
+                "sample_id": "KJ-01",
+                "group": "KJ",
+                "include": True,
+                "slice_count": 2,
+                "xy_um_per_pixel": 0.5,
+                "z_um_per_slice": 1.0,
+            },
         ]
 
     def run_multisample_study(self, rows, output_root, **_kwargs):
+        self.run_rows = rows
         self.require_production_audit_gate("Multi-sample study")
         self.require_production_audit_gate("Batch analysis")
         output_root = Path(output_root)
@@ -96,7 +106,9 @@ def make_args(tmp_path, acknowledgement):
             "output_root": tmp_path / "run_AUDIT_CANDIDATE_ONLY",
             "params": profile,
             "checkpoint": checkpoint,
-            "sample_id": ["WT-01"],
+            "sample_id": ["WT-01", "KJ-01"],
+            "reference_group": "WT",
+            "comparison_group": ["KJ"],
             "acknowledgement": acknowledgement,
             "no_resume": True,
             "lean_output": True,
@@ -141,6 +153,8 @@ def test_runner_records_bypass_stamps_tables_and_preserves_registry(tmp_path):
         arguments["output_root"] / "settings" / "settings_manifest.json"
     )
     assert record["bypassed_operations"] == ["Multi-sample study", "Batch analysis"]
+    roles = {row["group"]: row["group_role"] for row in pipeline.run_rows}
+    assert roles == {"WT": "reference", "KJ": "comparison"}
 
     saved = json.loads(
         (arguments["output_root"] / "AUDIT_CANDIDATE_ONLY.json").read_text(
@@ -201,6 +215,23 @@ def test_runner_marks_post_run_finalization_failure(tmp_path, monkeypatch):
     assert record["status"] == "failed"
     assert record["study_run_status"] == "complete"
     assert record["failure"] == "OSError: synthetic finalization failure"
+
+
+def test_runner_refuses_missing_group_roles_before_writing(tmp_path):
+    runner = load_runner()
+    profile, checkpoint, registry, arguments = make_args(
+        tmp_path, runner.REQUIRED_ACKNOWLEDGEMENT
+    )
+    arguments["reference_group"] = ""
+    arguments["comparison_group"] = []
+    pipeline = FakePipeline(registry, profile, checkpoint)
+
+    with pytest.raises(ValueError, match="reference-group"):
+        runner.run_audit_candidate(
+            arguments, pipeline=pipeline, registry_path=registry
+        )
+
+    assert not arguments["output_root"].exists()
 
 
 def test_runner_is_not_referenced_by_normal_gui_or_production_cli():

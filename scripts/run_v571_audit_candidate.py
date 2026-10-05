@@ -126,6 +126,59 @@ def _stamp_audit_tables(output_root):
     return stamped, empty
 
 
+def _assign_explicit_group_roles(rows, reference_group, comparison_groups):
+    reference = str(reference_group or "").strip()
+    comparisons = [
+        str(group).strip() for group in (comparison_groups or []) if str(group).strip()
+    ]
+    if not reference:
+        raise ValueError("Audit execution requires --reference-group")
+    if not comparisons:
+        raise ValueError("Audit execution requires at least one --comparison-group")
+
+    discovered = {}
+    for row in rows:
+        group = str(row.get("group", "")).strip()
+        if group:
+            discovered.setdefault(group.casefold(), group)
+    requested = [reference, *comparisons]
+    unknown = [group for group in requested if group.casefold() not in discovered]
+    if unknown:
+        raise ValueError(f"Unknown study groups: {', '.join(unknown)}")
+    if reference.casefold() in {group.casefold() for group in comparisons}:
+        raise ValueError("The reference group cannot also be a comparison group")
+
+    role_by_group = {reference.casefold(): "reference"}
+    role_by_group.update({group.casefold(): "comparison" for group in comparisons})
+    for row in rows:
+        row["group_role"] = role_by_group.get(
+            str(row.get("group", "")).strip().casefold(), ""
+        )
+
+    included_groups = {
+        str(row.get("group", "")).strip().casefold()
+        for row in rows
+        if bool(row.get("include", False))
+    }
+    unassigned = sorted(
+        discovered[group] for group in included_groups if group not in role_by_group
+    )
+    if unassigned:
+        raise ValueError(
+            "Every included group must be assigned as reference or comparison: "
+            + ", ".join(unassigned)
+        )
+    if reference.casefold() not in included_groups:
+        raise ValueError("The reference group has no included specimens")
+    if not included_groups.intersection(
+        {group.casefold() for group in comparisons}
+    ):
+        raise ValueError("No comparison group has an included specimen")
+    return discovered[reference.casefold()], [
+        discovered[group.casefold()] for group in comparisons
+    ]
+
+
 def run_audit_candidate(arguments, pipeline=None, registry_path=DEFAULT_REGISTRY):
     """Run an explicitly acknowledged, provenance-bound audit candidate."""
     acknowledgement = str(arguments.get("acknowledgement", ""))
@@ -188,6 +241,11 @@ def run_audit_candidate(arguments, pipeline=None, registry_path=DEFAULT_REGISTRY
             raise ValueError(f"Unknown sample IDs: {', '.join(missing)}")
         for row in rows:
             row["include"] = row["sample_id"] in selected
+    reference_group, comparison_groups = _assign_explicit_group_roles(
+        rows,
+        arguments.get("reference_group"),
+        arguments.get("comparison_group", []),
+    )
 
     output_root.mkdir(parents=True, exist_ok=True)
     record_path = output_root / "AUDIT_CANDIDATE_ONLY.json"
@@ -213,6 +271,8 @@ def run_audit_candidate(arguments, pipeline=None, registry_path=DEFAULT_REGISTRY
         "study_root": str(Path(arguments["study_root"]).resolve()),
         "output_root": str(output_root),
         "selected_sample_ids": sorted(selected),
+        "reference_group": reference_group,
+        "comparison_groups": comparison_groups,
         "bypassed_operations": [],
     }
     _atomic_json(record_path, record)
@@ -304,6 +364,8 @@ def _parse_args(arguments=None):
     parser.add_argument("--params", default=str(DEFAULT_PROFILE))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--sample-id", action="append", default=[])
+    parser.add_argument("--reference-group", required=True)
+    parser.add_argument("--comparison-group", action="append", required=True)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--lean-output", action="store_true")
     parser.add_argument("--acknowledgement", required=True)
