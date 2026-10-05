@@ -109,16 +109,21 @@ def _git_identity():
 
 def _stamp_audit_tables(output_root):
     stamped = []
+    empty = []
     for name in AUDIT_TABLES:
         path = Path(output_root) / name
         if not path.is_file():
             continue
-        frame = pd.read_csv(path)
+        try:
+            frame = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            empty.append(path)
+            continue
         frame["audit_candidate_only"] = True
         frame["production_gate_status"] = "closed"
         frame.to_csv(path, index=False)
         stamped.append(path)
-    return stamped
+    return stamped, empty
 
 
 def run_audit_candidate(arguments, pipeline=None, registry_path=DEFAULT_REGISTRY):
@@ -242,27 +247,53 @@ def run_audit_candidate(arguments, pipeline=None, registry_path=DEFAULT_REGISTRY
     finally:
         module.require_production_audit_gate = original_gate
 
-    stamped = _stamp_audit_tables(output_root)
-    registry_after = _sha256(registry_path)
-    if registry_after != registry_before:
-        raise RuntimeError("The claims registry changed during audit-candidate execution")
-    settings_manifest = output_root / "settings" / "settings_manifest.json"
-    if not settings_manifest.is_file():
-        raise RuntimeError("The study did not emit its provenance settings manifest")
+    run_status = str(state.get("run_status", "unknown"))
+    try:
+        stamped, empty = _stamp_audit_tables(output_root)
+        registry_after = _sha256(registry_path)
+        if registry_after != registry_before:
+            raise RuntimeError(
+                "The claims registry changed during audit-candidate execution"
+            )
+        settings_manifest = output_root / "settings" / "settings_manifest.json"
+        if not settings_manifest.is_file():
+            raise RuntimeError("The study did not emit its provenance settings manifest")
 
-    record.update(
-        {
-            "status": str(state.get("run_status", "unknown")),
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-            "claims_registry_sha256_after": registry_after,
-            "settings_manifest_sha256": _sha256(settings_manifest),
-            "stamped_table_sha256": {
-                path.relative_to(output_root).as_posix(): _sha256(path)
-                for path in stamped
-            },
-        }
-    )
-    _atomic_json(record_path, record)
+        record.update(
+            {
+                "status": run_status,
+                "acceptance_evidence_ready": run_status == "complete",
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "claims_registry_sha256_after": registry_after,
+                "settings_manifest_sha256": _sha256(settings_manifest),
+                "stamped_table_sha256": {
+                    path.relative_to(output_root).as_posix(): _sha256(path)
+                    for path in stamped
+                },
+                "empty_audit_table_sha256": {
+                    path.relative_to(output_root).as_posix(): _sha256(path)
+                    for path in empty
+                },
+            }
+        )
+        _atomic_json(record_path, record)
+    except Exception as exc:
+        record.update(
+            {
+                "status": "failed",
+                "study_run_status": run_status,
+                "acceptance_evidence_ready": False,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "failure": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        _atomic_json(record_path, record)
+        raise
+
+    if run_status != "complete":
+        raise RuntimeError(
+            f"Audit candidate did not complete successfully: {run_status}"
+        )
     return record
 
 

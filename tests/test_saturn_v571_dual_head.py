@@ -186,8 +186,15 @@ def _tracking_rows(target_x=10.0, target_length=18.0, target_width=4.0):
                 "centroid_x": x,
                 "centroid_y": 10.0,
                 "length_um_geodesic": length,
+                "tortuosity": 1.1 + (0.1 * z),
                 "width_um": width,
                 "area_px": area,
+                "instance_mask_area_px": area,
+                "intensity_fwhm_width_um": 0.7 + (0.1 * z),
+                "intensity_width_sample_count": 12,
+                "intensity_width_method": "fwhm",
+                "intensity_profile_signal_au": 20.0 + z,
+                "centerline_within_instance_mask": True,
                 "orientation": 0.0,
                 "bbox_min_y": 8.0,
                 "bbox_min_x": 8.0,
@@ -198,6 +205,34 @@ def _tracking_rows(target_x=10.0, target_length=18.0, target_width=4.0):
             }
         )
     return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize(
+    "tracker_name",
+    ["track_across_slices_legacy", "track_across_slices_global_assignment"],
+)
+def test_tracking_summary_preserves_same_plane_signal_tortuosity(tracker_name):
+    saturn = load_saturn_v571()
+    cfg = saturn.CONFIG.copy()
+    cfg.update(
+        {
+            "ANALYSIS_MODE": "comparative",
+            "SEGMENTATION_ENGINE": "unet_primary",
+            "COMPARATIVE_TRACKING_MORPHOLOGY_NEUTRAL": True,
+            "UM_PER_PX_XY": 0.1,
+            "UM_PER_SLICE_Z": 0.1,
+            "TRACK_MAX_DIST_UM": 2.0,
+            "TRACK_MAX_GAP_SLICES": 0,
+            "UNET_TRACK_MAX_RECONSTRUCTED_LENGTH_UM": 20.0,
+        }
+    )
+
+    _tracked, summary = getattr(saturn, tracker_name)(_tracking_rows(), cfg)
+
+    representative = summary.loc[summary["representative_signal_width_z"] == 1].iloc[0]
+    assert representative["representative_signal_profile_tortuosity"] == pytest.approx(
+        1.2
+    )
 
 
 def test_comparative_assignment_does_not_veto_morphology_change():

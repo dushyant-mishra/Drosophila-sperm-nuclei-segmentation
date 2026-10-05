@@ -72,6 +72,14 @@ class FakePipeline:
         return {"run_status": "complete"}, pd.DataFrame()
 
 
+class IncompletePipeline(FakePipeline):
+    def run_multisample_study(self, rows, output_root, **kwargs):
+        state, summary = super().run_multisample_study(rows, output_root, **kwargs)
+        Path(output_root, "group_summary.csv").write_text("\n", encoding="utf-8")
+        state["run_status"] = "complete_with_failures"
+        return state, summary
+
+
 def make_args(tmp_path, acknowledgement):
     profile = tmp_path / "profile.json"
     checkpoint = tmp_path / "checkpoint.pt"
@@ -144,6 +152,55 @@ def test_runner_records_bypass_stamps_tables_and_preserves_registry(tmp_path):
         table = pd.read_csv(arguments["output_root"] / name)
         assert table["audit_candidate_only"].eq(True).all()
         assert table["production_gate_status"].eq("closed").all()
+
+
+def test_runner_records_empty_tables_and_rejects_incomplete_evidence(tmp_path):
+    runner = load_runner()
+    profile, checkpoint, registry, arguments = make_args(
+        tmp_path, runner.REQUIRED_ACKNOWLEDGEMENT
+    )
+    pipeline = IncompletePipeline(registry, profile, checkpoint)
+
+    with pytest.raises(RuntimeError, match="complete_with_failures"):
+        runner.run_audit_candidate(
+            arguments, pipeline=pipeline, registry_path=registry
+        )
+
+    record = json.loads(
+        (arguments["output_root"] / "AUDIT_CANDIDATE_ONLY.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["status"] == "complete_with_failures"
+    assert record["acceptance_evidence_ready"] is False
+    assert "group_summary.csv" in record["empty_audit_table_sha256"]
+    assert record["claims_registry_sha256_after"] == sha256(registry)
+
+
+def test_runner_marks_post_run_finalization_failure(tmp_path, monkeypatch):
+    runner = load_runner()
+    profile, checkpoint, registry, arguments = make_args(
+        tmp_path, runner.REQUIRED_ACKNOWLEDGEMENT
+    )
+    pipeline = FakePipeline(registry, profile, checkpoint)
+
+    def fail_stamping(_output_root):
+        raise OSError("synthetic finalization failure")
+
+    monkeypatch.setattr(runner, "_stamp_audit_tables", fail_stamping)
+    with pytest.raises(OSError, match="synthetic finalization failure"):
+        runner.run_audit_candidate(
+            arguments, pipeline=pipeline, registry_path=registry
+        )
+
+    record = json.loads(
+        (arguments["output_root"] / "AUDIT_CANDIDATE_ONLY.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["status"] == "failed"
+    assert record["study_run_status"] == "complete"
+    assert record["failure"] == "OSError: synthetic finalization failure"
 
 
 def test_runner_is_not_referenced_by_normal_gui_or_production_cli():
