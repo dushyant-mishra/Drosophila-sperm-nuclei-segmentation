@@ -86,6 +86,42 @@ def test_concise_pdf_and_ppt_contain_only_actionable_biological_measurements(tmp
         assert label not in pdf_text
         assert label not in ppt_text
 
+    normalized_pdf_text = " ".join(pdf_text.split())
+    assert (
+        " ".join(saturn.WIDTH_INTERPRETATION_CAVEAT.lower().split())
+        in normalized_pdf_text
+    )
+    assert saturn.WIDTH_AXIS_CAVEAT.lower() in pdf_text
+
+
+def test_study_comparison_pdf_carries_signal_width_caveat(tmp_path):
+    saturn = load_saturn()
+    specimen_frame = pd.DataFrame(
+        {
+            "status": ["complete", "complete"],
+            "group": ["reference", "comparison"],
+            "median_signal_profile_fwhm_width_um": [0.72, 0.69],
+        }
+    )
+    comparison_frame = pd.DataFrame(
+        {
+            "metric": ["median_signal_profile_fwhm_width_um"],
+            "reference_group": ["reference"],
+            "comparison_group": ["comparison"],
+        }
+    )
+    pdf_path = tmp_path / "specimen_group_comparison.pdf"
+
+    assert saturn._write_study_specimen_comparison_plot(
+        specimen_frame, comparison_frame, pdf_path
+    )
+
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
+    normalized = " ".join(text.lower().split())
+    assert " ".join(saturn.WIDTH_INTERPRETATION_CAVEAT.lower().split()) in normalized
+    assert saturn.WIDTH_AXIS_CAVEAT.lower() in normalized
+    assert "filled nucleus masks" not in normalized
+
 
 def test_concise_report_uses_only_technical_valid_population(tmp_path):
     saturn = load_saturn()

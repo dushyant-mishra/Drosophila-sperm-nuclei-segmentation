@@ -10607,6 +10607,16 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
             for label, value in metrics:
                 text_ax.text(0.03, y, label, fontsize=10, color="#374151", va="top")
                 text_ax.text(0.03, y - 0.045, value, fontsize=18, fontweight="bold", color="#166534", va="top")
+                if label == "Median apparent signal-profile FWHM width":
+                    text_ax.text(
+                        0.03,
+                        y - 0.105,
+                        WIDTH_AXIS_CAVEAT,
+                        fontsize=7.5,
+                        color="#4b5563",
+                        va="top",
+                        wrap=True,
+                    )
                 y -= 0.17
         length_ax = overview.add_subplot(1, 2, 2)
         if not primary.empty:
@@ -10618,7 +10628,7 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
             length_ax.axis("off")
         overview.text(
             0.5,
-            0.03,
+            0.065,
             "Primary population: technical-valid reconstructed nuclei. Morphology warnings remain included. "
             "Count depends on reviewed ROI coverage, stack depth, and acquisition boundaries. "
             "Additional engineering measurements are stored separately in technical QC.",
@@ -10626,7 +10636,16 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
             fontsize=9,
             wrap=True,
         )
-        overview.tight_layout(rect=[0, 0.07, 1, 0.94])
+        overview.text(
+            0.5,
+            0.02,
+            WIDTH_INTERPRETATION_CAVEAT,
+            ha="center",
+            fontsize=8,
+            color="#374151",
+            wrap=True,
+        )
+        overview.tight_layout(rect=[0, 0.12, 1, 0.94])
         overview.savefig(figure_dir / "primary_overview.png", dpi=250, bbox_inches="tight")
         pdf.savefig(overview, dpi=250, bbox_inches="tight")
         plt.close(overview)
@@ -10650,8 +10669,19 @@ def generate_concise_biologist_pdf(out_dir, df_tracks):
             axis.axvline(values.median(), color="black", linestyle="--", label=f"Median {values.median():.2f}")
             axis.set_title(title)
             axis.set_ylabel("Estimated nuclei")
+            if column == "representative_signal_profile_fwhm_width_um":
+                axis.set_xlabel(WIDTH_AXIS_CAVEAT, fontsize=7.5, color="#374151")
             axis.legend(fontsize=8)
-        morphology.tight_layout(rect=[0, 0.03, 1, 0.94])
+        morphology.text(
+            0.5,
+            0.015,
+            WIDTH_INTERPRETATION_CAVEAT,
+            ha="center",
+            fontsize=8,
+            color="#374151",
+            wrap=True,
+        )
+        morphology.tight_layout(rect=[0, 0.08, 1, 0.94])
         morphology.savefig(figure_dir / "primary_morphology.png", dpi=250, bbox_inches="tight")
         pdf.savefig(morphology, dpi=250, bbox_inches="tight")
         plt.close(morphology)
@@ -15505,6 +15535,8 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         label = _STUDY_COMPARISON_METRICS.get(metric, metric)
         axis.set_title(label, fontsize=10)
         axis.set_xticks([0, 1], groups)
+        if metric == "median_signal_profile_fwhm_width_um":
+            axis.set_xlabel(WIDTH_AXIS_CAVEAT, fontsize=7.5, color="#374151")
         axis.grid(axis="y", color="#D8D8D8", linewidth=0.7, alpha=0.8)
         axis.spines[["top", "right"]].set_visible(False)
     for axis in axes.flat[panel_count:]:
@@ -15565,10 +15597,10 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
         "Specimen median 2D length\n"
         "For each reconstructed nucleus, take its maximum calibrated centerline "
         "length across observed slices; then take the specimen median.\n\n"
-        "Specimen median apparent central-body mask width\n"
-        "Calibrated central-body mask width from the representative plane for "
-        "each nucleus, summarized by the "
-        "specimen median.\n\n"
+        "Specimen median apparent signal-profile FWHM width\n"
+        "Half-maximum extent of the intensity profile from the representative "
+        "plane for each nucleus, summarized by the specimen median. "
+        f"{WIDTH_INTERPRETATION_CAVEAT}\n\n"
         "Length / width\n"
         "Centerline length divided by mask width from the same representative "
         "plane. Larger values indicate a more "
@@ -15682,11 +15714,11 @@ def _write_study_specimen_comparison_plot(specimen_frame, comparison_frame, outp
             "nuclei; the specimen median limits the influence of extremes.",
         ),
         (
-            "Specimen median 2D width",
+            "Specimen median apparent signal-profile FWHM width",
             "Question: Are nuclei typically broader or thinner?",
-            "Meaning: The typical calibrated width of the filled nucleus masks. "
-            "Higher values indicate broader nuclei. Width is influenced by optical "
-            "resolution, PSF, focus, and mask boundaries.",
+            "Meaning: The typical half-maximum extent of the nucleus intensity "
+            "profile. Higher values indicate a broader apparent signal profile. "
+            f"{WIDTH_INTERPRETATION_CAVEAT}",
         ),
         (
             "Specimen median 2D length / width",
