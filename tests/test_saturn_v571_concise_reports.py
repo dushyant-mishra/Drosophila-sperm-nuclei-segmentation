@@ -121,6 +121,7 @@ def test_study_comparison_pdf_carries_signal_width_caveat(tmp_path):
     assert " ".join(saturn.WIDTH_INTERPRETATION_CAVEAT.lower().split()) in normalized
     assert saturn.WIDTH_AXIS_CAVEAT.lower() in normalized
     assert "filled nucleus masks" not in normalized
+    assert "mask width" not in normalized
 
 
 def test_concise_report_uses_only_technical_valid_population(tmp_path):
